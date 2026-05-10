@@ -7,7 +7,8 @@ from typing import Optional
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar
+    QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar,
+    QDoubleSpinBox,
 )
 
 from app.config.settings import automation_config, save_automation_settings
@@ -78,17 +79,31 @@ class MainWindow(QMainWindow):
         self.fortune_checkbox.stateChanged.connect(self.toggle_fortune_detection)
         controls_layout.addWidget(self.fortune_checkbox)
 
-        self.wrinkler_checkbox = QCheckBox("Detectar/Popar Wrinklers")
-        self.wrinkler_checkbox.setChecked(automation_config.enable_wrinkler_popper)
-        self.wrinkler_checkbox.stateChanged.connect(self.toggle_wrinkler_detection)
-        controls_layout.addWidget(self.wrinkler_checkbox)
-
-        # Placeholder para futuras automações
         self.reindeer_checkbox = QCheckBox("Detectar Reindeers (Natal)")
         self.reindeer_checkbox.setChecked(automation_config.enable_reindeer)
         self.reindeer_checkbox.setEnabled(True)
         self.reindeer_checkbox.stateChanged.connect(self.toggle_reindeer_detection)
         controls_layout.addWidget(self.reindeer_checkbox)
+
+        self.wrinkler_checkbox = QCheckBox("Detectar/Popar Wrinklers")
+        self.wrinkler_checkbox.setChecked(automation_config.enable_wrinkler_popper)
+        self.wrinkler_checkbox.stateChanged.connect(self.toggle_wrinkler_detection)
+        controls_layout.addWidget(self.wrinkler_checkbox)
+
+        delay_layout = QHBoxLayout()
+        self.wrinkler_delay_label = QLabel("Delay de Wrinklers (s):")
+        delay_layout.addWidget(self.wrinkler_delay_label)
+
+        self.wrinkler_delay_input = QDoubleSpinBox()
+        self.wrinkler_delay_input.setRange(0.1, 60.0)
+        self.wrinkler_delay_input.setSingleStep(0.1)
+        self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay)
+        self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay)
+        delay_layout.addWidget(self.wrinkler_delay_input)
+
+        controls_layout.addLayout(delay_layout)
+        self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
+
 
         controls_group.setLayout(controls_layout)
         layout.addWidget(controls_group)
@@ -142,6 +157,12 @@ class MainWindow(QMainWindow):
     def toggle_wrinkler_detection(self, state: int) -> None:
         """Ativa ou desativa o popador de wrinklers."""
         automation_config.enable_wrinkler_popper = bool(state)
+        self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
+        save_automation_settings()
+
+    def update_wrinkler_delay(self, value: float) -> None:
+        """Atualiza o delay de popagem dos wrinklers."""
+        automation_config.wrinkler_pop_delay = value
         save_automation_settings()
 
     def toggle_reindeer_detection(self, state: int) -> None:

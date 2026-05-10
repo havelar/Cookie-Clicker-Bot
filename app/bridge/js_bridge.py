@@ -182,27 +182,24 @@ class CookieClickerBridge:
             }));
         })()""")
 
-    def pop_normal_wrinkler(self) -> bool:
-        """Popa o primeiro wrinkler normal, preservando dourados/shiny."""
-        result = self.execute_js("""(() => {
-            if (!Array.isArray(Game.wrinklers) || Game.wrinklers.length === 0) return false;
-            for (let i = 0; i < Game.wrinklers.length; i++) {
-                const w = Game.wrinklers[i];
-                if (!w) continue;
-                if (w.hp <= 0) continue;
-                if (w.type === 1) continue;
-                if (typeof w.pop === 'function') {
-                    w.pop();
-                } else {
-                    w.hp = 0;
-                    if (typeof Game.recalculateWrinklers === 'function') {
-                        Game.recalculateWrinklers();
-                    }
+    def pop_wrinkler_by_index(self, index: int) -> bool:
+        """Popa um wrinkler específico pelo índice, preservando dourados/shiny."""
+        script = """(() => {
+            const i = %d;
+            if (!Array.isArray(Game.wrinklers) || i < 0 || i >= Game.wrinklers.length) return false;
+            const w = Game.wrinklers[i];
+            if (!w || w.hp <= 0 || w.type === 1) return false;
+            if (typeof w.pop === 'function') {
+                w.pop();
+            } else {
+                w.hp = 0;
+                if (typeof Game.recalculateWrinklers === 'function') {
+                    Game.recalculateWrinklers();
                 }
-                return true;
             }
-            return false;
-        })()""")
+            return true;
+        })()""" % index
+        result = self.execute_js(script)
         return bool(result)
 
     def click_fortune(self) -> bool:

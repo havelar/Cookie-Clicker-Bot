@@ -64,6 +64,7 @@ class AutomationRunner:
 
         self.cookie_position: Optional[Tuple[int, int]] = None
         self.input_handler = InputHandler(pid=pid, restore_game=False, cookie_position=None)
+        self.wrinkler_seen_at: dict[int, float] = {}
 
         # Threads
         self.detector_thread: Optional[threading.Thread] = None
@@ -120,9 +121,27 @@ class AutomationRunner:
                 if automation_config.enable_reindeer and self.bridge.pop_reindeer():
                     logger.info("Rena detectada e coletada")
 
-                # Verificar wrinklers normais
-                if automation_config.enable_wrinkler_popper and self.bridge.pop_normal_wrinkler():
-                    logger.info("Wrinkler normal detectado e popado")
+                # Verificar wrinklers normais com delay de popagem
+                if automation_config.enable_wrinkler_popper:
+                    wrinklers = self.bridge.get_wrinklers() or []
+                    current_time = time.time()
+                    for wr in wrinklers:
+                        index = wr.get('index')
+                        hp = wr.get('hp', 0)
+                        wr_type = wr.get('type')
+                        if index is None or hp <= 0 or wr_type == 1:
+                            self.wrinkler_seen_at.pop(index, None)
+                            continue
+
+                        if index not in self.wrinkler_seen_at:
+                            self.wrinkler_seen_at[index] = current_time
+                            continue
+
+                        elapsed = current_time - self.wrinkler_seen_at[index]
+                        if elapsed >= automation_config.wrinkler_pop_delay:
+                            if self.bridge.pop_wrinkler_by_index(index):
+                                logger.info(f"Wrinkler normal na posição {index} popado após {elapsed:.2f}s")
+                            self.wrinkler_seen_at.pop(index, None)
 
                 # Delay configurável
                 time.sleep(app_config.detect_interval)

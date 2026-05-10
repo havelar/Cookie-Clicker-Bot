@@ -45,6 +45,7 @@ class AutomationConfig:
     enable_golden_cookie: bool = True
     enable_fortune_cookie: bool = True
     enable_wrinkler_popper: bool = False
+    wrinkler_pop_delay: float = 15.0
 
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
@@ -84,6 +85,11 @@ def load_automation_settings() -> None:
         automation_config.enable_wrinkler_popper,
         type=bool,
     )
+    automation_config.wrinkler_pop_delay = settings.value(
+        "wrinkler_pop_delay",
+        automation_config.wrinkler_pop_delay,
+        type=float,
+    )
     settings.endGroup()
 
 
@@ -96,5 +102,6 @@ def save_automation_settings() -> None:
     settings.setValue("enable_fortune_cookie", automation_config.enable_fortune_cookie)
     settings.setValue("enable_reindeer", automation_config.enable_reindeer)
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
+    settings.setValue("wrinkler_pop_delay", automation_config.wrinkler_pop_delay)
     settings.endGroup()
     settings.sync()
