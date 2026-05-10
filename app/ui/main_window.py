@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar
 )
 
-from app.config.settings import automation_config
+from app.config.settings import automation_config, save_automation_settings
 from app.utils.logger import logger
 
 
@@ -70,11 +70,18 @@ class MainWindow(QMainWindow):
         # Checkboxes para automações
         self.golden_checkbox = QCheckBox("Detectar Golden Cookies")
         self.golden_checkbox.setChecked(automation_config.enable_golden_cookie)
+        self.golden_checkbox.stateChanged.connect(self.toggle_golden_detection)
         controls_layout.addWidget(self.golden_checkbox)
 
         self.fortune_checkbox = QCheckBox("Detectar Fortune Cookies")
         self.fortune_checkbox.setChecked(automation_config.enable_fortune_cookie)
+        self.fortune_checkbox.stateChanged.connect(self.toggle_fortune_detection)
         controls_layout.addWidget(self.fortune_checkbox)
+
+        self.wrinkler_checkbox = QCheckBox("Detectar/Popar Wrinklers")
+        self.wrinkler_checkbox.setChecked(automation_config.enable_wrinkler_popper)
+        self.wrinkler_checkbox.stateChanged.connect(self.toggle_wrinkler_detection)
+        controls_layout.addWidget(self.wrinkler_checkbox)
 
         # Placeholder para futuras automações
         self.reindeer_checkbox = QCheckBox("Detectar Reindeers (Natal)")
@@ -122,10 +129,25 @@ class MainWindow(QMainWindow):
         """Conecta sinais da interface."""
         self.log_emitter.log_signal.connect(self.add_log)
 
+    def toggle_golden_detection(self, state: int) -> None:
+        """Ativa ou desativa a detecção de golden cookies."""
+        automation_config.enable_golden_cookie = bool(state)
+        save_automation_settings()
+
+    def toggle_fortune_detection(self, state: int) -> None:
+        """Ativa ou desativa a detecção de fortune cookies."""
+        automation_config.enable_fortune_cookie = bool(state)
+        save_automation_settings()
+
+    def toggle_wrinkler_detection(self, state: int) -> None:
+        """Ativa ou desativa o popador de wrinklers."""
+        automation_config.enable_wrinkler_popper = bool(state)
+        save_automation_settings()
+
     def toggle_reindeer_detection(self, state: int) -> None:
         """Ativa ou desativa a detecção de renas."""
         automation_config.enable_reindeer = bool(state)
-        status = "ativada" if automation_config.enable_reindeer else "desativada"
+        save_automation_settings()
 
     def toggle_clicker(self):
         """Alterna o estado do clicker."""

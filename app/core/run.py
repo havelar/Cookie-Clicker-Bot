@@ -120,6 +120,10 @@ class AutomationRunner:
                 if automation_config.enable_reindeer and self.bridge.pop_reindeer():
                     logger.info("Rena detectada e coletada")
 
+                # Verificar wrinklers normais
+                if automation_config.enable_wrinkler_popper and self.bridge.pop_normal_wrinkler():
+                    logger.info("Wrinkler normal detectado e popado")
+
                 # Delay configurável
                 time.sleep(app_config.detect_interval)
 

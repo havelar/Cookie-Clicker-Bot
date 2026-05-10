@@ -4,6 +4,8 @@ Configurações centralizadas do Cookie Clicker Bot.
 from dataclasses import dataclass
 from typing import Optional
 
+from PyQt5.QtCore import QSettings
+
 
 @dataclass
 class AppConfig:
@@ -42,6 +44,7 @@ class AutomationConfig:
     enable_cookie_clicker: bool = True
     enable_golden_cookie: bool = True
     enable_fortune_cookie: bool = True
+    enable_wrinkler_popper: bool = False
 
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
@@ -50,3 +53,48 @@ class AutomationConfig:
 # Instância global das configurações
 app_config = AppConfig()
 automation_config = AutomationConfig()
+
+
+def load_automation_settings() -> None:
+    """Carrega as configurações de automação do QSettings."""
+    settings = QSettings("CookieClickerBot", "CookieClickerBot")
+    settings.beginGroup("Automation")
+    automation_config.enable_cookie_clicker = settings.value(
+        "enable_cookie_clicker",
+        automation_config.enable_cookie_clicker,
+        type=bool,
+    )
+    automation_config.enable_golden_cookie = settings.value(
+        "enable_golden_cookie",
+        automation_config.enable_golden_cookie,
+        type=bool,
+    )
+    automation_config.enable_fortune_cookie = settings.value(
+        "enable_fortune_cookie",
+        automation_config.enable_fortune_cookie,
+        type=bool,
+    )
+    automation_config.enable_reindeer = settings.value(
+        "enable_reindeer",
+        automation_config.enable_reindeer,
+        type=bool,
+    )
+    automation_config.enable_wrinkler_popper = settings.value(
+        "enable_wrinkler_popper",
+        automation_config.enable_wrinkler_popper,
+        type=bool,
+    )
+    settings.endGroup()
+
+
+def save_automation_settings() -> None:
+    """Salva as configurações de automação no QSettings."""
+    settings = QSettings("CookieClickerBot", "CookieClickerBot")
+    settings.beginGroup("Automation")
+    settings.setValue("enable_cookie_clicker", automation_config.enable_cookie_clicker)
+    settings.setValue("enable_golden_cookie", automation_config.enable_golden_cookie)
+    settings.setValue("enable_fortune_cookie", automation_config.enable_fortune_cookie)
+    settings.setValue("enable_reindeer", automation_config.enable_reindeer)
+    settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
+    settings.endGroup()
+    settings.sync()
