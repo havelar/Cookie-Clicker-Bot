@@ -2,7 +2,7 @@
 Bridge para comunicação com o runtime JavaScript do Cookie Clicker.
 """
 import time
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 
 try:
     import pychrome
@@ -168,6 +168,39 @@ class CookieClickerBridge:
                 logger.info("Rena coletada via JS")
                 return True
         return False
+
+    def get_wrinklers(self) -> Optional[List[Dict[str, Any]]]:
+        """Retorna a lista de wrinklers com informação básica."""
+        return self.execute_js("""(() => {
+            if (!Game.wrinklers) return null;
+            return Game.wrinklers.map((w, idx) => ({
+                index: idx,
+                type: w.type,
+                hp: w.hp,
+                maxHp: w.maxHp,
+                isShiny: w.type === 1
+            }));
+        })()""")
+
+    def pop_wrinkler_by_index(self, index: int) -> bool:
+        """Popa um wrinkler específico pelo índice, preservando dourados/shiny."""
+        script = """(() => {
+            const i = %d;
+            if (!Array.isArray(Game.wrinklers) || i < 0 || i >= Game.wrinklers.length) return false;
+            const w = Game.wrinklers[i];
+            if (!w || w.hp <= 0 || w.type === 1) return false;
+            if (typeof w.pop === 'function') {
+                w.pop();
+            } else {
+                w.hp = 0;
+                if (typeof Game.recalculateWrinklers === 'function') {
+                    Game.recalculateWrinklers();
+                }
+            }
+            return true;
+        })()""" % index
+        result = self.execute_js(script)
+        return bool(result)
 
     def click_fortune(self) -> bool:
         """Clica na fortune cookie."""
