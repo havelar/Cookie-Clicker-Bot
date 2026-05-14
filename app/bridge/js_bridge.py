@@ -152,21 +152,43 @@ class CookieClickerBridge:
     def pop_golden_cookie(self) -> bool:
         """Coleta o golden cookie sem mover o mouse."""
         golden = self.get_golden_cookie()
-        if golden:
-            result = self.execute_js("Game.shimmers.find(s => s.type === 'golden').pop()")
-            if result is not None:
-                logger.info("Golden cookie coletado via JS")
-                return True
+        if not golden:
+            return False
+        
+        # Usar um script que verifica se o shimmer foi removido
+        result = self.execute_js("""(() => {
+            const gc = Game.shimmers.find(s => s.type === 'golden');
+            if (!gc) return false;
+            gc.pop();
+            const gcAfter = Game.shimmers.find(s => s.type === 'golden');
+            return !gcAfter;  // True se foi removido
+        })()""")
+        
+        if result:
+            return True
+        
+        logger.info("[FAIL] Golden cookie detectado mas pop() falhou")
         return False
 
     def pop_reindeer(self) -> bool:
         """Coleta a rena sem mover o mouse."""
         reindeer = self.get_reindeer()
-        if reindeer:
-            result = self.execute_js("Game.shimmers.find(s => s.type === 'reindeer').pop()")
-            if result is not None:
-                logger.info("Rena coletada via JS")
-                return True
+        if not reindeer:
+            return False
+        
+        # Usar um script que verifica se o shimmer foi removido
+        result = self.execute_js("""(() => {
+            const rd = Game.shimmers.find(s => s.type === 'reindeer');
+            if (!rd) return false;
+            rd.pop();
+            const rdAfter = Game.shimmers.find(s => s.type === 'reindeer');
+            return !rdAfter;  // True se foi removido
+        })()""")
+        
+        if result:
+            return True
+        
+        # logger.info("[FAIL] Rena detectada mas pop() falhou")
         return False
 
     def get_wrinklers(self) -> Optional[List[Dict[str, Any]]]:
@@ -207,7 +229,6 @@ class CookieClickerBridge:
         if self.has_fortune_cookie():
             result = self.execute_js("Game.tickerL.click()")
             if result is not None:
-                logger.info("Fortune cookie clicada via JS")
                 return True
         return False
 

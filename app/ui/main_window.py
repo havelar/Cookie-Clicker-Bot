@@ -4,11 +4,11 @@ Interface gráfica principal do Cookie Clicker Bot.
 import sys
 from typing import Optional
 
-from PyQt5.QtCore import QTimer, pyqtSignal, QObject
+from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar,
-    QDoubleSpinBox,
+    QDoubleSpinBox, QGridLayout,
 )
 
 from app.config.settings import automation_config, save_automation_settings
@@ -36,7 +36,7 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         """Configura a interface gráfica."""
         self.setWindowTitle("Cookie Clicker Bot v1.0.0")
-        self.setGeometry(100, 100, 600, 500)
+        self.setGeometry(100, 100, 600, 400)
 
         # Widget central
         central_widget = QWidget()
@@ -68,27 +68,32 @@ class MainWindow(QMainWindow):
         self.clicker_button.clicked.connect(self.toggle_clicker)
         controls_layout.addWidget(self.clicker_button)
 
-        # Checkboxes para automações
-        self.golden_checkbox = QCheckBox("Detectar Golden Cookies")
+        # Checkboxes para automações em duas colunas
+        checkbox_grid = QGridLayout()
+
+        self.golden_checkbox = QCheckBox("Coletar Golden Cookies")
         self.golden_checkbox.setChecked(automation_config.enable_golden_cookie)
         self.golden_checkbox.stateChanged.connect(self.toggle_golden_detection)
-        controls_layout.addWidget(self.golden_checkbox)
+        checkbox_grid.addWidget(self.golden_checkbox, 0, 0)
 
-        self.fortune_checkbox = QCheckBox("Detectar Fortune Cookies")
+        self.fortune_checkbox = QCheckBox("Coletar Fortune Cookies")
         self.fortune_checkbox.setChecked(automation_config.enable_fortune_cookie)
         self.fortune_checkbox.stateChanged.connect(self.toggle_fortune_detection)
-        controls_layout.addWidget(self.fortune_checkbox)
+        checkbox_grid.addWidget(self.fortune_checkbox, 0, 1)
 
-        self.reindeer_checkbox = QCheckBox("Detectar Reindeers (Natal)")
+        self.reindeer_checkbox = QCheckBox("Coletar Reindeers (Natal)")
         self.reindeer_checkbox.setChecked(automation_config.enable_reindeer)
-        self.reindeer_checkbox.setEnabled(True)
         self.reindeer_checkbox.stateChanged.connect(self.toggle_reindeer_detection)
-        controls_layout.addWidget(self.reindeer_checkbox)
+        checkbox_grid.addWidget(self.reindeer_checkbox, 1, 0)
 
-        self.wrinkler_checkbox = QCheckBox("Detectar/Popar Wrinklers")
+        self.wrinkler_checkbox = QCheckBox("Coletar Wrinklers")
         self.wrinkler_checkbox.setChecked(automation_config.enable_wrinkler_popper)
         self.wrinkler_checkbox.stateChanged.connect(self.toggle_wrinkler_detection)
-        controls_layout.addWidget(self.wrinkler_checkbox)
+        checkbox_grid.addWidget(self.wrinkler_checkbox, 1, 1)
+
+        checkbox_grid.setHorizontalSpacing(20)
+        checkbox_grid.setVerticalSpacing(10)
+        controls_layout.addLayout(checkbox_grid)
 
         delay_layout = QHBoxLayout()
         self.wrinkler_delay_label = QLabel("Delay de Wrinklers (s):")
@@ -104,10 +109,9 @@ class MainWindow(QMainWindow):
         controls_layout.addLayout(delay_layout)
         self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
 
-
         controls_group.setLayout(controls_layout)
         layout.addWidget(controls_group)
-
+        
         # Grupo de status
         status_group = QGroupBox("Status")
         status_layout = QHBoxLayout()
@@ -123,17 +127,67 @@ class MainWindow(QMainWindow):
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
 
+        self.stats_timer = QTimer(self)
+        self.stats_timer.timeout.connect(self.refresh_stats)
+        self.stats_timer.start(1000)
+
+        # Grupo de contadores
+        counters_group = QGroupBox("Contadores")
+        counters_layout = QGridLayout()
+
+        self.cookies_clicked_label = QLabel("Cookies Clickados:\n0")
+        self.golden_clicked_label = QLabel("Golden Cookies Clicados:\n0")
+        self.reindeer_popped_label = QLabel("Renas Poppadas:\n0")
+        self.wrinklers_popped_label = QLabel("Wrinklers Poppados:\n0")
+
+        self.cookies_clicked_label.setStyleSheet(
+            "background-color: #FFF3B0; border: 2px solid #E2B007; border-radius: 10px;"
+            "font-weight: bold; font-size: 13px; padding: 12px;"
+        )
+        self.golden_clicked_label.setStyleSheet(
+            "background-color: #FFE3B8; border: 2px solid #D98F3F; border-radius: 10px;"
+            "font-weight: bold; font-size: 13px; padding: 12px;"
+        )
+        self.reindeer_popped_label.setStyleSheet(
+            "background-color: #D6F5E6; border: 2px solid #3EA18C; border-radius: 10px;"
+            "font-weight: bold; font-size: 13px; padding: 12px;"
+        )
+        self.wrinklers_popped_label.setStyleSheet(
+            "background-color: #E8D6FF; border: 2px solid #7B50C6; border-radius: 10px;"
+            "font-weight: bold; font-size: 13px; padding: 12px;"
+        )
+
+        for label in [
+            self.cookies_clicked_label,
+            self.golden_clicked_label,
+            self.reindeer_popped_label,
+            self.wrinklers_popped_label,
+        ]:
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumSize(220, 70)
+
+        counters_layout.setHorizontalSpacing(20)
+        counters_layout.setVerticalSpacing(20)
+        counters_layout.setAlignment(Qt.AlignCenter)
+
+        counters_layout.addWidget(self.cookies_clicked_label, 0, 0)
+        counters_layout.addWidget(self.golden_clicked_label, 0, 1)
+        counters_layout.addWidget(self.reindeer_popped_label, 1, 0)
+        counters_layout.addWidget(self.wrinklers_popped_label, 1, 1)
+        counters_group.setLayout(counters_layout)
+        layout.addWidget(counters_group, alignment=Qt.AlignCenter)
+
         # Logs
         logs_group = QGroupBox("Logs")
         logs_layout = QVBoxLayout()
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
+        self.log_text.setMinimumHeight(180)
         logs_layout.addWidget(self.log_text)
 
         logs_group.setLayout(logs_layout)
-        layout.addWidget(logs_group)
+        layout.addWidget(logs_group, stretch=1)
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -234,6 +288,16 @@ class MainWindow(QMainWindow):
         else:
             self.bridge_status.setText("Bridge: Desconectado")
             self.bridge_status.setStyleSheet("color: red;")
+
+    def refresh_stats(self):
+        """Atualiza os contadores da UI a partir do runner."""
+        if not self.runner:
+            return
+
+        self.cookies_clicked_label.setText(f"Cookies Clickados:\n{self.runner.cookies_clicked}")
+        self.golden_clicked_label.setText(f"Golden Cookies Clicados:\n{self.runner.golden_cookies_clicked}")
+        self.reindeer_popped_label.setText(f"Renas Poppadas:\n{self.runner.reindeer_popped}")
+        self.wrinklers_popped_label.setText(f"Wrinklers Poppados:\n{self.runner.wrinklers_popped}")
 
 
 def create_ui_app():
