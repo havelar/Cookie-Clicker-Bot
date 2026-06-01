@@ -2,6 +2,7 @@
 Interface gráfica principal do Cookie Clicker Bot.
 """
 import sys
+from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
@@ -12,6 +13,8 @@ from PyQt5.QtWidgets import (
 )
 
 from app.config.settings import automation_config, save_automation_settings
+from app.core.backup_manager import BackupManager
+from app.ui.backup_dialog import BackupDialog
 from app.utils.logger import logger
 
 
@@ -29,6 +32,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.log_emitter = LogSignalEmitter()
         self.runner = None  # Será definido pelo Application
+        self.backup_manager = BackupManager()
+        self.backup_dialog = None
         self.setup_ui()
         self.connect_signals()
         self.clicker_state_changed.connect(self.set_clicker_state)
@@ -67,6 +72,25 @@ class MainWindow(QMainWindow):
         """)
         self.clicker_button.clicked.connect(self.toggle_clicker)
         controls_layout.addWidget(self.clicker_button)
+
+        # Botão backups
+        self.backups_button = QPushButton("Gerenciar Backups")
+        self.backups_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                padding: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        self.backups_button.clicked.connect(self.open_backup_dialog)
+        controls_layout.addWidget(self.backups_button)
 
         # Checkboxes para automações em duas colunas
         checkbox_grid = QGridLayout()
@@ -298,6 +322,29 @@ class MainWindow(QMainWindow):
         self.golden_clicked_label.setText(f"Golden Cookies Clicados:\n{self.runner.golden_cookies_clicked}")
         self.reindeer_popped_label.setText(f"Renas Poppadas:\n{self.runner.reindeer_popped}")
         self.wrinklers_popped_label.setText(f"Wrinklers Poppados:\n{self.runner.wrinklers_popped}")
+
+    def open_backup_dialog(self):
+        """Abre o dialog de gerenciamento de backups."""
+        if self.backup_dialog is None:
+            self.backup_dialog = BackupDialog(self.backup_manager, self)
+            self.backup_dialog.backup_restored.connect(self.on_backup_restored)
+        self.backup_dialog.show()
+        self.backup_dialog.raise_()
+        self.backup_dialog.activateWindow()
+
+    def on_backup_restored(self, save_data: str):
+        """Handle backup restoration - load save into game."""
+        if self.runner and self.runner.bridge:
+            success = self.runner.bridge.load_game_save(save_data)
+            if success:
+                logger.info("Save restaurado com sucesso via backup")
+                self.add_log("Save restaurado com sucesso!")
+            else:
+                logger.error("Falha ao restaurar save")
+                self.add_log("ERRO: Falha ao restaurar save")
+        else:
+            logger.warning("Bridge não disponível para restaurar save")
+            self.add_log("ERRO: Bridge não conectado para restaurar save")
 
 
 def create_ui_app():

@@ -152,6 +152,10 @@ class AutomationRunner:
                                 logger.info(f"Wrinkler normal na posição {index} popado após {elapsed:.2f}s")
                             self.wrinkler_seen_at.pop(index, None)
 
+                # Printar HP dos wrinklers a cada verificação
+                if automation_config.enable_wrinkler_hp_log:  # Ou adicione uma config específica
+                    self.bridge.print_wrinkler_hp()
+
                 # Delay configurável
                 time.sleep(app_config.detect_interval)
 

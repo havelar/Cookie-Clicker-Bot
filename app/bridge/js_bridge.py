@@ -244,3 +244,33 @@ class CookieClickerBridge:
             'golden_cookie': self.get_golden_cookie() is not None,
             'fortune_cookie': self.has_fortune_cookie(),
         }
+
+    def print_wrinkler_hp(self) -> None:
+        """Imprime o HP de todos os wrinklers."""
+        wrinklers = self.get_wrinklers()
+        
+        if wrinklers is None:
+            logger.info("Nenhum wrinkler encontrado")
+            return
+        
+        if not wrinklers:
+            logger.info("Nenhum wrinkler ativo")
+            return
+        
+        logger.info("=== HP dos Wrinklers ===")
+        for w in wrinklers:
+            shiny_marker = "✨ [DOURADO]" if w['isShiny'] else ""
+            # hp_bar = f"{w['hp']}/{w['maxHp']}"
+            logger.info(f"Wrinkler #{w['index']}: {w['hp']} {shiny_marker}")
+
+    # def get_game_save(self) -> Optional[str]:
+    #     """Exporta o save atual do jogo."""
+    #     return self.execute_js("Game.export()")
+
+    # def load_game_save(self, save_data: str) -> bool:
+    #     """Carrega um save no jogo."""
+    #     # Escapar aspas na string do save
+    #     escaped_save = save_data.replace('"', '\\"').replace("'", "\\'")
+    #     script = f'Game.importSave("{escaped_save}")'
+    #     result = self.execute_js(script)
+    #     return result is not None
