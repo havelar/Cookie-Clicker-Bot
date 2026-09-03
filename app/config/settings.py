@@ -47,6 +47,14 @@ class AutomationConfig:
     enable_wrinkler_popper: bool = False
     wrinkler_pop_delay: float = 15.0
 
+    # Sugar Lump
+    enable_sugar_lump_harvest: bool = False
+    preserve_sugar_lump_type_0: bool = False
+    preserve_sugar_lump_type_1: bool = False
+    preserve_sugar_lump_type_2: bool = True
+    preserve_sugar_lump_type_3: bool = False
+    preserve_sugar_lump_type_4: bool = True
+
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
 
@@ -102,6 +110,36 @@ def load_automation_settings() -> None:
         automation_config.wrinkler_pop_delay,
         type=float,
     )
+    automation_config.enable_sugar_lump_harvest = settings.value(
+        "enable_sugar_lump_harvest",
+        automation_config.enable_sugar_lump_harvest,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_0 = settings.value(
+        "preserve_sugar_lump_type_0",
+        automation_config.preserve_sugar_lump_type_0,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_1 = settings.value(
+        "preserve_sugar_lump_type_1",
+        automation_config.preserve_sugar_lump_type_1,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_2 = settings.value(
+        "preserve_sugar_lump_type_2",
+        automation_config.preserve_sugar_lump_type_2,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_3 = settings.value(
+        "preserve_sugar_lump_type_3",
+        automation_config.preserve_sugar_lump_type_3,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_4 = settings.value(
+        "preserve_sugar_lump_type_4",
+        automation_config.preserve_sugar_lump_type_4,
+        type=bool,
+    )
     settings.endGroup()
 
 
@@ -115,6 +153,12 @@ def save_automation_settings() -> None:
     settings.setValue("enable_reindeer", automation_config.enable_reindeer)
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
     settings.setValue("wrinkler_pop_delay", automation_config.wrinkler_pop_delay)
+    settings.setValue("enable_sugar_lump_harvest", automation_config.enable_sugar_lump_harvest)
+    settings.setValue("preserve_sugar_lump_type_0", automation_config.preserve_sugar_lump_type_0)
+    settings.setValue("preserve_sugar_lump_type_1", automation_config.preserve_sugar_lump_type_1)
+    settings.setValue("preserve_sugar_lump_type_2", automation_config.preserve_sugar_lump_type_2)
+    settings.setValue("preserve_sugar_lump_type_3", automation_config.preserve_sugar_lump_type_3)
+    settings.setValue("preserve_sugar_lump_type_4", automation_config.preserve_sugar_lump_type_4)
     settings.endGroup()
     settings.sync()
 

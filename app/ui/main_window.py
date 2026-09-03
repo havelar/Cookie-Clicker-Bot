@@ -133,6 +133,49 @@ class MainWindow(QMainWindow):
         controls_layout.addLayout(delay_layout)
         self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
 
+        # Sugar Lump controls
+        self.sugar_lump_group = QGroupBox("Sugar Lump")
+        sugar_lump_layout = QVBoxLayout()
+
+        self.sugar_lump_checkbox = QCheckBox("Coletar Sugar Lumps")
+        self.sugar_lump_checkbox.setChecked(automation_config.enable_sugar_lump_harvest)
+        self.sugar_lump_checkbox.stateChanged.connect(self.toggle_sugar_lump_harvest)
+        sugar_lump_layout.addWidget(self.sugar_lump_checkbox)
+
+        preserve_grid = QGridLayout()
+        self.preserve_sugar_lump_type_0_cb = QCheckBox("Preservar tipo 0")
+        self.preserve_sugar_lump_type_0_cb.setChecked(automation_config.preserve_sugar_lump_type_0)
+        self.preserve_sugar_lump_type_0_cb.stateChanged.connect(self.toggle_preserve_sugar_lump_type_0)
+        preserve_grid.addWidget(self.preserve_sugar_lump_type_0_cb, 0, 0)
+
+        self.preserve_sugar_lump_type_1_cb = QCheckBox("Preservar tipo 1")
+        self.preserve_sugar_lump_type_1_cb.setChecked(automation_config.preserve_sugar_lump_type_1)
+        self.preserve_sugar_lump_type_1_cb.stateChanged.connect(self.toggle_preserve_sugar_lump_type_1)
+        preserve_grid.addWidget(self.preserve_sugar_lump_type_1_cb, 0, 1)
+
+        self.preserve_sugar_lump_type_2_cb = QCheckBox("Preservar tipo 2 (Golden)")
+        self.preserve_sugar_lump_type_2_cb.setChecked(automation_config.preserve_sugar_lump_type_2)
+        self.preserve_sugar_lump_type_2_cb.stateChanged.connect(self.toggle_preserve_sugar_lump_type_2)
+        preserve_grid.addWidget(self.preserve_sugar_lump_type_2_cb, 1, 0)
+
+        self.preserve_sugar_lump_type_3_cb = QCheckBox("Preservar tipo 3")
+        self.preserve_sugar_lump_type_3_cb.setChecked(automation_config.preserve_sugar_lump_type_3)
+        self.preserve_sugar_lump_type_3_cb.stateChanged.connect(self.toggle_preserve_sugar_lump_type_3)
+        preserve_grid.addWidget(self.preserve_sugar_lump_type_3_cb, 1, 1)
+
+        self.preserve_sugar_lump_type_4_cb = QCheckBox("Preservar tipo 4 (Caramel)")
+        self.preserve_sugar_lump_type_4_cb.setChecked(automation_config.preserve_sugar_lump_type_4)
+        self.preserve_sugar_lump_type_4_cb.stateChanged.connect(self.toggle_preserve_sugar_lump_type_4)
+        preserve_grid.addWidget(self.preserve_sugar_lump_type_4_cb, 2, 0, 1, 2)
+
+        preserve_grid.setHorizontalSpacing(20)
+        preserve_grid.setVerticalSpacing(5)
+        sugar_lump_layout.addLayout(preserve_grid)
+
+        self.sugar_lump_group.setLayout(sugar_lump_layout)
+        controls_layout.addWidget(self.sugar_lump_group)
+        self.set_sugar_lump_preserve_enabled(automation_config.enable_sugar_lump_harvest)
+
         controls_group.setLayout(controls_layout)
         layout.addWidget(controls_group)
         
@@ -236,6 +279,40 @@ class MainWindow(QMainWindow):
         """Ativa ou desativa o popador de wrinklers."""
         automation_config.enable_wrinkler_popper = bool(state)
         self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
+        save_automation_settings()
+
+    def toggle_sugar_lump_harvest(self, state: int) -> None:
+        """Ativa ou desativa a automação de Sugar Lump."""
+        automation_config.enable_sugar_lump_harvest = bool(state)
+        self.set_sugar_lump_preserve_enabled(bool(state))
+        save_automation_settings()
+
+    def set_sugar_lump_preserve_enabled(self, enabled: bool) -> None:
+        """Habilita ou desabilita os checkboxes de preservação de Sugar Lump."""
+        self.preserve_sugar_lump_type_0_cb.setEnabled(enabled)
+        self.preserve_sugar_lump_type_1_cb.setEnabled(enabled)
+        self.preserve_sugar_lump_type_2_cb.setEnabled(enabled)
+        self.preserve_sugar_lump_type_3_cb.setEnabled(enabled)
+        self.preserve_sugar_lump_type_4_cb.setEnabled(enabled)
+
+    def toggle_preserve_sugar_lump_type_0(self, state: int) -> None:
+        automation_config.preserve_sugar_lump_type_0 = bool(state)
+        save_automation_settings()
+
+    def toggle_preserve_sugar_lump_type_1(self, state: int) -> None:
+        automation_config.preserve_sugar_lump_type_1 = bool(state)
+        save_automation_settings()
+
+    def toggle_preserve_sugar_lump_type_2(self, state: int) -> None:
+        automation_config.preserve_sugar_lump_type_2 = bool(state)
+        save_automation_settings()
+
+    def toggle_preserve_sugar_lump_type_3(self, state: int) -> None:
+        automation_config.preserve_sugar_lump_type_3 = bool(state)
+        save_automation_settings()
+
+    def toggle_preserve_sugar_lump_type_4(self, state: int) -> None:
+        automation_config.preserve_sugar_lump_type_4 = bool(state)
         save_automation_settings()
 
     def update_wrinkler_delay(self, value: float) -> None:

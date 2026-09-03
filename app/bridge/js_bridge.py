@@ -136,6 +136,57 @@ class CookieClickerBridge:
         """Retorna cookies por segundo."""
         return self.execute_js("Game.cookiesPs")
 
+    def get_sugar_lump_type(self) -> Optional[int]:
+        """Retorna o tipo atual do Sugar Lump."""
+        return self.execute_js("typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : null")
+
+    def get_sugar_lump_status(self) -> Optional[Dict[str, Any]]:
+        """Retorna o estado atual do Sugar Lump."""
+        return self.execute_js("""(() => {
+            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
+            if (!lump) return null;
+            return {
+                type: typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : lump.type,
+                ready: !!lump.ready,
+                progress: lump.progress || lump.value || 0,
+                typeName: lump.typeName || null,
+            };
+        })()""")
+
+    def harvest_sugar_lump(self) -> bool:
+        """Tenta colher o Sugar Lump atual diretamente via JS."""
+        script = """(() => {
+            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
+            if (!lump) return false;
+
+            if (typeof lump.pop === 'function') {
+                lump.pop();
+                return true;
+            }
+
+            if (typeof lump.click === 'function') {
+                lump.click();
+                return true;
+            }
+
+            const lumpElement = document.querySelector('#lumps');
+            if (lumpElement) {
+                lumpElement.click();
+            }
+
+            const button = Array.from(document.querySelectorAll('button')).find(
+                el => /harvest|coletar|yes|sim/i.test(el.innerText)
+            );
+            if (button) {
+                button.click();
+                return true;
+            }
+
+            return false;
+        })()"""
+        result = self.execute_js(script)
+        return bool(result)
+
     def get_golden_cookie(self) -> Optional[Dict]:
         """Retorna o shimmer do golden cookie se existir."""
         return self.execute_js("Game.shimmers.find(s => s.type === 'golden')")
