@@ -1,13 +1,17 @@
 """Interface gráfica principal do Cookie Clicker Bot."""
 import sys
+from pathlib import Path
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QGridLayout, QTabWidget)
 
 from app.config.settings import automation_config, save_automation_settings
 from app.core.backup_manager import BackupManager
 from app.ui.backup_dialog import BackupDialog
-from app.ui.theme import DARK_STYLESHEET
+from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
 from app.utils.logger import logger
+
+APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "cookie_clicker_bot.ico"
 
 
 class LogSignalEmitter(QObject):
@@ -63,10 +67,13 @@ class MainWindow(QMainWindow):
         controls = (("golden_checkbox", "Coletar Golden Cookies", "enable_golden_cookie", self.toggle_golden_detection), ("fortune_checkbox", "Coletar Fortune Cookies", "enable_fortune_cookie", self.toggle_fortune_detection), ("reindeer_checkbox", "Coletar Renas (Natal)", "enable_reindeer", self.toggle_reindeer_detection), ("wrinkler_checkbox", "Coletar Wrinklers", "enable_wrinkler_popper", self.toggle_wrinkler_detection))
         for index, (name, text, setting, handler) in enumerate(controls):
             checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, setting)); checkbox.stateChanged.connect(handler); setattr(self, name, checkbox); grid.addWidget(checkbox, index // 2, index % 2)
-        grid.setHorizontalSpacing(32); grid.setVerticalSpacing(9); group_layout.addLayout(grid)
-        delay = QHBoxLayout(); delay.addWidget(QLabel("Intervalo entre wrinklers (segundos)")); delay.addStretch()
-        self.wrinkler_delay_input = QDoubleSpinBox(); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
-        delay.addWidget(self.wrinkler_delay_input); group_layout.addLayout(delay); layout.addWidget(group); layout.addStretch(); return tab
+        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
+        grid.setHorizontalSpacing(36); grid.setVerticalSpacing(10)
+        delay = QHBoxLayout(); delay.setContentsMargins(0, 2, 0, 0)
+        delay.addWidget(QLabel("Intervalo entre wrinklers")); delay.addStretch(); delay.addSpacing(8)
+        self.wrinkler_delay_input = QDoubleSpinBox(); self.wrinkler_delay_input.setFixedWidth(96); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
+        delay.addWidget(self.wrinkler_delay_input); grid.addLayout(delay, 2, 1)
+        group_layout.addLayout(grid); layout.addWidget(group); layout.addStretch(); return tab
 
     def _sugar_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
@@ -120,5 +127,8 @@ class MainWindow(QMainWindow):
 
 
 def create_ui_app():
-    app = QApplication(sys.argv); app.setStyleSheet(DARK_STYLESHEET)
-    return app, MainWindow()
+    set_windows_app_id()
+    app = QApplication(sys.argv); app.setStyleSheet(DARK_STYLESHEET); enable_dark_title_bars(app)
+    app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+    window = MainWindow(); window.setWindowIcon(app.windowIcon())
+    return app, window
