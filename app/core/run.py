@@ -66,6 +66,13 @@ class AutomationRunner:
         self.input_handler = InputHandler(pid=pid, restore_game=False, cookie_position=None)
         self.wrinkler_seen_at: dict[int, float] = {}
 
+        # Contadores de eventos
+        self.cookies_clicked: int = 0
+        self.golden_cookies_clicked: int = 0
+        self.reindeer_popped: int = 0
+        self.wrinklers_popped: int = 0
+        self.sugar_lumps_harvested: int = 0
+
         # Threads
         self.detector_thread: Optional[threading.Thread] = None
         self.clicker_thread: Optional[threading.Thread] = None
@@ -111,15 +118,17 @@ class AutomationRunner:
             try:
                 # Verificar golden cookie
                 if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
-                    logger.info("Golden cookie detectado e coletado")
+                    self.golden_cookies_clicked += 1
+                    logger.info("Golden cookie coletado!")
 
                 # Verificar fortune cookie
                 if automation_config.enable_fortune_cookie and self.bridge.click_fortune():
-                    logger.info("Fortune cookie detectada e clicada")
+                    logger.info("Fortune cookie clicado!")
 
                 # Verificar rena
                 if automation_config.enable_reindeer and self.bridge.pop_reindeer():
-                    logger.info("Rena detectada e coletada")
+                    self.reindeer_popped += 1
+                    logger.info("Rena coletada!")
 
                 # Verificar wrinklers normais com delay de popagem
                 if automation_config.enable_wrinkler_popper:
@@ -140,8 +149,34 @@ class AutomationRunner:
                         elapsed = current_time - self.wrinkler_seen_at[index]
                         if elapsed >= automation_config.wrinkler_pop_delay:
                             if self.bridge.pop_wrinkler_by_index(index):
+                                self.wrinklers_popped += 1
                                 logger.info(f"Wrinkler normal na posição {index} popado após {elapsed:.2f}s")
                             self.wrinkler_seen_at.pop(index, None)
+
+                # Verificar Sugar Lump
+                if automation_config.enable_sugar_lump_harvest:
+                    lump_info = self.bridge.get_sugar_lump_status()
+                    if lump_info:
+                        lump_type = lump_info.get('type')
+                        lump_ready = lump_info.get('ready', False)
+                        preserve_flag = False
+                        if isinstance(lump_type, int) and 0 <= lump_type <= 4:
+                            preserve_flag = getattr(
+                                automation_config,
+                                f"preserve_sugar_lump_type_{lump_type}",
+                                False,
+                            )
+
+                        if not preserve_flag or lump_ready:
+                            if self.bridge.harvest_sugar_lump():
+                                self.sugar_lumps_harvested += 1
+                                logger.info(
+                                    f"Sugar Lump tipo {lump_type} coletado (ready={lump_ready})"
+                                )
+
+                # Printar HP dos wrinklers a cada verificação
+                if automation_config.enable_wrinkler_hp_log:  # Ou adicione uma config específica
+                    self.bridge.print_wrinkler_hp()
 
                 # Delay configurável
                 time.sleep(app_config.detect_interval)
@@ -156,9 +191,10 @@ class AutomationRunner:
 
         while not self.stop_event.is_set():
             try:
-                if self.is_running and automation_config.enable_cookie_clicker:
+                if self.is_running:
                     # Clique direto sem consultar bridge
                     self.input_handler.click_cookie()
+                    self.cookies_clicked += 1
                     # Delay configurável
                     time.sleep(app_config.click_interval)
 

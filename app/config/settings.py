@@ -47,13 +47,33 @@ class AutomationConfig:
     enable_wrinkler_popper: bool = False
     wrinkler_pop_delay: float = 15.0
 
+    # Sugar Lump
+    enable_sugar_lump_harvest: bool = False
+    preserve_sugar_lump_type_0: bool = False
+    preserve_sugar_lump_type_1: bool = False
+    preserve_sugar_lump_type_2: bool = True
+    preserve_sugar_lump_type_3: bool = False
+    preserve_sugar_lump_type_4: bool = True
+
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
+
+    enable_wrinkler_hp_log: bool = False # Nova configuração para log de HP dos wrinklers
+
+
+@dataclass
+class BackupConfig:
+    """Configurações de backup de saves."""
+
+    backup_folder: str = "save_backups"
+    max_backups: int = 50
+    auto_backup_enabled: bool = False
 
 
 # Instância global das configurações
 app_config = AppConfig()
 automation_config = AutomationConfig()
+backup_config = BackupConfig()
 
 
 def load_automation_settings() -> None:
@@ -90,6 +110,36 @@ def load_automation_settings() -> None:
         automation_config.wrinkler_pop_delay,
         type=float,
     )
+    automation_config.enable_sugar_lump_harvest = settings.value(
+        "enable_sugar_lump_harvest",
+        automation_config.enable_sugar_lump_harvest,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_0 = settings.value(
+        "preserve_sugar_lump_type_0",
+        automation_config.preserve_sugar_lump_type_0,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_1 = settings.value(
+        "preserve_sugar_lump_type_1",
+        automation_config.preserve_sugar_lump_type_1,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_2 = settings.value(
+        "preserve_sugar_lump_type_2",
+        automation_config.preserve_sugar_lump_type_2,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_3 = settings.value(
+        "preserve_sugar_lump_type_3",
+        automation_config.preserve_sugar_lump_type_3,
+        type=bool,
+    )
+    automation_config.preserve_sugar_lump_type_4 = settings.value(
+        "preserve_sugar_lump_type_4",
+        automation_config.preserve_sugar_lump_type_4,
+        type=bool,
+    )
     settings.endGroup()
 
 
@@ -103,5 +153,44 @@ def save_automation_settings() -> None:
     settings.setValue("enable_reindeer", automation_config.enable_reindeer)
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
     settings.setValue("wrinkler_pop_delay", automation_config.wrinkler_pop_delay)
+    settings.setValue("enable_sugar_lump_harvest", automation_config.enable_sugar_lump_harvest)
+    settings.setValue("preserve_sugar_lump_type_0", automation_config.preserve_sugar_lump_type_0)
+    settings.setValue("preserve_sugar_lump_type_1", automation_config.preserve_sugar_lump_type_1)
+    settings.setValue("preserve_sugar_lump_type_2", automation_config.preserve_sugar_lump_type_2)
+    settings.setValue("preserve_sugar_lump_type_3", automation_config.preserve_sugar_lump_type_3)
+    settings.setValue("preserve_sugar_lump_type_4", automation_config.preserve_sugar_lump_type_4)
+    settings.endGroup()
+    settings.sync()
+
+
+def load_backup_settings() -> None:
+    """Carrega as configurações de backup do QSettings."""
+    settings = QSettings("CookieClickerBot", "CookieClickerBot")
+    settings.beginGroup("Backup")
+    backup_config.backup_folder = settings.value(
+        "backup_folder",
+        backup_config.backup_folder,
+        type=str,
+    )
+    backup_config.max_backups = settings.value(
+        "max_backups",
+        backup_config.max_backups,
+        type=int,
+    )
+    backup_config.auto_backup_enabled = settings.value(
+        "auto_backup_enabled",
+        backup_config.auto_backup_enabled,
+        type=bool,
+    )
+    settings.endGroup()
+
+
+def save_backup_settings() -> None:
+    """Salva as configurações de backup no QSettings."""
+    settings = QSettings("CookieClickerBot", "CookieClickerBot")
+    settings.beginGroup("Backup")
+    settings.setValue("backup_folder", backup_config.backup_folder)
+    settings.setValue("max_backups", backup_config.max_backups)
+    settings.setValue("auto_backup_enabled", backup_config.auto_backup_enabled)
     settings.endGroup()
     settings.sync()

@@ -136,6 +136,57 @@ class CookieClickerBridge:
         """Retorna cookies por segundo."""
         return self.execute_js("Game.cookiesPs")
 
+    def get_sugar_lump_type(self) -> Optional[int]:
+        """Retorna o tipo atual do Sugar Lump."""
+        return self.execute_js("typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : null")
+
+    def get_sugar_lump_status(self) -> Optional[Dict[str, Any]]:
+        """Retorna o estado atual do Sugar Lump."""
+        return self.execute_js("""(() => {
+            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
+            if (!lump) return null;
+            return {
+                type: typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : lump.type,
+                ready: !!lump.ready,
+                progress: lump.progress || lump.value || 0,
+                typeName: lump.typeName || null,
+            };
+        })()""")
+
+    def harvest_sugar_lump(self) -> bool:
+        """Tenta colher o Sugar Lump atual diretamente via JS."""
+        script = """(() => {
+            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
+            if (!lump) return false;
+
+            if (typeof lump.pop === 'function') {
+                lump.pop();
+                return true;
+            }
+
+            if (typeof lump.click === 'function') {
+                lump.click();
+                return true;
+            }
+
+            const lumpElement = document.querySelector('#lumps');
+            if (lumpElement) {
+                lumpElement.click();
+            }
+
+            const button = Array.from(document.querySelectorAll('button')).find(
+                el => /harvest|coletar|yes|sim/i.test(el.innerText)
+            );
+            if (button) {
+                button.click();
+                return true;
+            }
+
+            return false;
+        })()"""
+        result = self.execute_js(script)
+        return bool(result)
+
     def get_golden_cookie(self) -> Optional[Dict]:
         """Retorna o shimmer do golden cookie se existir."""
         return self.execute_js("Game.shimmers.find(s => s.type === 'golden')")
@@ -152,21 +203,43 @@ class CookieClickerBridge:
     def pop_golden_cookie(self) -> bool:
         """Coleta o golden cookie sem mover o mouse."""
         golden = self.get_golden_cookie()
-        if golden:
-            result = self.execute_js("Game.shimmers.find(s => s.type === 'golden').pop()")
-            if result is not None:
-                logger.info("Golden cookie coletado via JS")
-                return True
+        if not golden:
+            return False
+        
+        # Usar um script que verifica se o shimmer foi removido
+        result = self.execute_js("""(() => {
+            const gc = Game.shimmers.find(s => s.type === 'golden');
+            if (!gc) return false;
+            gc.pop();
+            const gcAfter = Game.shimmers.find(s => s.type === 'golden');
+            return !gcAfter;  // True se foi removido
+        })()""")
+        
+        if result:
+            return True
+        
+        logger.info("[FAIL] Golden cookie detectado mas pop() falhou")
         return False
 
     def pop_reindeer(self) -> bool:
         """Coleta a rena sem mover o mouse."""
         reindeer = self.get_reindeer()
-        if reindeer:
-            result = self.execute_js("Game.shimmers.find(s => s.type === 'reindeer').pop()")
-            if result is not None:
-                logger.info("Rena coletada via JS")
-                return True
+        if not reindeer:
+            return False
+        
+        # Usar um script que verifica se o shimmer foi removido
+        result = self.execute_js("""(() => {
+            const rd = Game.shimmers.find(s => s.type === 'reindeer');
+            if (!rd) return false;
+            rd.pop();
+            const rdAfter = Game.shimmers.find(s => s.type === 'reindeer');
+            return !rdAfter;  // True se foi removido
+        })()""")
+        
+        if result:
+            return True
+        
+        # logger.info("[FAIL] Rena detectada mas pop() falhou")
         return False
 
     def get_wrinklers(self) -> Optional[List[Dict[str, Any]]]:
@@ -207,7 +280,6 @@ class CookieClickerBridge:
         if self.has_fortune_cookie():
             result = self.execute_js("Game.tickerL.click()")
             if result is not None:
-                logger.info("Fortune cookie clicada via JS")
                 return True
         return False
 
@@ -223,3 +295,33 @@ class CookieClickerBridge:
             'golden_cookie': self.get_golden_cookie() is not None,
             'fortune_cookie': self.has_fortune_cookie(),
         }
+
+    def print_wrinkler_hp(self) -> None:
+        """Imprime o HP de todos os wrinklers."""
+        wrinklers = self.get_wrinklers()
+        
+        if wrinklers is None:
+            logger.info("Nenhum wrinkler encontrado")
+            return
+        
+        if not wrinklers:
+            logger.info("Nenhum wrinkler ativo")
+            return
+        
+        logger.info("=== HP dos Wrinklers ===")
+        for w in wrinklers:
+            shiny_marker = "✨ [DOURADO]" if w['isShiny'] else ""
+            # hp_bar = f"{w['hp']}/{w['maxHp']}"
+            logger.info(f"Wrinkler #{w['index']}: {w['hp']} {shiny_marker}")
+
+    # def get_game_save(self) -> Optional[str]:
+    #     """Exporta o save atual do jogo."""
+    #     return self.execute_js("Game.export()")
+
+    # def load_game_save(self, save_data: str) -> bool:
+    #     """Carrega um save no jogo."""
+    #     # Escapar aspas na string do save
+    #     escaped_save = save_data.replace('"', '\\"').replace("'", "\\'")
+    #     script = f'Game.importSave("{escaped_save}")'
+    #     result = self.execute_js(script)
+    #     return result is not None
