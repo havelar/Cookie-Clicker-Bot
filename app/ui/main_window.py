@@ -130,11 +130,18 @@ class MainWindow(QMainWindow):
         self.stock_status_label = QLabel("Mercado: carregando")
         self.stock_status_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
         self.stock_status_label.setMinimumWidth(130)
+        self.stock_hourly_label = QLabel("$/h: —")
+        self.stock_hourly_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
+        self.stock_hourly_label.setToolTip("Resultado do Stock Market por hora nesta sessão")
         self.stock_auto_trade_checkbox = QCheckBox("Auto")
-        self.stock_auto_trade_checkbox.setToolTip("Compra e vende automaticamente a cada 5 segundos")
+        self.stock_auto_trade_checkbox.setToolTip(
+            "Executa ordens MAX quando preço e tendência atendem às regras"
+        )
         self.stock_auto_trade_checkbox.setChecked(automation_config.enable_stock_market_auto_trade)
         self.stock_auto_trade_checkbox.stateChanged.connect(self._toggle_stock_auto_trade)
-        toolbar_layout.addWidget(self.stock_status_label); toolbar_layout.addSpacing(10)
+        toolbar_layout.addWidget(self.stock_status_label)
+        toolbar_layout.addWidget(self.stock_hourly_label)
+        toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(QLabel("Comprar < $"))
         self.stock_buy_limit_input = QDoubleSpinBox(); self.stock_buy_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_buy_limit_input.setDecimals(2); self.stock_buy_limit_input.setValue(automation_config.stock_market_buy_price_limit); self.stock_buy_limit_input.valueChanged.connect(self._update_stock_buy_limit)
         self.stock_buy_limit_input.setFixedWidth(86)
@@ -143,6 +150,23 @@ class MainWindow(QMainWindow):
         self.stock_sell_limit_input = QDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
         self.stock_sell_limit_input.setFixedWidth(86)
         toolbar_layout.addWidget(self.stock_sell_limit_input); toolbar_layout.addSpacing(8)
+        toolbar_layout.addWidget(QLabel("Ticks"))
+        self.stock_trend_ticks_input = QSpinBox()
+        self.stock_trend_ticks_input.setRange(2, 180)
+        self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks)
+        self.stock_trend_ticks_input.setToolTip("Janela usada para confirmar a tendência geral")
+        self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
+        self.stock_trend_ticks_input.setFixedWidth(64)
+        toolbar_layout.addWidget(self.stock_trend_ticks_input)
+        toolbar_layout.addWidget(QLabel("Mov. ≥ %"))
+        self.stock_reversal_percent_input = QDoubleSpinBox()
+        self.stock_reversal_percent_input.setRange(0.01, 100.0)
+        self.stock_reversal_percent_input.setDecimals(2)
+        self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent)
+        self.stock_reversal_percent_input.setToolTip("Variação mínima em um tick para confirmar a reversão")
+        self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
+        self.stock_reversal_percent_input.setFixedWidth(64)
+        toolbar_layout.addWidget(self.stock_reversal_percent_input)
         toolbar_layout.addWidget(self.stock_auto_trade_checkbox); toolbar_layout.addStretch()
         self.stock_candidates_label = QLabel()
         self.stock_candidates_label.setStyleSheet("color: #e8b766;")
@@ -192,19 +216,28 @@ class MainWindow(QMainWindow):
             return
         if not automatic:
             logger.info("Stock Market: atualização manual solicitada")
-        self._run_stock_task(self.bridge.get_stock_market_snapshot, self._display_stock_snapshot)
+        operation = self.stock_automation.capture_snapshot if self.stock_automation else self.bridge.get_stock_market_snapshot
+        self._run_stock_task(operation, self._display_stock_snapshot)
 
     def _on_stock_market_timer(self):
         """Atualiza o snapshot a cada 5 segundos e aplica a regra somente se autorizada."""
         if not self.bridge or (self._stock_worker and self._stock_worker.isRunning()):
             return
-        if not self.stock_auto_trade_checkbox.isChecked() or not self.stock_automation:
+        if not self.stock_automation:
             self.refresh_stock_market(automatic=True)
             return
         buy_limit = float(self.stock_buy_limit_input.value())
         sell_limit = float(self.stock_sell_limit_input.value())
+        trend_ticks = int(self.stock_trend_ticks_input.value())
+        reversal_percent = float(self.stock_reversal_percent_input.value())
         self._run_stock_task(
-            lambda: self.stock_automation.run_cycle(buy_limit, sell_limit),
+            lambda: self.stock_automation.run_cycle(
+                buy_limit,
+                sell_limit,
+                trend_ticks,
+                reversal_percent,
+                self.stock_auto_trade_checkbox.isChecked(),
+            ),
             self._display_stock_automation_result,
         )
 
@@ -212,8 +245,8 @@ class MainWindow(QMainWindow):
         automation_config.enable_stock_market_auto_trade = bool(state)
         save_automation_settings()
         status = "ativado" if state else "desativado"
-        logger.info(f"Stock Market: AutoBuy e AutoSell {status}")
-        self._show_stock_feedback(bool(state), f"AutoBuy e AutoSell {status}.")
+        logger.info(f"Stock Market: automação {status}")
+        self._show_stock_feedback(bool(state), f"Automação {status}.")
 
     def _update_stock_buy_limit(self, value: float):
         automation_config.stock_market_buy_price_limit = float(value)
@@ -222,6 +255,14 @@ class MainWindow(QMainWindow):
 
     def _update_stock_sell_limit(self, value: float):
         automation_config.stock_market_sell_price_limit = float(value)
+        save_automation_settings()
+
+    def _update_stock_trend_ticks(self, value: int):
+        automation_config.stock_market_trend_ticks = max(2, int(value))
+        save_automation_settings()
+
+    def _update_stock_reversal_percent(self, value: float):
+        automation_config.stock_market_reversal_percent = max(0.01, float(value))
         save_automation_settings()
 
     def _submit_stock_order(self, side: str):
@@ -287,15 +328,19 @@ class MainWindow(QMainWindow):
         status_text = "Mercado: disponível" if snapshot.status.available else (
             "Mercado: carregando" if snapshot.status.unlocked else "Mercado: indisponível"
         )
-        self.stock_status_label.setText(status_text)
+        self.stock_status_label.setVisible(not snapshot.status.available)
+        self.stock_status_label.setText(status_text if not snapshot.status.available else "")
         self.stock_status_label.setToolTip(snapshot.status.message)
         self.stock_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
         self.stock_table.setRowCount(0)
         if not snapshot.status.available:
+            self.stock_hourly_label.setText("$/h: —")
             self.stock_candidates_label.setText("")
             self._show_stock_feedback(False, snapshot.status.message)
             self._update_stock_actions()
             return
+        rate = self.stock_automation.profit_per_hour(snapshot) if self.stock_automation else None
+        self.stock_hourly_label.setText(self._format_stock_hourly_rate(rate))
         assets_by_price = sorted(snapshot.assets, key=lambda asset: asset.price)
         self.stock_table.setRowCount(len(assets_by_price))
         buy_limit = float(self.stock_buy_limit_input.value())
@@ -317,24 +362,33 @@ class MainWindow(QMainWindow):
         self._update_stock_candidates()
         self._show_stock_feedback(True, f"{len(snapshot.assets)} ativos carregados (preço crescente).")
         self._update_stock_actions()
-        logger.info(f"Stock Market: snapshot carregado com {len(snapshot.assets)} ativos")
+        logger.debug(f"Stock Market: snapshot carregado com {len(snapshot.assets)} ativos")
+
+    @staticmethod
+    def _format_stock_hourly_rate(rate: Optional[float]) -> str:
+        if rate is None:
+            return "$/h: —"
+        return f"$/h: ${rate:+,.2f}"
 
     def _display_stock_automation_result(self, value: object):
         if not isinstance(value, StockMarketAutomationResult):
             self._show_stock_feedback(False, "Resposta inesperada do ciclo automático.")
             logger.error("Stock Market: worker retornou ciclo automático inválido")
             return
-        self._display_stock_snapshot(value.snapshot)
+        if value.tick_changed or self._stock_snapshot is None:
+            self._display_stock_snapshot(value.snapshot)
         if not value.snapshot.status.available:
             return
-        if not value.orders:
-            self._show_stock_feedback(True, "Ciclo automático: nenhuma ordem necessária.")
-            return
-        successful = sum(order.success for order in value.orders)
-        self._show_stock_feedback(
-            successful == len(value.orders),
-            f"Ciclo automático: {successful}/{len(value.orders)} ordens executadas.",
-        )
+        if value.tick_changed:
+            entries = sum(signal.is_entry_candidate for signal in value.signals)
+            exits = sum(signal.is_exit_candidate for signal in value.signals)
+            self.stock_candidates_label.setText(f"{entries} compras | {exits} vendas")
+        if value.orders:
+            successful = sum(order.success for order in value.orders)
+            self._show_stock_feedback(
+                successful == len(value.orders),
+                f"Automação: {successful}/{len(value.orders)} ordens MAX executadas.",
+            )
 
     def _update_stock_candidates(self):
         if not self._stock_snapshot or not self._stock_snapshot.status.available:
