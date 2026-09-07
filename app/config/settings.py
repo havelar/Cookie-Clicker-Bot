@@ -61,6 +61,11 @@ class AutomationConfig:
 
     enable_wrinkler_hp_log: bool = False # Nova configuração para log de HP dos wrinklers
 
+    # Stock Market
+    enable_stock_market_auto_trade: bool = False
+    stock_market_buy_price_limit: float = 20.0
+    stock_market_sell_price_limit: float = 80.0
+
 
 @dataclass
 class BackupConfig:
@@ -160,6 +165,21 @@ def load_automation_settings() -> None:
         automation_config.preserve_sugar_lump_type_4,
         type=bool,
     )
+    automation_config.enable_stock_market_auto_trade = settings.value(
+        "enable_stock_market_auto_trade",
+        automation_config.enable_stock_market_auto_trade,
+        type=bool,
+    )
+    automation_config.stock_market_buy_price_limit = settings.value(
+        "stock_market_buy_price_limit",
+        automation_config.stock_market_buy_price_limit,
+        type=float,
+    )
+    automation_config.stock_market_sell_price_limit = settings.value(
+        "stock_market_sell_price_limit",
+        automation_config.stock_market_sell_price_limit,
+        type=float,
+    )
     settings.endGroup()
 
 
@@ -179,6 +199,9 @@ def save_automation_settings() -> None:
     settings.setValue("preserve_sugar_lump_type_2", automation_config.preserve_sugar_lump_type_2)
     settings.setValue("preserve_sugar_lump_type_3", automation_config.preserve_sugar_lump_type_3)
     settings.setValue("preserve_sugar_lump_type_4", automation_config.preserve_sugar_lump_type_4)
+    settings.setValue("enable_stock_market_auto_trade", automation_config.enable_stock_market_auto_trade)
+    settings.setValue("stock_market_buy_price_limit", automation_config.stock_market_buy_price_limit)
+    settings.setValue("stock_market_sell_price_limit", automation_config.stock_market_sell_price_limit)
     settings.endGroup()
     settings.sync()
 
