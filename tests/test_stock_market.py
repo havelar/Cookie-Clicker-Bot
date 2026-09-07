@@ -1,5 +1,7 @@
 """Testes da integração manual com o Stock Market."""
 import os
+from pathlib import Path
+import tempfile
 import threading
 import unittest
 
@@ -9,7 +11,8 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
 from app.bridge.js_bridge import CookieClickerBridge
-from app.core.stock_market import StockMarketAutomation
+from app.core.stock_market import StockMarketAutomation, StockMarketPerformanceTracker
+from app.core.market_history import MarketHistoryStore
 from app.models.stock_market import (
     StockAsset,
     StockMarketAutomationResult,
@@ -201,24 +204,35 @@ class StockMarketUiTests(unittest.TestCase):
 
 
 class StockMarketAutomationTests(unittest.TestCase):
-    def test_cycle_buys_low_unowned_assets_and_sells_high_owned_assets(self):
+    def test_cycle_buys_low_falling_and_sells_high_rising_with_max_orders(self):
         status = StockMarketStatus(True, True, "disponível")
         before = StockMarketSnapshot(
             status=status,
+            tick=100,
+            broker_overhead=1.01,
             assets=(
-                StockAsset(0, "Low", "LOW", 12.0, 0, 10),
-                StockAsset(1, "Held", "HLD", 95.0, 4, 10),
-                StockAsset(2, "Ignored", "IGN", 30.0, 0, 10),
+                StockAsset(0, "Low", "LOW", 14.625, 0, 10,
+                           price_history=(14.625, 12.5, 13.0, 14.0, 15.0, 16.0)),
+                StockAsset(1, "Held", "HLD", 88.0, 4, 10, last_bought_price=80.0,
+                           price_history=(88.0, 94.0, 93.0, 92.0, 90.0, 88.0)),
+                StockAsset(2, "Ignored", "IGN", 30.0, 0, 10,
+                           price_history=(30.0, 29.0, 28.0, 27.0, 26.0, 25.0)),
             ),
         )
-        after = StockMarketSnapshot(status=status, assets=before.assets)
+        after = StockMarketSnapshot(status=status, tick=100, assets=before.assets)
         bridge = AutomationBridge([before, after])
-
-        result = StockMarketAutomation(bridge).run_cycle(20.0, 80.0)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = MarketHistoryStore(Path(temporary_directory) / "history.json")
+            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5)
 
         self.assertIsInstance(result, StockMarketAutomationResult)
-        self.assertEqual(bridge.calls, [("buy", 0), ("sell", 1)])
+        self.assertEqual(bridge.calls, [("sell", 1), ("buy", 0)])
         self.assertEqual(len(result.orders), 2)
+        self.assertEqual(result.signals[0].trend_direction, "falling")
+        self.assertEqual(result.signals[0].current_move, "rising")
+        self.assertAlmostEqual(result.signals[0].current_move_percent, 17.0)
+        self.assertEqual(result.signals[1].trend_direction, "rising")
+        self.assertEqual(result.signals[1].current_move, "falling")
 
     def test_cycle_does_not_trade_when_market_is_unavailable(self):
         snapshot = StockMarketSnapshot(StockMarketStatus(False, False, "indisponível"))
@@ -228,6 +242,104 @@ class StockMarketAutomationTests(unittest.TestCase):
 
         self.assertEqual(bridge.calls, [])
         self.assertEqual(result.orders, ())
+
+    def test_cycle_requires_the_configured_number_of_history_points(self):
+        status = StockMarketStatus(True, True, "disponível")
+        snapshot = StockMarketSnapshot(
+            status=status, tick=100,
+            assets=(StockAsset(0, "Low", "LOW", 12.5, 0, 10, price_history=(12.5, 12.0)),),
+        )
+        bridge = AutomationBridge([snapshot])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = MarketHistoryStore(Path(temporary_directory) / "history.json")
+            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5)
+
+        self.assertFalse(result.signals[0].is_entry_candidate)
+        self.assertEqual(result.signals[0].trend_direction, "insufficient")
+        self.assertEqual(result.signals[0].trend_ticks, 1)
+        self.assertEqual(bridge.calls, [])
+
+    def test_cycle_waits_while_low_keeps_falling_and_high_keeps_rising(self):
+        status = StockMarketStatus(True, True, "disponível")
+        snapshot = StockMarketSnapshot(
+            status=status, tick=100, broker_overhead=1.0,
+            assets=(
+                StockAsset(0, "Low", "LOW", 11.0, 0, 10,
+                           price_history=(11.0, 12.0, 14.0, 15.0, 16.0, 18.0, 20.0)),
+                StockAsset(1, "Held", "HLD", 96.0, 3, 10, last_bought_price=70.0,
+                           price_history=(96.0, 95.0, 93.0, 92.0, 90.0, 88.0, 86.0)),
+            ),
+        )
+        bridge = AutomationBridge([snapshot])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = StockMarketAutomation(
+                bridge, MarketHistoryStore(Path(temporary_directory) / "history.json")
+            ).run_cycle(20.0, 80.0, 5)
+
+        self.assertFalse(result.signals[0].is_entry_candidate)
+        self.assertEqual(result.signals[0].decision_reason, "aguardando alta de pelo menos 5.00% antes de comprar")
+        self.assertFalse(result.signals[1].is_exit_candidate)
+        self.assertEqual(result.signals[1].decision_reason, "aguardando queda de pelo menos 5.00% antes de vender")
+        self.assertEqual(bridge.calls, [])
+
+    def test_cycle_never_sells_below_purchase_cost_including_overhead(self):
+        status = StockMarketStatus(True, True, "disponível")
+        snapshot = StockMarketSnapshot(
+            status=status, tick=100, broker_overhead=1.02,
+            assets=(StockAsset(1, "Held", "HLD", 81.0, 3, 10, last_bought_price=80.0,
+                               price_history=(81.0, 86.0, 83.0, 81.0, 80.5, 80.0)),),
+        )
+        bridge = AutomationBridge([snapshot])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = StockMarketAutomation(
+                bridge, MarketHistoryStore(Path(temporary_directory) / "history.json")
+            ).run_cycle(20.0, 80.0, 5)
+
+        held_signal = result.signals[0]
+        self.assertFalse(held_signal.is_exit_candidate)
+        self.assertAlmostEqual(held_signal.exit_target, 81.6)
+        self.assertEqual(held_signal.decision_reason, "venda bloqueada abaixo do custo pago")
+        self.assertEqual(bridge.calls, [])
+
+
+class StockMarketPerformanceTests(unittest.TestCase):
+    def test_profit_per_hour_uses_initial_and_current_market_value(self):
+        status = StockMarketStatus(True, True, "disponível")
+        initial = StockMarketSnapshot(
+            status=status, profit=10.0,
+            assets=(StockAsset(0, "Low", "LOW", 2.0, 5, 10),),
+        )
+        current = StockMarketSnapshot(
+            status=status, profit=16.0,
+            assets=(StockAsset(0, "Low", "LOW", 3.0, 5, 10),),
+        )
+        tracker = StockMarketPerformanceTracker()
+
+        self.assertEqual(tracker.observe(initial, now=100.0), 0.0)
+        self.assertEqual(tracker.observe(current, now=460.0), 110.0)
+
+
+class MarketHistoryStoreTests(unittest.TestCase):
+    def test_history_is_compact_persistent_and_deduplicated_per_session(self):
+        snapshot = StockMarketSnapshot(
+            status=StockMarketStatus(True, True, "disponível"),
+            tick=10,
+            seconds_per_tick=60.0,
+            game_seed="save-1",
+            assets=(StockAsset(3, "Sugar", "SUG", 20.0, 0, 10, price_history=(20.0, 18.0)),),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            history_path = Path(temporary_directory) / "market_history.json"
+            store = MarketHistoryStore(history_path)
+
+            self.assertEqual(store.record_snapshot(snapshot), 2)
+            self.assertEqual(store.record_snapshot(snapshot), 0)
+            self.assertTrue(history_path.exists())
+            self.assertEqual(store.prices_for(3), (20.0, 18.0))
+
+            restored = MarketHistoryStore(history_path)
+            self.assertEqual(restored.prices_for(3), (20.0, 18.0))
+            self.assertEqual(restored.record_snapshot(snapshot), 0)
 
 
 if __name__ == "__main__":

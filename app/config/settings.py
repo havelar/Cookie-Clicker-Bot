@@ -59,12 +59,12 @@ class AutomationConfig:
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
 
-    enable_wrinkler_hp_log: bool = False # Nova configuração para log de HP dos wrinklers
-
     # Stock Market
     enable_stock_market_auto_trade: bool = False
     stock_market_buy_price_limit: float = 20.0
     stock_market_sell_price_limit: float = 80.0
+    stock_market_trend_ticks: int = 5
+    stock_market_reversal_percent: float = 5.0
 
 
 @dataclass
@@ -180,6 +180,16 @@ def load_automation_settings() -> None:
         automation_config.stock_market_sell_price_limit,
         type=float,
     )
+    automation_config.stock_market_trend_ticks = max(2, settings.value(
+        "stock_market_trend_ticks",
+        automation_config.stock_market_trend_ticks,
+        type=int,
+    ))
+    automation_config.stock_market_reversal_percent = max(0.01, settings.value(
+        "stock_market_reversal_percent",
+        automation_config.stock_market_reversal_percent,
+        type=float,
+    ))
     settings.endGroup()
 
 
@@ -202,6 +212,8 @@ def save_automation_settings() -> None:
     settings.setValue("enable_stock_market_auto_trade", automation_config.enable_stock_market_auto_trade)
     settings.setValue("stock_market_buy_price_limit", automation_config.stock_market_buy_price_limit)
     settings.setValue("stock_market_sell_price_limit", automation_config.stock_market_sell_price_limit)
+    settings.setValue("stock_market_trend_ticks", automation_config.stock_market_trend_ticks)
+    settings.setValue("stock_market_reversal_percent", automation_config.stock_market_reversal_percent)
     settings.endGroup()
     settings.sync()
 
