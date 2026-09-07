@@ -83,6 +83,9 @@ class StockMarketBridgeTests(unittest.TestCase):
         bridge = StubBridge([{
             "status": {"available": True, "unlocked": True, "message": "disponível"},
             "cookies": 1000.0,
+            "tick": 42,
+            "tickProgress": 15,
+            "secondsPerTick": 60.0,
             "highestRawCps": 10.0,
             "tradingFunds": 100.0,
             "brokers": 3,
@@ -90,7 +93,8 @@ class StockMarketBridgeTests(unittest.TestCase):
             "profit": 5.5,
             "assets": [{
                 "id": 2, "name": "Salt", "symbol": "SLT", "price": 12.5,
-                "priceChangePercent": -2.75, "owned": 4, "capacity": 20,
+                "priceChangePercent": -2.75, "lastBoughtPrice": 14.0,
+                "priceHistory": [12.5, 12.9, 13.1], "owned": 4, "capacity": 20,
             }],
         }])
 
@@ -98,7 +102,8 @@ class StockMarketBridgeTests(unittest.TestCase):
 
         self.assertTrue(snapshot.status.available)
         self.assertEqual(snapshot.trading_funds, 100.0)
-        self.assertEqual(snapshot.assets, (StockAsset(2, "Salt", "SLT", 12.5, 4, 20, -2.75),))
+        self.assertEqual(snapshot.tick, 42)
+        self.assertEqual(snapshot.assets, (StockAsset(2, "Salt", "SLT", 12.5, 4, 20, -2.75, 14.0, (12.5, 12.9, 13.1)),))
 
     def test_invalid_snapshot_payload_is_safe(self):
         bridge = StubBridge([{"status": {"available": True, "unlocked": True}, "assets": "invalid"}])

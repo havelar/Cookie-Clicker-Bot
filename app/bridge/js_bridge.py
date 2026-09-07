@@ -189,6 +189,10 @@ class CookieClickerBridge:
                 brokers: brokers,
                 brokerOverhead: finiteOrNull(overhead),
                 profit: finiteOrNull(M.profit),
+                tick: Math.max(0, Math.trunc(Number(M.ticks) || 0)),
+                tickProgress: Math.max(0, Math.trunc(Number(M.tickT) || 0)),
+                secondsPerTick: finiteOrNull(M.secondsPerTick),
+                gameSeed: typeof Game.seed === 'string' ? Game.seed : null,
                 assets: M.goodsById.map(good => ({
                     id: Number(good.id),
                     name: typeof good.name === 'string' ? good.name : `Ativo ${good.id}`,
@@ -196,6 +200,10 @@ class CookieClickerBridge:
                     price: finiteOrNull(M.getGoodPrice(good)),
                     priceChangePercent: typeof M.goodDelta === 'function'
                         ? finiteOrNull(M.goodDelta(Number(good.id))) : null,
+                    lastBoughtPrice: finiteOrNull(good.prev),
+                    priceHistory: Array.isArray(good.vals)
+                        ? good.vals.slice(0, 180).map(finiteOrNull).filter(value => value !== null)
+                        : [],
                     owned: Math.max(0, Math.trunc(Number(good.stock) || 0)),
                     capacity: finiteOrNull(M.getGoodMaxStock(good))
                 }))
@@ -285,7 +293,7 @@ class CookieClickerBridge:
             total_value=self._optional_float(payload.get("total")),
             is_maximum_order=is_maximum_order,
         )
-        log = logger.info if result.success else logger.warning
+        log = logger.debug if result.success else logger.warning
         log(f"Stock Market: {result.message} (lado={side}, ativo={asset_id}, quantidade={quantity}, executada={result.executed_quantity})")
         return result
 
@@ -336,6 +344,8 @@ class CookieClickerBridge:
                     owned=max(0, self._safe_int(raw.get("owned"))),
                     capacity=self._optional_int(raw.get("capacity")),
                     price_change_percent=self._optional_float(raw.get("priceChangePercent")),
+                    last_bought_price=self._optional_float(raw.get("lastBoughtPrice")),
+                    price_history=self._parse_price_history(raw.get("priceHistory")),
                 ))
         except (TypeError, ValueError) as error:
             logger.error(f"Stock Market: ativo inválido na resposta: {error}")
@@ -348,6 +358,10 @@ class CookieClickerBridge:
             brokers=self._optional_int(payload.get("brokers")),
             broker_overhead=self._optional_float(payload.get("brokerOverhead")),
             profit=self._optional_float(payload.get("profit")),
+            tick=self._optional_int(payload.get("tick")),
+            tick_progress=self._optional_int(payload.get("tickProgress")),
+            seconds_per_tick=self._optional_float(payload.get("secondsPerTick")),
+            game_seed=str(payload["gameSeed"]) if payload.get("gameSeed") else None,
             assets=tuple(assets),
         )
 
@@ -375,6 +389,15 @@ class CookieClickerBridge:
             return parsed if parsed == parsed and abs(parsed) != float("inf") else None
         except (TypeError, ValueError, OverflowError):
             return None
+
+    @staticmethod
+    def _parse_price_history(value: Any) -> tuple[float, ...]:
+        if not isinstance(value, list):
+            return tuple()
+        return tuple(
+            parsed for item in value
+            if (parsed := CookieClickerBridge._optional_float(item)) is not None and parsed >= 0
+        )
 
     def get_cookie_position(self) -> Optional[Dict[str, int]]:
         """Retorna a posição do cookie principal."""
@@ -569,24 +592,6 @@ class CookieClickerBridge:
             'golden_cookie': self.get_golden_cookie() is not None,
             'fortune_cookie': self.has_fortune_cookie(),
         }
-
-    def print_wrinkler_hp(self) -> None:
-        """Imprime o HP de todos os wrinklers."""
-        wrinklers = self.get_wrinklers()
-        
-        if wrinklers is None:
-            logger.info("Nenhum wrinkler encontrado")
-            return
-        
-        if not wrinklers:
-            logger.info("Nenhum wrinkler ativo")
-            return
-        
-        logger.info("=== HP dos Wrinklers ===")
-        for w in wrinklers:
-            shiny_marker = "✨ [DOURADO]" if w['isShiny'] else ""
-            # hp_bar = f"{w['hp']}/{w['maxHp']}"
-            logger.info(f"Wrinkler #{w['index']}: {w['hp']} {shiny_marker}")
 
     # def get_game_save(self) -> Optional[str]:
     #     """Exporta o save atual do jogo."""

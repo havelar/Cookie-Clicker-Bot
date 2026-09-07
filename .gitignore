@@ -30,6 +30,7 @@ save.txt
 # Logs
 *.log
 logs/
+data/stock_market_history.json
 
 # IDE
 .vscode/
