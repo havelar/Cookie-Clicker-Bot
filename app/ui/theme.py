@@ -48,17 +48,19 @@ QCheckBox { spacing: 8px; padding: 6px 0; }
 QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid #526074; border-radius: 4px; background: #181c23; }
 QCheckBox::indicator:checked { background: #3d86e8; border-color: #68a4f4; }
 QCheckBox::indicator:disabled { border-color: #303744; background: #232831; }
-QDoubleSpinBox, QLineEdit, QTextEdit, QListWidget {
+QDoubleSpinBox, QSpinBox, QLineEdit, QTextEdit, QListWidget, QTableWidget {
     background: #171b21;
     border: 1px solid #37404e;
     border-radius: 6px;
     padding: 7px;
     selection-background-color: #3d86e8;
 }
-QDoubleSpinBox:focus, QLineEdit:focus, QTextEdit:focus, QListWidget:focus { border-color: #5799ef; }
+QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus, QTextEdit:focus, QListWidget:focus, QTableWidget:focus { border-color: #5799ef; }
 QTextEdit { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 11px; }
 QListWidget::item { padding: 7px; border-radius: 4px; }
 QListWidget::item:selected { background: #2d5f9f; }
+QHeaderView::section { background: #252b35; border: none; border-right: 1px solid #37404e; padding: 6px; font-weight: 600; }
+QTableWidget { gridline-color: #303744; selection-background-color: #2d5f9f; }
 QTabWidget::pane { border: 1px solid #303744; border-radius: 8px; top: -1px; background: #1a1e25; }
 QTabBar::tab { background: #20252e; border: 1px solid #303744; border-bottom: none; padding: 9px 16px; margin-right: 3px; border-top-left-radius: 7px; border-top-right-radius: 7px; color: #aeb8c9; }
 QTabBar::tab:selected { background: #1a1e25; color: #f0f5ff; border-color: #4c627f; }
