@@ -146,11 +146,9 @@ class AutomationRunner:
                             self.wrinkler_seen_at[index] = current_time
                             continue
 
-                        elapsed = current_time - self.wrinkler_seen_at[index]
-                        if elapsed >= automation_config.wrinkler_pop_delay:
+                        if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
                             if self.bridge.pop_wrinkler_by_index(index):
                                 self.wrinklers_popped += 1
-                                logger.info(f"Wrinkler normal na posição {index} popado após {elapsed:.2f}s")
                             self.wrinkler_seen_at.pop(index, None)
 
                 # Verificar Sugar Lump
@@ -173,10 +171,6 @@ class AutomationRunner:
                                 logger.info(
                                     f"Sugar Lump tipo {lump_type} coletado (ready={lump_ready})"
                                 )
-
-                # Printar HP dos wrinklers a cada verificação
-                if automation_config.enable_wrinkler_hp_log:  # Ou adicione uma config específica
-                    self.bridge.print_wrinkler_hp()
 
                 # Delay configurável
                 time.sleep(app_config.detect_interval)
