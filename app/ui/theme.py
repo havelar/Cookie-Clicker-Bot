@@ -120,8 +120,11 @@ def set_windows_app_id() -> None:
         return
 
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "havelar.CookieClickerBot"
-        )
-    except (AttributeError, OSError):
+        # Declare the Unicode argument explicitly so Windows does not fall
+        # back to the pythonw.exe icon for the taskbar entry.
+        set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        set_app_id.argtypes = [ctypes.c_wchar_p]
+        set_app_id.restype = ctypes.c_long
+        set_app_id(ctypes.c_wchar_p("havelar.CookieClickerBot"))
+    except (AttributeError, OSError, TypeError):
         pass
