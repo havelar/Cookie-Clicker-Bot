@@ -2,10 +2,10 @@
 import sys
 from pathlib import Path
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QGridLayout, QTabWidget)
+from PyQt5.QtGui import QIcon, QTextCursor
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QTabWidget)
 
-from app.config.settings import automation_config, save_automation_settings
+from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
 from app.ui.backup_dialog import BackupDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
@@ -86,6 +86,9 @@ class MainWindow(QMainWindow):
 
     def _activity_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14); group = QGroupBox("Registro de atividades"); group_layout = QVBoxLayout(group)
+        log_options = QHBoxLayout(); log_options.addWidget(QLabel("Máximo de linhas")); log_options.addStretch()
+        self.log_limit_input = QSpinBox(); self.log_limit_input.setRange(1, 100000); self.log_limit_input.setValue(app_config.max_log_lines); self.log_limit_input.setToolTip("Limita apenas o histórico exibido nesta janela")
+        self.log_limit_input.valueChanged.connect(self.update_log_limit); log_options.addWidget(self.log_limit_input); group_layout.addLayout(log_options)
         self.log_text = QTextEdit(); self.log_text.setReadOnly(True); self.log_text.setMinimumHeight(230); group_layout.addWidget(self.log_text); layout.addWidget(group); return tab
 
     def _save(self, field, state): setattr(automation_config, field, bool(state)); save_automation_settings()
@@ -103,6 +106,8 @@ class MainWindow(QMainWindow):
     def set_sugar_lump_preserve_enabled(self, enabled):
         for checkbox in self._preserve_checkboxes: checkbox.setEnabled(enabled)
     def update_wrinkler_delay(self, value): automation_config.wrinkler_pop_delay = value; save_automation_settings()
+    def update_log_limit(self, value):
+        app_config.max_log_lines = max(1, int(value)); save_app_settings(); self._trim_logs()
 
     def toggle_clicker(self):
         if not self.runner: logger.warning("Runner não está disponível"); return
@@ -113,7 +118,17 @@ class MainWindow(QMainWindow):
     def update_bridge_status(self, connected):
         self.bridge_status.setText("Bridge: Conectado" if connected else "Bridge: Desconectado"); self.bridge_status.setStyleSheet(f"color: {'#65d6a5' if connected else '#f07883'}; font-weight: 600;")
     def add_log(self, message):
-        self.log_text.append(message); cursor = self.log_text.textCursor(); cursor.movePosition(cursor.End); self.log_text.setTextCursor(cursor)
+        self.log_text.append(message); self._trim_logs()
+        cursor = self.log_text.textCursor(); cursor.movePosition(cursor.End); self.log_text.setTextCursor(cursor)
+
+    def _trim_logs(self):
+        """Remove as linhas mais antigas para manter o histórico sob controle."""
+        document = self.log_text.document()
+        while document.blockCount() > app_config.max_log_lines:
+            cursor = QTextCursor(document); cursor.movePosition(QTextCursor.Start)
+            cursor.select(QTextCursor.BlockUnderCursor); cursor.removeSelectedText()
+            if not cursor.atEnd():
+                cursor.deleteChar()
     def refresh_stats(self):
         if not self.runner: return
         self.cookies_clicked_label.setText(f"Cookies clicados\n{self.runner.cookies_clicked}"); self.golden_clicked_label.setText(f"Golden Cookies\n{self.runner.golden_cookies_clicked}"); self.reindeer_popped_label.setText(f"Renas coletadas\n{self.runner.reindeer_popped}"); self.wrinklers_popped_label.setText(f"Wrinklers coletados\n{self.runner.wrinklers_popped}")

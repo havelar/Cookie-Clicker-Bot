@@ -134,6 +134,8 @@ O sistema de logging registra todas as operações:
 - **Arquivo**: Logs persistentes em `logs/bot.log`
 - **Interface**: Logs visíveis na UI em tempo real
 
+O histórico exibido na interface é limitado a 500 linhas por padrão. Esse limite pode ser alterado no controle “Máximo de linhas” da aba “Atividade” e fica salvo entre execuções.
+
 Níveis de log:
 - `INFO`: Operações normais
 - `WARNING`: Avisos não críticos

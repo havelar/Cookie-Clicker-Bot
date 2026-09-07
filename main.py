@@ -10,7 +10,9 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication
 
 from app.bridge.js_bridge import CookieClickerBridge
-from app.config.settings import load_automation_settings, save_automation_settings, load_backup_settings
+from app.config.settings import (load_app_settings, save_app_settings,
+                                 load_automation_settings, save_automation_settings,
+                                 load_backup_settings)
 from app.core.run import AutomationRunner
 from app.core.window_finder import find_cookie_window
 from app.ui.main_window import create_ui_app
@@ -35,6 +37,7 @@ class Application:
             True se inicializou com sucesso, False caso contrário
         """
         logger.info("Inicializando Cookie Clicker Bot...")
+        load_app_settings()
         load_automation_settings()
         load_backup_settings()
 
@@ -109,6 +112,7 @@ class Application:
     def shutdown(self, signum=None, frame=None):
         """Encerra a aplicação de forma graceful."""
         logger.info("Encerrando aplicação...")
+        save_app_settings()
         save_automation_settings()
 
         if self.runner:

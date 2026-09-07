@@ -16,6 +16,7 @@ class AppConfig:
     log_level: str = "INFO"
     log_to_file: bool = True
     log_file_path: str = "logs/cookie_clicker_bot.log"
+    max_log_lines: int = 500
 
     # Remote debugging
     remote_debugging_host: str = "localhost"
@@ -74,6 +75,25 @@ class BackupConfig:
 app_config = AppConfig()
 automation_config = AutomationConfig()
 backup_config = BackupConfig()
+
+
+def load_app_settings() -> None:
+    """Carrega as configurações gerais da aplicação do QSettings."""
+    settings = QSettings("CookieClickerBot", "CookieClickerBot")
+    settings.beginGroup("Application")
+    app_config.max_log_lines = max(1, settings.value(
+        "max_log_lines", app_config.max_log_lines, type=int
+    ))
+    settings.endGroup()
+
+
+def save_app_settings() -> None:
+    """Salva as configurações gerais da aplicação no QSettings."""
+    settings = QSettings("CookieClickerBot", "CookieClickerBot")
+    settings.beginGroup("Application")
+    settings.setValue("max_log_lines", max(1, app_config.max_log_lines))
+    settings.endGroup()
+    settings.sync()
 
 
 def load_automation_settings() -> None:
