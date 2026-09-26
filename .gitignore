@@ -23,6 +23,8 @@ MANIFEST
 
 save.txt
 
+save_backups
+
 # PyInstaller
 *.manifest
 *.spec
