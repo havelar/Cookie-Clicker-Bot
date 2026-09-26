@@ -88,4 +88,6 @@ class StockMarketSignal:
     current_move: str = "flat"
     current_move_percent: Optional[float] = None
     purchase_price: Optional[float] = None
+    peak_price: Optional[float] = None
+    peak_drawdown_percent: Optional[float] = None
     decision_reason: Optional[str] = None

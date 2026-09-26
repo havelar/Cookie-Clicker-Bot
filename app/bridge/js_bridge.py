@@ -365,6 +365,27 @@ class CookieClickerBridge:
             assets=tuple(assets),
         )
 
+    def set_stock_market_owned_only_view(self, enabled: bool) -> bool:
+        """Controla os olhos nativos para exibir apenas ativos com estoque."""
+        script = """(() => {
+            const bank = globalThis.Game && Game.Objects && Game.Objects['Bank'];
+            const M = bank && bank.minigame;
+            if (!bank || !bank.minigameLoaded || !M || !Array.isArray(M.goodsById)) return false;
+            if (typeof M.updateGoodStyle !== 'function') return false;
+            const ownedOnly = %s;
+            for (const good of M.goodsById) {
+                if (!good) continue;
+                good.hidden = ownedOnly ? Number(good.stock || 0) <= 0 : false;
+                M.updateGoodStyle(good.id);
+            }
+            return true;
+        })()""" % str(bool(enabled)).lower()
+        result = self.execute_js(script)
+        if result is not True:
+            logger.warning("Stock Market: não foi possível atualizar a visualização dos ativos")
+            return False
+        return True
+
     @staticmethod
     def _safe_int(value: Any, default: int = -1) -> int:
         if isinstance(value, bool) or not isinstance(value, (int, float)):

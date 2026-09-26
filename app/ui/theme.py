@@ -65,6 +65,8 @@ QTabWidget::pane { border: 1px solid #303744; border-radius: 8px; top: -1px; bac
 QTabBar::tab { background: #20252e; border: 1px solid #303744; border-bottom: none; padding: 9px 16px; margin-right: 3px; border-top-left-radius: 7px; border-top-right-radius: 7px; color: #aeb8c9; }
 QTabBar::tab:selected { background: #1a1e25; color: #f0f5ff; border-color: #4c627f; }
 QStatusBar { background: #121419; color: #98a4b8; }
+QToolTip { background: #252b35; color: #f4f7fc; border: 1px solid #526074; border-radius: 5px; padding: 5px 7px; }
+#sessionSummary { background: #1b2028; border: 1px solid #303744; border-radius: 7px; }
 QLabel#metricCard {
     background: #202733;
     border: 1px solid #364355;

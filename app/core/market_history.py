@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 from uuid import uuid4
 
 from app.models.stock_market import StockMarketSnapshot
@@ -14,7 +14,7 @@ from app.utils.logger import logger
 class MarketHistoryStore:
     """Mantém uma janela persistente de preços sem gravar durante cada polling."""
 
-    VERSION = 1
+    VERSION = 3
     MAX_POINTS_PER_ASSET = 10_080  # aproximadamente sete dias de ticks de um minuto
 
     def __init__(self, path: Path | str = Path("data") / "stock_market_history.json"):
@@ -24,6 +24,47 @@ class MarketHistoryStore:
         self._session_id = uuid4().hex
         self._assets: Dict[str, Dict[str, object]] = {}
         self._known_points: set[tuple[str, str, int]] = set()
+        self._position_peaks: Dict[str, Dict[str, float]] = {}
+
+    def observe_position_peak(self, asset, activation_price: float) -> Optional[float]:
+        """Registra o pico somente após a posição entrar no modo de venda."""
+        with self._lock:
+            self._load()
+            asset_id = str(asset.asset_id)
+            purchase_price = asset.last_bought_price
+            if asset.owned <= 0 or purchase_price is None or purchase_price <= 0:
+                self.clear_position_peak(asset.asset_id)
+                return None
+
+            current_price = float(asset.price)
+            position = self._position_peaks.get(asset_id)
+            if (
+                position is None
+                or position.get("purchase_price") != float(purchase_price)
+            ):
+                if current_price < activation_price:
+                    if self._position_peaks.pop(asset_id, None) is not None:
+                        self._save()
+                    return None
+                self._position_peaks[asset_id] = {
+                    "purchase_price": float(purchase_price),
+                    "peak_price": current_price,
+                }
+                self._save()
+                return current_price
+
+            peak_price = max(float(position["peak_price"]), current_price)
+            if peak_price != position["peak_price"]:
+                position["peak_price"] = peak_price
+                self._save()
+            return peak_price
+
+    def clear_position_peak(self, asset_id: int) -> None:
+        """Remove o pico após a venda para a próxima posição começar limpa."""
+        with self._lock:
+            self._load()
+            if self._position_peaks.pop(str(asset_id), None) is not None:
+                self._save()
 
     def record_snapshot(self, snapshot: StockMarketSnapshot) -> int:
         """Armazena pontos inéditos do tick atual e do histórico nativo disponível."""
@@ -88,7 +129,8 @@ class MarketHistoryStore:
         try:
             with self.path.open("r", encoding="utf-8") as history_file:
                 payload = json.load(history_file)
-            if not isinstance(payload, dict) or payload.get("version") != self.VERSION:
+            version = payload.get("version") if isinstance(payload, dict) else None
+            if version not in (1, 2, self.VERSION):
                 raise ValueError("versão ou estrutura inválida")
             assets = payload.get("assets")
             if not isinstance(assets, dict):
@@ -105,6 +147,22 @@ class MarketHistoryStore:
                 self._known_points.update(
                     (asset_id, point[1], point[2]) for point in self._assets[asset_id]["points"]
                 )
+            raw_peaks = payload.get("position_peaks", {})
+            # Picos v2 foram criados antes da regra de ativação em $80; não
+            # são reaproveitados para evitar uma venda baseada no cap antigo.
+            if version == self.VERSION and isinstance(raw_peaks, dict):
+                for asset_id, position in raw_peaks.items():
+                    if not isinstance(asset_id, str) or not isinstance(position, dict):
+                        continue
+                    purchase_price, peak_price = position.get("purchase_price"), position.get("peak_price")
+                    if (
+                        isinstance(purchase_price, (int, float)) and purchase_price > 0
+                        and isinstance(peak_price, (int, float)) and peak_price > 0
+                    ):
+                        self._position_peaks[asset_id] = {
+                            "purchase_price": float(purchase_price),
+                            "peak_price": float(peak_price),
+                        }
             logger.info(f"Stock Market histórico: {self.point_count()} pontos restaurados")
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
             logger.warning(f"Stock Market histórico: arquivo ignorado ({error})")
@@ -115,6 +173,7 @@ class MarketHistoryStore:
             "version": self.VERSION,
             "updated_at": round(time.time(), 3),
             "assets": self._assets,
+            "position_peaks": self._position_peaks,
         }
         temporary_path = self.path.with_suffix(".tmp")
         try:

@@ -59,6 +59,10 @@ class AutomationBridge:
         self.calls.append(("sell", asset_id))
         return StockTradeResult(True, "sell", asset_id, 10_000, 3, "Venda máxima executada", is_maximum_order=True)
 
+    def set_stock_market_owned_only_view(self, enabled):
+        self.calls.append(("view", enabled))
+        return True
+
 
 class StockMarketBridgeTests(unittest.TestCase):
     def test_undefined_javascript_result_is_not_a_cdp_error(self):
@@ -178,6 +182,13 @@ class StockMarketBridgeTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("resposta inválida", result.message)
 
+    def test_owned_only_view_uses_the_game_visibility_state(self):
+        bridge = StubBridge([True])
+
+        self.assertTrue(bridge.set_stock_market_owned_only_view(True))
+        self.assertIn("good.hidden = ownedOnly", bridge.scripts[0])
+        self.assertIn("M.updateGoodStyle(good.id)", bridge.scripts[0])
+
 
 class StockMarketUiTests(unittest.TestCase):
     @classmethod
@@ -188,18 +199,48 @@ class StockMarketUiTests(unittest.TestCase):
         window = MainWindow()
         snapshot = StockMarketSnapshot(
             status=StockMarketStatus(True, True, "Stock Market disponível"),
-            assets=(StockAsset(7, "Chocolate", "CHC", 42.25, 8, 30, 1.5),),
+            broker_overhead=1.01,
+            assets=(StockAsset(7, "Chocolate", "CHC", 42.25, 8, 30, 1.5, last_bought_price=40.0,
+                               price_history=(42.25, 41.0, 40.0)),),
         )
+
+        window.stock_trend_ticks_input.blockSignals(True)
+        window.stock_trend_ticks_input.setValue(2)
+        window.stock_trend_ticks_input.blockSignals(False)
 
         window._display_stock_snapshot(snapshot)
         self.assertEqual(window.stock_table.rowCount(), 1)
         self.assertEqual(window.stock_table.item(0, 2).text(), "+1.50%")
+        self.assertEqual(window.stock_table.horizontalHeaderItem(3).text(), "2 ticks")
+        self.assertEqual(window.stock_table.item(0, 3).text(), "+5.62%")
+        self.assertEqual(window.stock_table.item(0, 3).foreground().color(), Qt.green)
+        self.assertEqual(window.stock_table.item(0, 4).text(), "$40.00")
+        self.assertEqual(window.stock_table.item(0, 5).text(), "$+18.00")
+        self.assertEqual(window.stock_table.item(0, 5).foreground().color(), Qt.green)
+        self.assertTrue(window.stock_table.isSortingEnabled())
         self.assertFalse(window.stock_buy_button.isEnabled())
 
         window.stock_table.selectRow(0)
         self.assertTrue(window.stock_buy_button.isEnabled())
         self.assertTrue(window.stock_use_max_checkbox.isEnabled())
         self.assertEqual(window.stock_table.item(0, 0).data(Qt.UserRole), 7)
+        window.close()
+
+    def test_stock_table_sorts_formatted_columns_by_their_numeric_values(self):
+        window = MainWindow()
+        snapshot = StockMarketSnapshot(
+            status=StockMarketStatus(True, True, "Stock Market disponível"),
+            assets=(
+                StockAsset(1, "Cheaper", "LOW", 9.0, 0, 10),
+                StockAsset(2, "Pricier", "HIGH", 100.0, 3, 10, last_bought_price=80.0),
+            ),
+        )
+
+        window._display_stock_snapshot(snapshot)
+        self.assertEqual(window.stock_table.item(0, 6).text(), "—")
+        window.stock_table.sortItems(1, Qt.DescendingOrder)
+
+        self.assertEqual(window.stock_table.item(0, 0).data(Qt.UserRole), 2)
         window.close()
 
 
@@ -242,6 +283,20 @@ class StockMarketAutomationTests(unittest.TestCase):
 
         self.assertEqual(bridge.calls, [])
         self.assertEqual(result.orders, ())
+
+    def test_cycle_rewrites_owned_only_view_when_enabled(self):
+        status = StockMarketStatus(True, True, "disponível")
+        snapshot = StockMarketSnapshot(
+            status=status, tick=100,
+            assets=(StockAsset(0, "Low", "LOW", 30.0, 0, 10, price_history=(30.0, 31.0)),),
+        )
+        bridge = AutomationBridge([snapshot])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            StockMarketAutomation(
+                bridge, MarketHistoryStore(Path(temporary_directory) / "history.json")
+            ).run_cycle(20.0, 80.0, owned_only_view=True)
+
+        self.assertEqual(bridge.calls, [("view", True)])
 
     def test_cycle_requires_the_configured_number_of_history_points(self):
         status = StockMarketStatus(True, True, "disponível")
@@ -301,9 +356,38 @@ class StockMarketAutomationTests(unittest.TestCase):
         self.assertEqual(held_signal.decision_reason, "venda bloqueada abaixo do custo pago")
         self.assertEqual(bridge.calls, [])
 
+    def test_cycle_sells_after_a_ten_percent_fall_from_the_registered_peak(self):
+        status = StockMarketStatus(True, True, "disponível")
+        peak = StockMarketSnapshot(
+            status=status, tick=100, broker_overhead=1.01,
+            assets=(StockAsset(1, "Held", "HLD", 100.0, 3, 10, last_bought_price=50.0,
+                               price_history=(100.0, 98.0, 96.0)),),
+        )
+        fallen = StockMarketSnapshot(
+            status=status, tick=101, broker_overhead=1.01,
+            assets=(StockAsset(1, "Held", "HLD", 90.0, 3, 10, last_bought_price=50.0,
+                               price_history=(90.0, 94.0, 100.0)),),
+        )
+        after_sale = StockMarketSnapshot(status=status, tick=101, assets=())
+        bridge = AutomationBridge([peak, fallen, after_sale])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = MarketHistoryStore(Path(temporary_directory) / "history.json")
+            automation = StockMarketAutomation(
+                bridge, store
+            )
+            automation.run_cycle(20.0, 80.0, 5)
+            result = automation.run_cycle(20.0, 80.0, 5)
+            self.assertNotIn("1", store._position_peaks)
+
+        self.assertEqual(bridge.calls, [("sell", 1)])
+        self.assertTrue(result.signals[0].is_exit_candidate)
+        self.assertEqual(result.signals[0].peak_price, 100.0)
+        self.assertAlmostEqual(result.signals[0].peak_drawdown_percent, -10.0)
+        self.assertIn("desde o pico", result.signals[0].decision_reason)
+
 
 class StockMarketPerformanceTests(unittest.TestCase):
-    def test_profit_per_hour_uses_initial_and_current_market_value(self):
+    def test_total_profit_uses_final_minus_initial_market_value(self):
         status = StockMarketStatus(True, True, "disponível")
         initial = StockMarketSnapshot(
             status=status, profit=10.0,
@@ -315,8 +399,8 @@ class StockMarketPerformanceTests(unittest.TestCase):
         )
         tracker = StockMarketPerformanceTracker()
 
-        self.assertEqual(tracker.observe(initial, now=100.0), 0.0)
-        self.assertEqual(tracker.observe(current, now=460.0), 110.0)
+        self.assertEqual(tracker.observe(initial), 0.0)
+        self.assertEqual(tracker.observe(current), 11.0)
 
 
 class MarketHistoryStoreTests(unittest.TestCase):
@@ -340,6 +424,27 @@ class MarketHistoryStoreTests(unittest.TestCase):
             restored = MarketHistoryStore(history_path)
             self.assertEqual(restored.prices_for(3), (20.0, 18.0))
             self.assertEqual(restored.record_snapshot(snapshot), 0)
+
+    def test_position_peak_is_preserved_and_resets_after_the_position_is_closed(self):
+        held_at_peak = StockAsset(3, "Sugar", "SUG", 100.0, 10, 10, last_bought_price=20.0)
+        held_below_peak = StockAsset(3, "Sugar", "SUG", 90.0, 10, 10, last_bought_price=20.0)
+        closed = StockAsset(3, "Sugar", "SUG", 90.0, 0, 10, last_bought_price=20.0)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            history_path = Path(temporary_directory) / "market_history.json"
+            store = MarketHistoryStore(history_path)
+
+            self.assertEqual(store.observe_position_peak(held_at_peak, 80.0), 100.0)
+            self.assertEqual(store.observe_position_peak(held_below_peak, 80.0), 100.0)
+            restored = MarketHistoryStore(history_path)
+            self.assertEqual(restored.observe_position_peak(held_below_peak, 80.0), 100.0)
+            self.assertIsNone(restored.observe_position_peak(closed, 80.0))
+
+    def test_position_peak_only_starts_when_the_sell_price_is_reached(self):
+        held_below_sell_price = StockAsset(3, "Sugar", "SUG", 50.0, 10, 10, last_bought_price=20.0)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = MarketHistoryStore(Path(temporary_directory) / "market_history.json")
+
+            self.assertIsNone(store.observe_position_peak(held_below_sell_price, 80.0))
 
 
 if __name__ == "__main__":

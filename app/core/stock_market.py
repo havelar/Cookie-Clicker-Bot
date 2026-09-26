@@ -1,6 +1,5 @@
 """Estratégia única baseada em preço absoluto e tendência do Stock Market."""
 import math
-import time
 from typing import List, Optional, Sequence
 
 from app.bridge.js_bridge import CookieClickerBridge
@@ -18,6 +17,7 @@ class StockMarketAutomation:
     """Compra barato durante baixa e vende caro durante alta confirmada."""
 
     TREND_MAJORITY_RATIO = 0.6
+    TRAILING_STOP_PERCENT = 10.0
 
     def __init__(self, bridge: CookieClickerBridge,
                  history_store: Optional[MarketHistoryStore] = None):
@@ -27,8 +27,8 @@ class StockMarketAutomation:
         self._performance = StockMarketPerformanceTracker()
         self._logged_blocked_sales: set[int] = set()
 
-    def profit_per_hour(self, snapshot) -> Optional[float]:
-        """Retorna o resultado de mercado por hora desde o início da sessão."""
+    def total_profit(self, snapshot) -> Optional[float]:
+        """Retorna a diferença entre o valor atual e o inicial da sessão."""
         return self._performance.observe(snapshot)
 
     def capture_snapshot(self):
@@ -45,6 +45,7 @@ class StockMarketAutomation:
         trend_ticks: int = 5,
         reversal_percent: float = 5.0,
         execute_orders: bool = True,
+        owned_only_view: bool = False,
     ) -> StockMarketAutomationResult:
         """Analisa uma vez por tick e, quando autorizado, envia ordens MAX."""
         snapshot = self.capture_snapshot()
@@ -61,6 +62,10 @@ class StockMarketAutomation:
 
         window = max(2, int(trend_ticks))
         overhead = max(1.0, float(snapshot.broker_overhead or 1.0))
+        position_peaks = {
+            asset.asset_id: self.history_store.observe_position_peak(asset, sell_price_limit)
+            for asset in snapshot.assets
+        }
         signals = tuple(
             self._analyze_asset(
                 asset,
@@ -70,6 +75,7 @@ class StockMarketAutomation:
                 window,
                 reversal_percent,
                 overhead,
+                position_peaks[asset.asset_id],
             )
             for asset in snapshot.assets
         )
@@ -86,6 +92,8 @@ class StockMarketAutomation:
                 order = self.bridge.sell_stock_max(signal.asset_id)
                 orders.append(order)
                 self._log_trade("venda", signal, order)
+                if order.success:
+                    self.history_store.clear_position_peak(signal.asset_id)
             for signal in sorted(entries, key=lambda item: item.price):
                 order = self.bridge.buy_stock_max(signal.asset_id)
                 orders.append(order)
@@ -95,6 +103,9 @@ class StockMarketAutomation:
                 snapshot = self.bridge.get_stock_market_snapshot()
         else:
             self._logged_blocked_sales.clear()
+
+        if owned_only_view:
+            self.bridge.set_stock_market_owned_only_view(True)
 
         return StockMarketAutomationResult(
             snapshot=snapshot,
@@ -113,6 +124,7 @@ class StockMarketAutomation:
         trend_ticks: int,
         reversal_percent: float,
         broker_overhead: float,
+        position_peak: Optional[float],
     ) -> StockMarketSignal:
         # Os X pontos anteriores definem a tendência; o preço atual deve
         # inverter com força suficiente para evitar reagir a ruído pequeno.
@@ -142,27 +154,35 @@ class StockMarketAutomation:
         )
         above_sale_limit = asset.owned > 0 and asset.price > sell_price_limit
         sell_is_safe = minimum_sale_price is not None and asset.price >= minimum_sale_price
-        exit_candidate = (
+        drawdown_percent = (
+            ((asset.price / position_peak) - 1) * 100
+            if position_peak is not None and position_peak > 0 else None
+        )
+        trailing_stop_triggered = (
+            asset.owned > 0
+            and drawdown_percent is not None
+            and drawdown_percent <= (-cls.TRAILING_STOP_PERCENT + 1e-9)
+        )
+        regular_exit_triggered = (
             above_sale_limit
             and has_complete_window
             and trend == "rising"
             and current_move == "falling"
             and current_move_percent is not None
             and current_move_percent <= -required_move
+        )
+        exit_candidate = (
+            (regular_exit_triggered or trailing_stop_triggered)
             and sell_is_safe
         )
 
         if entry:
             reason = f"abaixo de ${buy_price_limit:.2f}; alta de {current_move_percent:+.2f}%"
+        elif trailing_stop_triggered and sell_is_safe:
+            reason = f"queda de {drawdown_percent:+.2f}% desde o pico de ${position_peak:.2f}"
         elif exit_candidate:
             reason = f"acima de ${sell_price_limit:.2f}; queda de {current_move_percent:+.2f}%"
-        elif (
-            above_sale_limit and has_complete_window and trend == "rising"
-            and current_move == "falling"
-            and current_move_percent is not None
-            and current_move_percent <= -required_move
-            and not sell_is_safe
-        ):
+        elif (regular_exit_triggered or trailing_stop_triggered) and not sell_is_safe:
             reason = "venda bloqueada abaixo do custo pago"
         elif asset.owned == 0 and asset.price < buy_price_limit and trend == "falling":
             reason = f"aguardando alta de pelo menos {required_move:.2f}% antes de comprar"
@@ -184,6 +204,8 @@ class StockMarketAutomation:
             current_move=current_move,
             current_move_percent=current_move_percent,
             purchase_price=purchase_price,
+            peak_price=position_peak,
+            peak_drawdown_percent=drawdown_percent,
             decision_reason=reason,
         )
 
@@ -249,9 +271,14 @@ class StockMarketAutomation:
                     f"Mercado: comprou máximo de {signal.symbol} a ${signal.price:.2f}."
                 )
             else:
+                trailing_detail = (
+                    f"; {signal.decision_reason}"
+                    if signal.decision_reason and "desde o pico" in signal.decision_reason
+                    else ""
+                )
                 logger.info(
                     f"Mercado: vendeu máximo de {signal.symbol} a ${signal.price:.2f} "
-                    f"(comprado a ${signal.purchase_price:.2f})."
+                    f"(comprado a ${signal.purchase_price:.2f}{trailing_detail})."
                 )
             return
         logger.warning(
@@ -260,26 +287,20 @@ class StockMarketAutomation:
 
 
 class StockMarketPerformanceTracker:
-    """Mede o valor do mercado desde o primeiro snapshot desta sessão."""
+    """Mede o lucro total do mercado desde o primeiro snapshot da sessão."""
 
     def __init__(self):
         self._initial_value: Optional[float] = None
-        self._started_at: Optional[float] = None
 
-    def observe(self, snapshot, now: Optional[float] = None) -> Optional[float]:
-        """Calcula $/h de lucro realizado mais valor atual das posições."""
+    def observe(self, snapshot) -> Optional[float]:
+        """Calcula valor final menos valor inicial, incluindo posições abertas."""
         value = self._market_value(snapshot)
         if value is None:
             return None
-        timestamp = time.monotonic() if now is None else now
-        if self._initial_value is None or self._started_at is None:
+        if self._initial_value is None:
             self._initial_value = value
-            self._started_at = timestamp
             return 0.0
-        elapsed_seconds = max(0.0, timestamp - self._started_at)
-        if elapsed_seconds == 0:
-            return 0.0
-        return (value - self._initial_value) * 3600 / elapsed_seconds
+        return value - self._initial_value
 
     @staticmethod
     def _market_value(snapshot) -> Optional[float]:

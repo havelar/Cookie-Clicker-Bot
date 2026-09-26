@@ -1,11 +1,12 @@
 """Interface gráfica principal do Cookie Clicker Bot."""
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem)
+from PyQt5.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem)
 
 from app.bridge.js_bridge import CookieClickerBridge
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
@@ -40,6 +41,20 @@ class StockMarketWorker(QThread):
             self.failed.emit(str(error))
 
 
+class SortableTableWidgetItem(QTableWidgetItem):
+    """Item que preserva o texto formatado, mas ordena pelo valor real."""
+
+    def __init__(self, text: str, sort_value=None):
+        super().__init__(text)
+        self.sort_value = sort_value
+
+    def __lt__(self, other):
+        if isinstance(other, SortableTableWidgetItem):
+            if self.sort_value is not None and other.sort_value is not None:
+                return self.sort_value < other.sort_value
+        return super().__lt__(other)
+
+
 class MainWindow(QMainWindow):
     clicker_state_changed = pyqtSignal(bool)
 
@@ -52,6 +67,7 @@ class MainWindow(QMainWindow):
         self._stock_available = False
         self._refresh_after_order = False
         self._stock_snapshot: Optional[StockMarketSnapshot] = None
+        self._session_started_at = time.monotonic()
         self.stock_automation = StockMarketAutomation(bridge) if bridge else None
         self.setup_ui()
         self.log_emitter.log_signal.connect(self.add_log)
@@ -59,31 +75,33 @@ class MainWindow(QMainWindow):
 
     def setup_ui(self):
         self.setWindowTitle("Cookie Clicker Bot")
-        self.resize(860, 720)
-        self.setMinimumSize(720, 580)
+        self.resize(860, 640)
+        self.setMinimumSize(720, 500)
         central = QWidget(); self.setCentralWidget(central)
-        layout = QVBoxLayout(central); layout.setContentsMargins(22, 20, 22, 16); layout.setSpacing(14)
+        layout = QVBoxLayout(central); layout.setContentsMargins(16, 12, 16, 10); layout.setSpacing(8)
 
-        header = QHBoxLayout(); title_block = QVBoxLayout()
+        header = QHBoxLayout(); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(8)
         title = QLabel("Cookie Clicker Bot"); title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f4f7fc;")
-        subtitle = QLabel("Automação, monitoramento e backups em um só lugar"); subtitle.setStyleSheet("color: #9aa7ba;")
-        title_block.addWidget(title); title_block.addWidget(subtitle)
-        header.addLayout(title_block); header.addStretch()
-        self.clicker_button = QPushButton("INICIAR CLICKER"); self.clicker_button.setObjectName("primaryButton"); self.clicker_button.setMinimumHeight(42); self.clicker_button.clicked.connect(self.toggle_clicker)
+        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #f4f7fc;")
+        header.addWidget(title); header.addStretch()
+        self.clicker_button = QPushButton("INICIAR CLICKER"); self.clicker_button.setObjectName("primaryButton"); self.clicker_button.setMinimumHeight(32); self.clicker_button.clicked.connect(self.toggle_clicker)
         self.backups_button = QPushButton("Gerenciar Backups"); self.backups_button.clicked.connect(self.open_backup_dialog)
         header.addWidget(self.clicker_button); header.addWidget(self.backups_button); layout.addLayout(header)
 
-        status_group = QGroupBox("Conexão"); status_layout = QHBoxLayout(status_group)
+        summary = QWidget(); summary.setObjectName("sessionSummary")
+        status_layout = QHBoxLayout(summary); status_layout.setContentsMargins(9, 4, 9, 4); status_layout.setSpacing(14)
         self.bridge_status, self.clicker_status = QLabel("Bridge: Desconectado"), QLabel("Clicker: Parado")
+        self.session_timer_label = QLabel("Sessão: 00:00:00")
+        self.session_timer_label.setStyleSheet("color: #aeb8c9;")
         self.bridge_status.setStyleSheet("color: #f07883; font-weight: 600;"); self.clicker_status.setStyleSheet("color: #9aa7ba; font-weight: 600;")
-        status_layout.addWidget(self.bridge_status); status_layout.addSpacing(26); status_layout.addWidget(self.clicker_status); status_layout.addStretch(); layout.addWidget(status_group)
+        status_layout.addWidget(self.bridge_status); status_layout.addWidget(self.clicker_status); status_layout.addWidget(self.session_timer_label); status_layout.addStretch()
 
-        counters_group = QGroupBox("Atividade da sessão"); counters = QGridLayout(counters_group); counters.setSpacing(10)
-        self.cookies_clicked_label = QLabel("Cookies clicados\n0"); self.golden_clicked_label = QLabel("Golden Cookies\n0")
-        self.reindeer_popped_label = QLabel("Renas coletadas\n0"); self.wrinklers_popped_label = QLabel("Wrinklers coletados\n0")
-        for column, label in enumerate((self.cookies_clicked_label, self.golden_clicked_label, self.reindeer_popped_label, self.wrinklers_popped_label)):
-            label.setObjectName("metricCard"); label.setAlignment(Qt.AlignCenter); label.setMinimumHeight(62); counters.addWidget(label, 0, column)
-        layout.addWidget(counters_group)
+        self.cookies_clicked_label = QLabel("Cliques: 0"); self.golden_clicked_label = QLabel("Golden: 0")
+        self.reindeer_popped_label = QLabel("Renas: 0"); self.wrinklers_popped_label = QLabel("Wrinklers: 0")
+        for label in (self.cookies_clicked_label, self.golden_clicked_label, self.reindeer_popped_label, self.wrinklers_popped_label):
+            label.setStyleSheet("color: #aeb8c9;")
+            status_layout.addWidget(label)
+        layout.addWidget(summary)
 
         tabs = QTabWidget(); tabs.addTab(self._automation_tab(), "Automações"); tabs.addTab(self._sugar_tab(), "Sugar Lumps"); tabs.addTab(self._stock_market_tab(), "Stock Market"); tabs.addTab(self._activity_tab(), "Atividade"); layout.addWidget(tabs, 1)
         self.stats_timer = QTimer(self); self.stats_timer.timeout.connect(self.refresh_stats); self.stats_timer.start(1000)
@@ -126,55 +144,71 @@ class MainWindow(QMainWindow):
 
     def _stock_market_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 12, 14, 12); layout.setSpacing(8)
-        toolbar = QWidget(); toolbar_layout = QHBoxLayout(toolbar); toolbar_layout.setContentsMargins(0, 0, 0, 0); toolbar_layout.setSpacing(8)
+        toolbar = QWidget(); toolbar_layout = QHBoxLayout(toolbar); toolbar_layout.setContentsMargins(0, 0, 0, 0); toolbar_layout.setSpacing(4)
         self.stock_status_label = QLabel("Mercado: carregando")
         self.stock_status_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
-        self.stock_status_label.setMinimumWidth(130)
-        self.stock_hourly_label = QLabel("$/h: —")
-        self.stock_hourly_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
-        self.stock_hourly_label.setToolTip("Resultado do Stock Market por hora nesta sessão")
+        self.stock_status_label.setMinimumWidth(0)
+        self.stock_total_profit_label = QLabel("Lucro total: —")
+        self.stock_total_profit_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
+        self.stock_total_profit_label.setToolTip("Valor atual menos o valor no início desta sessão")
         self.stock_auto_trade_checkbox = QCheckBox("Auto")
         self.stock_auto_trade_checkbox.setToolTip(
             "Executa ordens MAX quando preço e tendência atendem às regras"
         )
         self.stock_auto_trade_checkbox.setChecked(automation_config.enable_stock_market_auto_trade)
         self.stock_auto_trade_checkbox.stateChanged.connect(self._toggle_stock_auto_trade)
+        self.stock_owned_only_checkbox = QCheckBox("Só meus")
+        self.stock_owned_only_checkbox.setToolTip(
+            "No jogo, mostra somente cards de ativos com ações em estoque"
+        )
+        self.stock_owned_only_checkbox.setChecked(automation_config.enable_stock_market_owned_only_view)
+        self.stock_owned_only_checkbox.stateChanged.connect(self._toggle_stock_owned_only_view)
         toolbar_layout.addWidget(self.stock_status_label)
-        toolbar_layout.addWidget(self.stock_hourly_label)
-        toolbar_layout.addSpacing(10)
-        toolbar_layout.addWidget(QLabel("Comprar < $"))
+        toolbar_layout.addWidget(self.stock_total_profit_label)
+        toolbar_layout.addSpacing(4)
+        buy_label = QLabel("Compra < $")
+        buy_label.setToolTip("Compra abaixo deste preço")
+        toolbar_layout.addWidget(buy_label)
         self.stock_buy_limit_input = QDoubleSpinBox(); self.stock_buy_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_buy_limit_input.setDecimals(2); self.stock_buy_limit_input.setValue(automation_config.stock_market_buy_price_limit); self.stock_buy_limit_input.valueChanged.connect(self._update_stock_buy_limit)
-        self.stock_buy_limit_input.setFixedWidth(86)
-        toolbar_layout.addWidget(self.stock_buy_limit_input); toolbar_layout.addSpacing(6)
-        toolbar_layout.addWidget(QLabel("Vender > $"))
+        self.stock_buy_limit_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_buy_limit_input.setFixedWidth(66)
+        toolbar_layout.addWidget(self.stock_buy_limit_input)
+        sell_label = QLabel("Venda > $")
+        sell_label.setToolTip("Vende acima deste preço")
+        toolbar_layout.addWidget(sell_label)
         self.stock_sell_limit_input = QDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
-        self.stock_sell_limit_input.setFixedWidth(86)
-        toolbar_layout.addWidget(self.stock_sell_limit_input); toolbar_layout.addSpacing(8)
-        toolbar_layout.addWidget(QLabel("Ticks"))
+        self.stock_sell_limit_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_sell_limit_input.setFixedWidth(66)
+        toolbar_layout.addWidget(self.stock_sell_limit_input)
+        ticks_label = QLabel("T")
+        ticks_label.setToolTip("Quantidade de ticks usada para validar a tendência")
+        toolbar_layout.addWidget(ticks_label)
         self.stock_trend_ticks_input = QSpinBox()
         self.stock_trend_ticks_input.setRange(2, 180)
         self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks)
         self.stock_trend_ticks_input.setToolTip("Janela usada para confirmar a tendência geral")
         self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
-        self.stock_trend_ticks_input.setFixedWidth(64)
+        self.stock_trend_ticks_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_trend_ticks_input.setFixedWidth(42)
         toolbar_layout.addWidget(self.stock_trend_ticks_input)
-        toolbar_layout.addWidget(QLabel("Mov. ≥ %"))
+        movement_label = QLabel("Δ ≥ %")
+        movement_label.setToolTip("Variação mínima em um tick para confirmar a reversão")
+        toolbar_layout.addWidget(movement_label)
         self.stock_reversal_percent_input = QDoubleSpinBox()
         self.stock_reversal_percent_input.setRange(0.01, 100.0)
         self.stock_reversal_percent_input.setDecimals(2)
         self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent)
         self.stock_reversal_percent_input.setToolTip("Variação mínima em um tick para confirmar a reversão")
         self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
-        self.stock_reversal_percent_input.setFixedWidth(64)
+        self.stock_reversal_percent_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_reversal_percent_input.setFixedWidth(58)
         toolbar_layout.addWidget(self.stock_reversal_percent_input)
-        toolbar_layout.addWidget(self.stock_auto_trade_checkbox); toolbar_layout.addStretch()
+        toolbar_layout.addWidget(self.stock_auto_trade_checkbox)
+        toolbar_layout.addWidget(self.stock_owned_only_checkbox); toolbar_layout.addStretch()
         self.stock_candidates_label = QLabel()
         self.stock_candidates_label.setStyleSheet("color: #e8b766;")
-        toolbar_layout.addWidget(self.stock_candidates_label)
         layout.addWidget(toolbar)
 
-        self.stock_table = QTableWidget(0, 4)
-        self.stock_table.setHorizontalHeaderLabels(("Ativo", "Preço", "Variação", "Estoque"))
+        self.stock_table = QTableWidget(0, 7)
+        self.stock_table.setHorizontalHeaderLabels(
+            ("Ativo", "Preço", "Variação", "5 ticks", "Últ. compra", "Lucro", "Estoque")
+        )
         self.stock_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.stock_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -182,6 +216,9 @@ class MainWindow(QMainWindow):
         header = self.stock_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSortIndicator(1, Qt.AscendingOrder)
+        header.setSortIndicatorShown(True)
+        self.stock_table.setSortingEnabled(True)
         self.stock_table.itemSelectionChanged.connect(self._update_stock_actions)
         self.stock_table.setMinimumHeight(0)
         layout.addWidget(self.stock_table, 1)
@@ -237,6 +274,7 @@ class MainWindow(QMainWindow):
                 trend_ticks,
                 reversal_percent,
                 self.stock_auto_trade_checkbox.isChecked(),
+                self.stock_owned_only_checkbox.isChecked(),
             ),
             self._display_stock_automation_result,
         )
@@ -247,6 +285,20 @@ class MainWindow(QMainWindow):
         status = "ativado" if state else "desativado"
         logger.info(f"Stock Market: automação {status}")
         self._show_stock_feedback(bool(state), f"Automação {status}.")
+
+    def _toggle_stock_owned_only_view(self, state: int):
+        enabled = bool(state)
+        automation_config.enable_stock_market_owned_only_view = enabled
+        save_automation_settings()
+        if not self.bridge:
+            return
+        self._run_stock_task(
+            lambda: self.bridge.set_stock_market_owned_only_view(enabled),
+            lambda value: self._show_stock_feedback(
+                bool(value),
+                "Visualização: somente ativos possuídos." if enabled else "Visualização: todos os ativos.",
+            ),
+        )
 
     def _update_stock_buy_limit(self, value: float):
         automation_config.stock_market_buy_price_limit = float(value)
@@ -260,6 +312,7 @@ class MainWindow(QMainWindow):
     def _update_stock_trend_ticks(self, value: int):
         automation_config.stock_market_trend_ticks = max(2, int(value))
         save_automation_settings()
+        self._update_stock_trend_variation_header()
 
     def _update_stock_reversal_percent(self, value: float):
         automation_config.stock_market_reversal_percent = max(0.01, float(value))
@@ -332,43 +385,90 @@ class MainWindow(QMainWindow):
         self.stock_status_label.setText(status_text if not snapshot.status.available else "")
         self.stock_status_label.setToolTip(snapshot.status.message)
         self.stock_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        self.stock_table.setSortingEnabled(False)
         self.stock_table.setRowCount(0)
         if not snapshot.status.available:
-            self.stock_hourly_label.setText("$/h: —")
+            self.stock_total_profit_label.setText("Lucro total: —")
             self.stock_candidates_label.setText("")
             self._show_stock_feedback(False, snapshot.status.message)
+            self.stock_table.setSortingEnabled(True)
             self._update_stock_actions()
             return
-        rate = self.stock_automation.profit_per_hour(snapshot) if self.stock_automation else None
-        self.stock_hourly_label.setText(self._format_stock_hourly_rate(rate))
+        total_profit = self.stock_automation.total_profit(snapshot) if self.stock_automation else None
+        self.stock_total_profit_label.setText(self._format_stock_total_profit(total_profit))
         assets_by_price = sorted(snapshot.assets, key=lambda asset: asset.price)
         self.stock_table.setRowCount(len(assets_by_price))
         buy_limit = float(self.stock_buy_limit_input.value())
+        trend_ticks = int(self.stock_trend_ticks_input.value())
+        self._update_stock_trend_variation_header()
         for row, asset in enumerate(assets_by_price):
             variation = self._format_variation(asset.price_change_percent)
+            trend_value = self._stock_trend_variation(asset, trend_ticks)
+            trend_variation = self._format_variation(trend_value)
+            purchase_price = asset.last_bought_price if asset.owned > 0 else None
+            gross_profit = self._stock_gross_profit(asset)
             name = f"{asset.name} ({asset.symbol})" if asset.symbol else asset.name
-            values = (name, f"${asset.price:,.2f}", variation, str(asset.owned))
-            for column, text in enumerate(values):
-                item = QTableWidgetItem(text)
+            values = (
+                (name, name),
+                (f"${asset.price:,.2f}", asset.price),
+                (variation, asset.price_change_percent),
+                (trend_variation, trend_value),
+                (f"${purchase_price:,.2f}" if purchase_price is not None else "—", purchase_price),
+                (self._format_stock_amount(gross_profit), gross_profit),
+                (str(asset.owned) if asset.owned > 0 else "—", asset.owned),
+            )
+            for column, (text, sort_value) in enumerate(values):
+                item = SortableTableWidgetItem(text, sort_value)
                 if column == 0:
                     item.setData(Qt.UserRole, asset.asset_id)
                 if column == 2 and asset.price_change_percent is not None:
                     item.setForeground(Qt.green if asset.price_change_percent >= 0 else Qt.red)
+                if column in (3, 5) and sort_value is not None:
+                    item.setForeground(Qt.green if sort_value >= 0 else Qt.red)
                 if asset.price < buy_limit:
                     item.setBackground(QColor("#3a3420"))
-                if column in (1, 2, 3):
+                if column in (1, 2, 3, 4, 5, 6):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.stock_table.setItem(row, column, item)
+        self.stock_table.setSortingEnabled(True)
+        self.stock_table.sortItems(
+            self.stock_table.horizontalHeader().sortIndicatorSection(),
+            self.stock_table.horizontalHeader().sortIndicatorOrder(),
+        )
         self._update_stock_candidates()
         self._show_stock_feedback(True, f"{len(snapshot.assets)} ativos carregados (preço crescente).")
         self._update_stock_actions()
         logger.debug(f"Stock Market: snapshot carregado com {len(snapshot.assets)} ativos")
 
     @staticmethod
-    def _format_stock_hourly_rate(rate: Optional[float]) -> str:
-        if rate is None:
-            return "$/h: —"
-        return f"$/h: ${rate:+,.2f}"
+    def _format_stock_total_profit(total_profit: Optional[float]) -> str:
+        if total_profit is None:
+            return "Lucro total: —"
+        return f"Lucro total: ${total_profit:+,.2f}"
+
+    def _update_stock_trend_variation_header(self):
+        ticks = int(self.stock_trend_ticks_input.value())
+        self.stock_table.setHorizontalHeaderItem(3, QTableWidgetItem(f"{ticks} ticks"))
+
+    def _stock_trend_variation(self, asset, ticks: int) -> Optional[float]:
+        prices = (
+            self.stock_automation.history_store.prices_for(asset.asset_id, asset.price_history)
+            if self.stock_automation else asset.price_history
+        )
+        if len(prices) <= ticks or prices[ticks] <= 0:
+            return None
+        return ((asset.price / prices[ticks]) - 1) * 100
+
+    @staticmethod
+    def _stock_gross_profit(asset) -> Optional[float]:
+        """Ganho bruto estimado ao vender todas as ações agora."""
+        if asset.owned <= 0 or asset.last_bought_price is None or asset.last_bought_price <= 0:
+            return None
+        return (asset.price - asset.last_bought_price) * asset.owned
+
+    @staticmethod
+    def _format_stock_amount(value: Optional[float]) -> str:
+        return "—" if value is None else f"${value:+,.2f}"
 
     def _display_stock_automation_result(self, value: object):
         if not isinstance(value, StockMarketAutomationResult):
@@ -510,8 +610,12 @@ class MainWindow(QMainWindow):
             if not cursor.atEnd():
                 cursor.deleteChar()
     def refresh_stats(self):
+        elapsed = int(time.monotonic() - self._session_started_at)
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.session_timer_label.setText(f"Sessão: {hours:02}:{minutes:02}:{seconds:02}")
         if not self.runner: return
-        self.cookies_clicked_label.setText(f"Cookies clicados\n{self.runner.cookies_clicked}"); self.golden_clicked_label.setText(f"Golden Cookies\n{self.runner.golden_cookies_clicked}"); self.reindeer_popped_label.setText(f"Renas coletadas\n{self.runner.reindeer_popped}"); self.wrinklers_popped_label.setText(f"Wrinklers coletados\n{self.runner.wrinklers_popped}")
+        self.cookies_clicked_label.setText(f"Cliques: {self.runner.cookies_clicked}"); self.golden_clicked_label.setText(f"Golden: {self.runner.golden_cookies_clicked}"); self.reindeer_popped_label.setText(f"Renas: {self.runner.reindeer_popped}"); self.wrinklers_popped_label.setText(f"Wrinklers: {self.runner.wrinklers_popped}")
     def open_backup_dialog(self):
         if self.backup_dialog is None:
             self.backup_dialog = BackupDialog(self.backup_manager, self); self.backup_dialog.backup_restored.connect(self.on_backup_restored)

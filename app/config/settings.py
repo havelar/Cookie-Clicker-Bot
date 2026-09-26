@@ -65,6 +65,7 @@ class AutomationConfig:
     stock_market_sell_price_limit: float = 80.0
     stock_market_trend_ticks: int = 5
     stock_market_reversal_percent: float = 5.0
+    enable_stock_market_owned_only_view: bool = False
 
 
 @dataclass
@@ -190,6 +191,11 @@ def load_automation_settings() -> None:
         automation_config.stock_market_reversal_percent,
         type=float,
     ))
+    automation_config.enable_stock_market_owned_only_view = settings.value(
+        "enable_stock_market_owned_only_view",
+        automation_config.enable_stock_market_owned_only_view,
+        type=bool,
+    )
     settings.endGroup()
 
 
@@ -214,6 +220,7 @@ def save_automation_settings() -> None:
     settings.setValue("stock_market_sell_price_limit", automation_config.stock_market_sell_price_limit)
     settings.setValue("stock_market_trend_ticks", automation_config.stock_market_trend_ticks)
     settings.setValue("stock_market_reversal_percent", automation_config.stock_market_reversal_percent)
+    settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
     settings.endGroup()
     settings.sync()
 
