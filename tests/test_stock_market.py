@@ -226,6 +226,33 @@ class StockMarketUiTests(unittest.TestCase):
         self.assertEqual(window.stock_table.item(0, 0).data(Qt.UserRole), 7)
         window.close()
 
+    def test_main_stock_tab_keeps_only_the_automation_switch_and_moves_settings(self):
+        window = MainWindow()
+        stock_index = next(
+            index for index in range(window.tabs.count())
+            if window.tabs.tabText(index) == "Stock Market"
+        )
+        stock_tab = window.tabs.widget(stock_index)
+        settings_index = next(
+            index for index in range(window.tabs.count())
+            if window.tabs.tabText(index) == "Configurações"
+        )
+        settings_tab = window.tabs.widget(settings_index)
+
+        self.assertEqual(window.stock_auto_trade_checkbox.text(), "Automação")
+        self.assertTrue(stock_tab.isAncestorOf(window.stock_auto_trade_checkbox))
+        for control in (
+            window.stock_buy_limit_input,
+            window.stock_sell_limit_input,
+            window.stock_trend_ticks_input,
+            window.stock_reversal_percent_input,
+            window.stock_owned_only_checkbox,
+            window.stock_limits_button,
+        ):
+            self.assertTrue(settings_tab.isAncestorOf(control))
+            self.assertFalse(stock_tab.isAncestorOf(control))
+        window.close()
+
     def test_stock_table_sorts_formatted_columns_by_their_numeric_values(self):
         window = MainWindow()
         snapshot = StockMarketSnapshot(

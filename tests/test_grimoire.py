@@ -99,13 +99,30 @@ class GrimoireUiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_automation_tab_has_spell_toggle_and_dropdown(self):
+    def test_automation_tab_has_only_the_toggle_and_settings_has_the_dropdown(self):
         window = MainWindow()
+        automation_tab = window.tabs.widget(0)
+        settings_tab = window.tabs.widget(next(
+            index for index in range(window.tabs.count())
+            if window.tabs.tabText(index) == "Configurações"
+        ))
 
         self.assertEqual(window.grimoire_spell_spam_checkbox.text(), "Spammar Skill")
         self.assertEqual(window.grimoire_spell_combo.count(), 9)
         self.assertEqual(window.grimoire_spell_combo.isEnabled(),
                          automation_config.enable_grimoire_spell_spam)
+        self.assertTrue(automation_tab.isAncestorOf(window.grimoire_spell_spam_checkbox))
+        self.assertFalse(automation_tab.isAncestorOf(window.grimoire_spell_combo))
+        self.assertTrue(settings_tab.isAncestorOf(window.grimoire_spell_combo))
+        self.assertNotIn(
+            "Sugar Lumps",
+            [window.tabs.tabText(index) for index in range(window.tabs.count())],
+        )
+        self.assertTrue(automation_tab.isAncestorOf(window.sugar_lump_checkbox))
+        self.assertTrue(all(
+            settings_tab.isAncestorOf(checkbox)
+            for checkbox in window._preserve_checkboxes
+        ))
         window.close()
 
 

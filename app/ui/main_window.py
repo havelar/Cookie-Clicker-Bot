@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem)
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea)
 
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
@@ -105,7 +105,12 @@ class MainWindow(QMainWindow):
             status_layout.addWidget(label)
         layout.addWidget(summary)
 
-        tabs = QTabWidget(); tabs.addTab(self._automation_tab(), "Automações"); tabs.addTab(self._sugar_tab(), "Sugar Lumps"); tabs.addTab(self._stock_market_tab(), "Stock Market"); tabs.addTab(self._activity_tab(), "Atividade"); layout.addWidget(tabs, 1)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._automation_tab(), "Automações")
+        self.tabs.addTab(self._stock_market_tab(), "Stock Market")
+        self.tabs.addTab(self._activity_tab(), "Atividade")
+        self.tabs.addTab(self._settings_tab(), "Configurações")
+        layout.addWidget(self.tabs, 1)
         self.stats_timer = QTimer(self); self.stats_timer.timeout.connect(self.refresh_stats); self.stats_timer.start(1000)
         self.status_bar = QStatusBar(); self.setStatusBar(self.status_bar); self.status_bar.showMessage("Pronto para conectar ao Cookie Clicker")
         self.stock_refresh_timer = QTimer(self)
@@ -116,34 +121,24 @@ class MainWindow(QMainWindow):
 
     def _automation_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
-        group = QGroupBox("Coletas automáticas"); group_layout = QVBoxLayout(group); grid = QGridLayout()
+        group = QGroupBox("Ligar ou desligar"); group_layout = QVBoxLayout(group); grid = QGridLayout()
         controls = (("golden_checkbox", "Coletar Golden Cookies", "enable_golden_cookie", self.toggle_golden_detection), ("fortune_checkbox", "Coletar Fortune Cookies", "enable_fortune_cookie", self.toggle_fortune_detection), ("reindeer_checkbox", "Coletar Renas (Natal)", "enable_reindeer", self.toggle_reindeer_detection), ("wrinkler_checkbox", "Coletar Wrinklers", "enable_wrinkler_popper", self.toggle_wrinkler_detection))
         for index, (name, text, setting, handler) in enumerate(controls):
             checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, setting)); checkbox.stateChanged.connect(handler); setattr(self, name, checkbox); grid.addWidget(checkbox, index // 2, index % 2)
-        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(36); grid.setVerticalSpacing(10)
-        delay = QHBoxLayout(); delay.setContentsMargins(0, 2, 0, 0)
-        delay.addWidget(QLabel("Intervalo entre wrinklers")); delay.addStretch(); delay.addSpacing(8)
-        self.wrinkler_delay_input = QDoubleSpinBox(); self.wrinkler_delay_input.setFixedWidth(96); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
-        delay.addWidget(self.wrinkler_delay_input); grid.addLayout(delay, 2, 1)
-        group_layout.addLayout(grid); layout.addWidget(group)
-
-        grimoire_group = QGroupBox("Grimoire"); grimoire_layout = QHBoxLayout(grimoire_group)
         self.grimoire_spell_spam_checkbox = QCheckBox("Spammar Skill")
         self.grimoire_spell_spam_checkbox.setToolTip(
-            "Aguarda a mana chegar ao máximo e usa uma vez a skill selecionada"
+            "Aguarda a mana chegar ao máximo e usa uma vez a skill configurada"
         )
         self.grimoire_spell_spam_checkbox.setChecked(automation_config.enable_grimoire_spell_spam)
         self.grimoire_spell_spam_checkbox.stateChanged.connect(self.toggle_grimoire_spell_spam)
-        grimoire_layout.addWidget(self.grimoire_spell_spam_checkbox)
-        grimoire_layout.addStretch()
-        grimoire_layout.addWidget(QLabel("Skill"))
-        self.grimoire_spell_combo = QComboBox(); self.grimoire_spell_combo.setMinimumWidth(230)
-        self._load_grimoire_spells()
-        self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
-        self.grimoire_spell_combo.setEnabled(automation_config.enable_grimoire_spell_spam)
-        grimoire_layout.addWidget(self.grimoire_spell_combo)
-        layout.addWidget(grimoire_group); layout.addStretch(); return tab
+        grid.addWidget(self.grimoire_spell_spam_checkbox, 2, 0)
+        self.sugar_lump_checkbox = QCheckBox("Coletar Sugar Lumps maduras")
+        self.sugar_lump_checkbox.setChecked(automation_config.enable_sugar_lump_harvest)
+        self.sugar_lump_checkbox.stateChanged.connect(self.toggle_sugar_lump_harvest)
+        grid.addWidget(self.sugar_lump_checkbox, 2, 1)
+        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
+        grid.setHorizontalSpacing(36); grid.setVerticalSpacing(10)
+        group_layout.addLayout(grid); layout.addWidget(group); layout.addStretch(); return tab
 
     def _load_grimoire_spells(self):
         spells = self.bridge.get_grimoire_spells() if self.bridge else []
@@ -166,21 +161,63 @@ class MainWindow(QMainWindow):
             save_automation_settings()
         self.grimoire_spell_combo.blockSignals(False)
 
-    def _sugar_tab(self):
-        tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
-        group = QGroupBox("Coleta e preservação"); self.sugar_lump_group = group; group_layout = QVBoxLayout(group)
-        self.sugar_lump_checkbox = QCheckBox("Coletar Sugar Lumps maduras"); self.sugar_lump_checkbox.setChecked(automation_config.enable_sugar_lump_harvest); self.sugar_lump_checkbox.stateChanged.connect(self.toggle_sugar_lump_harvest); group_layout.addWidget(self.sugar_lump_checkbox); group_layout.addWidget(QLabel("Tipos a preservar"))
-        grid = QGridLayout(); entries = (("Preservar tipo 0", 0), ("Preservar tipo 1", 1), ("Preservar tipo 2 (Golden)", 2), ("Preservar tipo 3", 3), ("Preservar tipo 4 (Caramel)", 4)); self._preserve_checkboxes = []
-        for index, (text, number) in enumerate(entries):
-            checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, f"preserve_sugar_lump_type_{number}")); checkbox.stateChanged.connect(lambda state, n=number: self._set_sugar_lump_type(n, state)); grid.addWidget(checkbox, index // 2, index % 2); self._preserve_checkboxes.append(checkbox)
-        group_layout.addLayout(grid); layout.addWidget(group); layout.addStretch(); self.set_sugar_lump_preserve_enabled(automation_config.enable_sugar_lump_harvest); return tab
-
     def _activity_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14); group = QGroupBox("Registro de atividades"); group_layout = QVBoxLayout(group)
-        log_options = QHBoxLayout(); log_options.addWidget(QLabel("Máximo de linhas")); log_options.addStretch()
-        self.log_limit_input = QSpinBox(); self.log_limit_input.setRange(1, 100000); self.log_limit_input.setValue(app_config.max_log_lines); self.log_limit_input.setToolTip("Limita apenas o histórico exibido nesta janela")
-        self.log_limit_input.valueChanged.connect(self.update_log_limit); log_options.addWidget(self.log_limit_input); group_layout.addLayout(log_options)
         self.log_text = QTextEdit(); self.log_text.setReadOnly(True); self.log_text.setMinimumHeight(230); group_layout.addWidget(self.log_text); layout.addWidget(group); return tab
+
+    def _settings_tab(self):
+        tab = QWidget(); outer_layout = QVBoxLayout(tab); outer_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget(); layout = QVBoxLayout(content); layout.setContentsMargins(14, 10, 14, 14); layout.setSpacing(8)
+
+        automation_group = QGroupBox("Automações"); automation_form = QFormLayout(automation_group)
+        automation_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.wrinkler_delay_input = QDoubleSpinBox(); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setSuffix(" s"); self.wrinkler_delay_input.setMaximumWidth(140); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
+        automation_form.addRow("Intervalo entre Wrinklers", self.wrinkler_delay_input)
+        self.grimoire_spell_combo = QComboBox(); self.grimoire_spell_combo.setMinimumWidth(230)
+        self._load_grimoire_spells()
+        self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
+        self.grimoire_spell_combo.setEnabled(automation_config.enable_grimoire_spell_spam)
+        automation_form.addRow("Skill do Grimoire", self.grimoire_spell_combo)
+        layout.addWidget(automation_group)
+
+        sugar_group = QGroupBox("Sugar Lumps"); sugar_form = QFormLayout(sugar_group)
+        preserve_grid = QGridLayout(); entries = (("Tipo 0", 0), ("Tipo 1", 1), ("Golden", 2), ("Tipo 3", 3), ("Caramel", 4)); self._preserve_checkboxes = []
+        for index, (text, number) in enumerate(entries):
+            checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, f"preserve_sugar_lump_type_{number}")); checkbox.stateChanged.connect(lambda state, n=number: self._set_sugar_lump_type(n, state)); preserve_grid.addWidget(checkbox, index // 3, index % 3); self._preserve_checkboxes.append(checkbox)
+        sugar_form.addRow("Tipos preservados", preserve_grid)
+        layout.addWidget(sugar_group)
+        self.set_sugar_lump_preserve_enabled(automation_config.enable_sugar_lump_harvest)
+
+        stock_group = QGroupBox("Stock Market"); stock_form = QFormLayout(stock_group)
+        stock_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.stock_buy_limit_input = QDoubleSpinBox(); self.stock_buy_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_buy_limit_input.setDecimals(2); self.stock_buy_limit_input.setPrefix("$ "); self.stock_buy_limit_input.setMaximumWidth(150); self.stock_buy_limit_input.setValue(automation_config.stock_market_buy_price_limit); self.stock_buy_limit_input.valueChanged.connect(self._update_stock_buy_limit)
+        stock_form.addRow("Limite geral de compra", self.stock_buy_limit_input)
+        self.stock_sell_limit_input = QDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setPrefix("$ "); self.stock_sell_limit_input.setMaximumWidth(150); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
+        stock_form.addRow("Limite geral de venda", self.stock_sell_limit_input)
+        self.stock_trend_ticks_input = QSpinBox(); self.stock_trend_ticks_input.setRange(2, 64); self.stock_trend_ticks_input.setSuffix(" ticks"); self.stock_trend_ticks_input.setMaximumWidth(120); self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks); self.stock_trend_ticks_input.setToolTip("Quantidade de ticks usada para validar a tendência"); self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
+        stock_form.addRow("Janela de análise", self.stock_trend_ticks_input)
+        self.stock_reversal_percent_input = QDoubleSpinBox(); self.stock_reversal_percent_input.setRange(0.01, 100.0); self.stock_reversal_percent_input.setDecimals(2); self.stock_reversal_percent_input.setSuffix(" %"); self.stock_reversal_percent_input.setMaximumWidth(120); self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent); self.stock_reversal_percent_input.setToolTip("Alta mínima em um tick para confirmar que uma queda terminou"); self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
+        stock_form.addRow("Confirmação de reversão", self.stock_reversal_percent_input)
+        self.stock_owned_only_checkbox = QCheckBox("Mostrar no jogo apenas ativos em estoque")
+        self.stock_owned_only_checkbox.setChecked(automation_config.enable_stock_market_owned_only_view)
+        self.stock_owned_only_checkbox.stateChanged.connect(self._toggle_stock_owned_only_view)
+        stock_form.addRow("Visualização no jogo", self.stock_owned_only_checkbox)
+        self.stock_limits_button = QPushButton("Configurar limites por ativo")
+        self.stock_limits_button.clicked.connect(self._configure_stock_limits)
+        self.stock_limits_button.setEnabled(False)
+        stock_form.addRow("Limites por ativo", self.stock_limits_button)
+        stock_hint = QLabel("A estratégia é única: compra abaixo do limite após estabilização e vende com lucro após reversão ou queda de 10% do pico.")
+        stock_hint.setWordWrap(True); stock_hint.setStyleSheet("color: #9aa7ba;")
+        stock_form.addRow(stock_hint)
+        layout.addWidget(stock_group)
+
+        interface_group = QGroupBox("Interface"); interface_layout = QHBoxLayout(interface_group)
+        interface_layout.addWidget(QLabel("Máximo de linhas no registro")); interface_layout.addStretch()
+        self.log_limit_input = QSpinBox(); self.log_limit_input.setRange(1, 100000); self.log_limit_input.setValue(app_config.max_log_lines); self.log_limit_input.setToolTip("Limita apenas o histórico exibido na aba Atividade"); self.log_limit_input.valueChanged.connect(self.update_log_limit)
+        interface_layout.addWidget(self.log_limit_input)
+        layout.addWidget(interface_group); layout.addStretch()
+        scroll.setWidget(content); outer_layout.addWidget(scroll); return tab
 
     def _stock_market_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 12, 14, 12); layout.setSpacing(8)
@@ -192,63 +229,17 @@ class MainWindow(QMainWindow):
         self.stock_total_profit_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
         self.stock_total_profit_label.setToolTip("Valor atual menos o valor no início desta sessão")
         self.stock_goal_label = QLabel("Meta: —")
-        self.stock_auto_trade_checkbox = QCheckBox("Auto")
+        self.stock_auto_trade_checkbox = QCheckBox("Automação")
         self.stock_auto_trade_checkbox.setToolTip(
-            "Executa ordens MAX com os limites por ativo; novas compras param ao atingir Gaseous assets"
+            "Liga ou desliga compras e vendas automáticas em ordens MAX"
         )
         self.stock_auto_trade_checkbox.setChecked(automation_config.enable_stock_market_auto_trade)
         self.stock_auto_trade_checkbox.stateChanged.connect(self._toggle_stock_auto_trade)
-        self.stock_owned_only_checkbox = QCheckBox("Só meus")
-        self.stock_owned_only_checkbox.setToolTip(
-            "No jogo, mostra somente cards de ativos com ações em estoque"
-        )
-        self.stock_owned_only_checkbox.setChecked(automation_config.enable_stock_market_owned_only_view)
-        self.stock_owned_only_checkbox.stateChanged.connect(self._toggle_stock_owned_only_view)
         toolbar_layout.addWidget(self.stock_status_label)
         toolbar_layout.addWidget(self.stock_total_profit_label)
         toolbar_layout.addWidget(self.stock_goal_label)
-        self.stock_limits_button = QPushButton("Limites por ativo")
-        self.stock_limits_button.clicked.connect(self._configure_stock_limits)
-        toolbar_layout.addWidget(self.stock_limits_button)
-        toolbar_layout.addSpacing(4)
-        buy_label = QLabel("Compra < $")
-        buy_label.setToolTip("Compra abaixo deste preço")
-        toolbar_layout.addWidget(buy_label)
-        self.stock_buy_limit_input = QDoubleSpinBox(); self.stock_buy_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_buy_limit_input.setDecimals(2); self.stock_buy_limit_input.setValue(automation_config.stock_market_buy_price_limit); self.stock_buy_limit_input.valueChanged.connect(self._update_stock_buy_limit)
-        self.stock_buy_limit_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_buy_limit_input.setFixedWidth(66)
-        toolbar_layout.addWidget(self.stock_buy_limit_input)
-        sell_label = QLabel("Venda > $")
-        sell_label.setToolTip("Vende acima deste preço")
-        toolbar_layout.addWidget(sell_label)
-        self.stock_sell_limit_input = QDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
-        self.stock_sell_limit_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_sell_limit_input.setFixedWidth(66)
-        toolbar_layout.addWidget(self.stock_sell_limit_input)
-        # Os limites gerais são o fallback; a edição individual fica no diálogo.
-        for control in (buy_label, self.stock_buy_limit_input, sell_label, self.stock_sell_limit_input):
-            control.hide()
-        ticks_label = QLabel("T")
-        ticks_label.setToolTip("Quantidade de ticks usada para validar a tendência")
-        toolbar_layout.addWidget(ticks_label)
-        self.stock_trend_ticks_input = QSpinBox()
-        self.stock_trend_ticks_input.setRange(2, 64)
-        self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks)
-        self.stock_trend_ticks_input.setToolTip("Janela usada para confirmar a tendência geral")
-        self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
-        self.stock_trend_ticks_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_trend_ticks_input.setFixedWidth(42)
-        toolbar_layout.addWidget(self.stock_trend_ticks_input)
-        movement_label = QLabel("Δ ≥ %")
-        movement_label.setToolTip("Variação mínima em um tick para confirmar a reversão")
-        toolbar_layout.addWidget(movement_label)
-        self.stock_reversal_percent_input = QDoubleSpinBox()
-        self.stock_reversal_percent_input.setRange(0.01, 100.0)
-        self.stock_reversal_percent_input.setDecimals(2)
-        self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent)
-        self.stock_reversal_percent_input.setToolTip("Variação mínima em um tick para confirmar a reversão")
-        self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
-        self.stock_reversal_percent_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_reversal_percent_input.setFixedWidth(58)
-        toolbar_layout.addWidget(self.stock_reversal_percent_input)
+        toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.stock_auto_trade_checkbox)
-        toolbar_layout.addWidget(self.stock_owned_only_checkbox); toolbar_layout.addStretch()
         self.stock_candidates_label = QLabel()
         self.stock_candidates_label.setStyleSheet("color: #e8b766;")
         layout.addWidget(toolbar)
@@ -319,7 +310,6 @@ class MainWindow(QMainWindow):
         owned_only_view = self.stock_owned_only_checkbox.isChecked()
         per_asset_limits = {key: dict(value) for key, value in automation_config.stock_market_asset_limits.items()}
         use_reference_prices = automation_config.stock_market_use_reference_prices
-        buy_on_discount = automation_config.stock_market_buy_on_discount
         self._run_stock_task(
             lambda: self.stock_automation.run_cycle(
                 buy_limit,
@@ -330,7 +320,6 @@ class MainWindow(QMainWindow):
                 owned_only_view,
                 per_asset_limits=per_asset_limits,
                 use_reference_prices=use_reference_prices,
-                buy_on_discount=buy_on_discount,
             ),
             self._display_stock_automation_result,
         )
@@ -341,14 +330,12 @@ class MainWindow(QMainWindow):
             return
         dialog = StockLimitsDialog(
             self._stock_snapshot, automation_config.stock_market_asset_limits,
-            automation_config.stock_market_use_reference_prices,
-            automation_config.stock_market_buy_on_discount, self,
+            automation_config.stock_market_use_reference_prices, self,
             buy_limit=self.stock_buy_limit_input.value(), sell_limit=self.stock_sell_limit_input.value(),
         )
         if dialog.exec_():
             automation_config.stock_market_asset_limits = dialog.overrides
             automation_config.stock_market_use_reference_prices = dialog.use_reference_prices
-            automation_config.stock_market_buy_on_discount = dialog.buy_on_discount
             save_automation_settings()
             self._display_stock_snapshot(self._stock_snapshot)
             logger.info("Mercado: limites por ativo atualizados.")
@@ -457,6 +444,7 @@ class MainWindow(QMainWindow):
         snapshot = value
         self._stock_snapshot = snapshot
         self._stock_available = snapshot.status.available
+        self.stock_limits_button.setEnabled(snapshot.status.available)
         color = "#65d6a5" if snapshot.status.available else ("#e8b766" if snapshot.status.unlocked else "#f07883")
         status_text = "Mercado: disponível" if snapshot.status.available else (
             "Mercado: carregando" if snapshot.status.unlocked else "Mercado: indisponível"
@@ -607,6 +595,7 @@ class MainWindow(QMainWindow):
 
     def _show_stock_unavailable(self, message: str):
         self._stock_available = False
+        self.stock_limits_button.setEnabled(False)
         self.stock_status_label.setText("Mercado: indisponível")
         self.stock_status_label.setToolTip(message)
         self.stock_status_label.setStyleSheet("color: #f07883; font-weight: 600;")
