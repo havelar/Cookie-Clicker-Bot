@@ -1,10 +1,12 @@
 """
 Configurações centralizadas do Cookie Clicker Bot.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 from typing import Optional
 
 from PyQt5.QtCore import QSettings
+from app.core.stock_policy import valid_limits
 
 
 @dataclass
@@ -66,6 +68,9 @@ class AutomationConfig:
     stock_market_trend_ticks: int = 5
     stock_market_reversal_percent: float = 5.0
     enable_stock_market_owned_only_view: bool = False
+    stock_market_use_reference_prices: bool = True
+    stock_market_buy_on_discount: bool = True
+    stock_market_asset_limits: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -196,6 +201,20 @@ def load_automation_settings() -> None:
         automation_config.enable_stock_market_owned_only_view,
         type=bool,
     )
+    automation_config.stock_market_use_reference_prices = settings.value(
+        "stock_market_use_reference_prices", True, type=bool,
+    )
+    automation_config.stock_market_buy_on_discount = settings.value(
+        "stock_market_buy_on_discount", True, type=bool,
+    )
+    try:
+        limits = json.loads(settings.value("stock_market_asset_limits", "{}", type=str))
+        automation_config.stock_market_asset_limits = {
+            key: value for key, value in limits.items()
+            if key.isdigit() and valid_limits(value)
+        } if isinstance(limits, dict) else {}
+    except (ValueError, TypeError):
+        automation_config.stock_market_asset_limits = {}
     settings.endGroup()
 
 
@@ -221,6 +240,9 @@ def save_automation_settings() -> None:
     settings.setValue("stock_market_trend_ticks", automation_config.stock_market_trend_ticks)
     settings.setValue("stock_market_reversal_percent", automation_config.stock_market_reversal_percent)
     settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
+    settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
+    settings.setValue("stock_market_buy_on_discount", automation_config.stock_market_buy_on_discount)
+    settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
     settings.endGroup()
     settings.sync()
 

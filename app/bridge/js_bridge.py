@@ -1,6 +1,7 @@
 """
 Bridge para comunicação com o runtime JavaScript do Cookie Clicker.
 """
+import json
 import time
 import threading
 from typing import Optional, Any, Dict, List
@@ -180,6 +181,7 @@ class CookieClickerBridge:
             const cookies = Number(Game.cookies);
             const brokers = Math.max(0, Math.trunc(Number(M.brokers) || 0));
             const overhead = 1 + 0.01 * (20 * Math.pow(0.95, brokers));
+            const bankLevel = Math.max(0, Math.trunc(Number(bank.level) || 0));
             const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
             return {
                 status:{available:true,unlocked:true,message:'Stock Market disponível'},
@@ -193,9 +195,13 @@ class CookieClickerBridge:
                 tickProgress: Math.max(0, Math.trunc(Number(M.tickT) || 0)),
                 secondsPerTick: finiteOrNull(M.secondsPerTick),
                 gameSeed: typeof Game.seed === 'string' ? Game.seed : null,
+                bankLevel: bankLevel,
+                gaseousAssetsWon: typeof Game.HasAchiev === 'function'
+                    ? !!Game.HasAchiev('Gaseous assets') : false,
                 assets: M.goodsById.map(good => ({
                     id: Number(good.id),
-                    name: typeof good.name === 'string' ? good.name : `Ativo ${good.id}`,
+                    name: typeof good.name === 'string'
+                        ? good.name.replace('%1', String(Game.bakeryName || 'You')) : `Ativo ${good.id}`,
                     symbol: typeof good.symbol === 'string' ? good.symbol : null,
                     price: finiteOrNull(M.getGoodPrice(good)),
                     priceChangePercent: typeof M.goodDelta === 'function'
@@ -205,7 +211,9 @@ class CookieClickerBridge:
                         ? good.vals.slice(0, 180).map(finiteOrNull).filter(value => value !== null)
                         : [],
                     owned: Math.max(0, Math.trunc(Number(good.stock) || 0)),
-                    capacity: finiteOrNull(M.getGoodMaxStock(good))
+                    capacity: finiteOrNull(M.getGoodMaxStock(good)),
+                    restingValue: finiteOrNull(typeof M.getRestingVal === 'function'
+                        ? M.getRestingVal(Number(good.id)) : 10 + 10 * Number(good.id) + bankLevel - 1)
                 }))
             };
         })()""")
@@ -219,16 +227,26 @@ class CookieClickerBridge:
         """Vende exatamente a quantidade solicitada, se a ordem for aceita."""
         return self._trade_stock("sell", asset_id, quantity)
 
-    def buy_stock_max(self, asset_id: int) -> StockTradeResult:
+    def buy_stock_max(self, asset_id: int, *, price_limit: Optional[float] = None,
+                      require_empty: bool = False) -> StockTradeResult:
         """Compra o máximo aceito pelo runtime do jogo para o ativo."""
-        return self._trade_stock("buy", asset_id, GAME_MAXIMUM_ORDER_SENTINEL, is_maximum_order=True)
+        return self._trade_stock(
+            "buy", asset_id, GAME_MAXIMUM_ORDER_SENTINEL, is_maximum_order=True,
+            price_limit=price_limit, require_empty=require_empty,
+        )
 
-    def sell_stock_max(self, asset_id: int) -> StockTradeResult:
+    def sell_stock_max(self, asset_id: int, *, minimum_price: Optional[float] = None,
+                       expected_purchase_price: Optional[float] = None) -> StockTradeResult:
         """Vende todo o estoque possuído do ativo pelo comando nativo do jogo."""
-        return self._trade_stock("sell", asset_id, GAME_MAXIMUM_ORDER_SENTINEL, is_maximum_order=True)
+        return self._trade_stock(
+            "sell", asset_id, GAME_MAXIMUM_ORDER_SENTINEL, is_maximum_order=True,
+            minimum_price=minimum_price, expected_purchase_price=expected_purchase_price,
+        )
 
     def _trade_stock(self, side: str, asset_id: int, quantity: int,
-                     is_maximum_order: bool = False) -> StockTradeResult:
+                     is_maximum_order: bool = False, *, price_limit: Optional[float] = None,
+                     require_empty: bool = False, minimum_price: Optional[float] = None,
+                     expected_purchase_price: Optional[float] = None) -> StockTradeResult:
         """Valida e executa uma ordem usando exclusivamente a API JS do minigame."""
         if side not in {"buy", "sell"}:
             raise ValueError("Lado da ordem inválido")
@@ -240,9 +258,24 @@ class CookieClickerBridge:
             return self._invalid_trade(side, asset_id, quantity, "Quantidade deve estar entre 1 e 1.000.000.000")
         if not is_maximum_order and quantity == GAME_MAXIMUM_ORDER_SENTINEL:
             return self._invalid_trade(side, asset_id, quantity, "Use a ordem máxima para a quantidade 10.000")
+        guards = {
+            "priceLimit": price_limit,
+            "minimumPrice": minimum_price,
+            "expectedPurchasePrice": expected_purchase_price,
+        }
+        for key, value in guards.items():
+            if value is not None:
+                parsed = self._optional_float(value)
+                if (not isinstance(value, (int, float)) or parsed is None or parsed <= 0):
+                    return self._invalid_trade(side, asset_id, quantity, "Limite de preço inválido")
+                guards[key] = parsed
+        if not isinstance(require_empty, bool):
+            return self._invalid_trade(side, asset_id, quantity, "Validação de estoque inválida")
+        guards["requireEmpty"] = require_empty
 
         script = """(() => {
             const side = '%s', assetId = %d, quantity = %d, isMaximum = %s;
+            const guards = %s;
             const fail = (message, extra = {}) => Object.assign({ok:false,message}, extra);
             if (!globalThis.Game || !Game.Objects) return fail('Runtime do jogo indisponível');
             const bank = Game.Objects['Bank'];
@@ -256,6 +289,15 @@ class CookieClickerBridge:
             const before = Math.max(0, Math.trunc(Number(good.stock) || 0));
             const price = Number(M.getGoodPrice(good));
             if (!Number.isFinite(price) || price < 0) return fail('Preço do ativo inválido', {before});
+            if (side === 'buy' && guards.requireEmpty && before !== 0)
+                return fail('Compra bloqueada: o ativo já possui estoque', {before,price});
+            if (side === 'buy' && guards.priceLimit !== null && price >= guards.priceLimit)
+                return fail('Compra bloqueada: preço atual atingiu o limite', {before,price});
+            if (side === 'sell' && guards.expectedPurchasePrice !== null
+                    && Number(good.prev) !== guards.expectedPurchasePrice)
+                return fail('Venda bloqueada: o preço de compra mudou; reavaliando a posição', {before,price});
+            if (side === 'sell' && guards.minimumPrice !== null && price <= guards.minimumPrice)
+                return fail('Venda bloqueada: preço atual não garante lucro sobre o custo', {before,price});
             const capacity = typeof M.getGoodMaxStock === 'function' ? Math.max(0, Math.trunc(Number(M.getGoodMaxStock(good)) || 0)) : null;
             if (!isMaximum && side === 'buy' && capacity !== null && quantity > capacity - before) return fail('Quantidade excede a capacidade disponível', {before,price});
             if (!isMaximum && side === 'sell' && quantity > before) return fail('Quantidade excede o estoque possuído', {before,price});
@@ -273,7 +315,7 @@ class CookieClickerBridge:
             const action = side === 'buy' ? 'Compra' : 'Venda';
             const executedTotal = price * executed * (side === 'buy' ? overhead : 1);
             return {ok:true,message:isMaximum ? `${action} máxima executada` : `${action} executada`,before,after,executed,price,total:executedTotal};
-        })()""" % (side, asset_id, quantity, str(is_maximum_order).lower())
+        })()""" % (side, asset_id, quantity, str(is_maximum_order).lower(), json.dumps(guards, allow_nan=False))
         payload = self.execute_js(script)
         if not isinstance(payload, dict):
             message = "Bridge desconectado ou resposta inválida do CDP"
@@ -346,6 +388,7 @@ class CookieClickerBridge:
                     price_change_percent=self._optional_float(raw.get("priceChangePercent")),
                     last_bought_price=self._optional_float(raw.get("lastBoughtPrice")),
                     price_history=self._parse_price_history(raw.get("priceHistory")),
+                    resting_value=self._optional_float(raw.get("restingValue")),
                 ))
         except (TypeError, ValueError) as error:
             logger.error(f"Stock Market: ativo inválido na resposta: {error}")
@@ -363,6 +406,8 @@ class CookieClickerBridge:
             seconds_per_tick=self._optional_float(payload.get("secondsPerTick")),
             game_seed=str(payload["gameSeed"]) if payload.get("gameSeed") else None,
             assets=tuple(assets),
+            bank_level=self._optional_int(payload.get("bankLevel")),
+            gaseous_assets_won=payload.get("gaseousAssetsWon") is True,
         )
 
     def set_stock_market_owned_only_view(self, enabled: bool) -> bool:

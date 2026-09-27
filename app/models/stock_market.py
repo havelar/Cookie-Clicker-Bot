@@ -25,6 +25,7 @@ class StockAsset:
     price_change_percent: Optional[float] = None
     last_bought_price: Optional[float] = None
     price_history: Tuple[float, ...] = field(default_factory=tuple)
+    resting_value: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class StockMarketSnapshot:
     seconds_per_tick: Optional[float] = None
     game_seed: Optional[str] = None
     assets: Tuple[StockAsset, ...] = field(default_factory=tuple)
+    bank_level: Optional[int] = None
+    gaseous_assets_won: bool = False
 
 
 @dataclass(frozen=True)

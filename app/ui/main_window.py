@@ -12,8 +12,10 @@ from app.bridge.js_bridge import CookieClickerBridge
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
 from app.core.stock_market import StockMarketAutomation
+from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
 from app.ui.backup_dialog import BackupDialog
+from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
 from app.utils.logger import logger
 
@@ -151,9 +153,10 @@ class MainWindow(QMainWindow):
         self.stock_total_profit_label = QLabel("Lucro total: —")
         self.stock_total_profit_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
         self.stock_total_profit_label.setToolTip("Valor atual menos o valor no início desta sessão")
+        self.stock_goal_label = QLabel("Meta: —")
         self.stock_auto_trade_checkbox = QCheckBox("Auto")
         self.stock_auto_trade_checkbox.setToolTip(
-            "Executa ordens MAX quando preço e tendência atendem às regras"
+            "Executa ordens MAX com os limites por ativo; novas compras param ao atingir Gaseous assets"
         )
         self.stock_auto_trade_checkbox.setChecked(automation_config.enable_stock_market_auto_trade)
         self.stock_auto_trade_checkbox.stateChanged.connect(self._toggle_stock_auto_trade)
@@ -165,6 +168,10 @@ class MainWindow(QMainWindow):
         self.stock_owned_only_checkbox.stateChanged.connect(self._toggle_stock_owned_only_view)
         toolbar_layout.addWidget(self.stock_status_label)
         toolbar_layout.addWidget(self.stock_total_profit_label)
+        toolbar_layout.addWidget(self.stock_goal_label)
+        self.stock_limits_button = QPushButton("Limites por ativo")
+        self.stock_limits_button.clicked.connect(self._configure_stock_limits)
+        toolbar_layout.addWidget(self.stock_limits_button)
         toolbar_layout.addSpacing(4)
         buy_label = QLabel("Compra < $")
         buy_label.setToolTip("Compra abaixo deste preço")
@@ -178,11 +185,14 @@ class MainWindow(QMainWindow):
         self.stock_sell_limit_input = QDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
         self.stock_sell_limit_input.setButtonSymbols(QAbstractSpinBox.NoButtons); self.stock_sell_limit_input.setFixedWidth(66)
         toolbar_layout.addWidget(self.stock_sell_limit_input)
+        # Os limites gerais são o fallback; a edição individual fica no diálogo.
+        for control in (buy_label, self.stock_buy_limit_input, sell_label, self.stock_sell_limit_input):
+            control.hide()
         ticks_label = QLabel("T")
         ticks_label.setToolTip("Quantidade de ticks usada para validar a tendência")
         toolbar_layout.addWidget(ticks_label)
         self.stock_trend_ticks_input = QSpinBox()
-        self.stock_trend_ticks_input.setRange(2, 180)
+        self.stock_trend_ticks_input.setRange(2, 64)
         self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks)
         self.stock_trend_ticks_input.setToolTip("Janela usada para confirmar a tendência geral")
         self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
@@ -267,16 +277,48 @@ class MainWindow(QMainWindow):
         sell_limit = float(self.stock_sell_limit_input.value())
         trend_ticks = int(self.stock_trend_ticks_input.value())
         reversal_percent = float(self.stock_reversal_percent_input.value())
+        execute_orders = self.stock_auto_trade_checkbox.isChecked()
+        owned_only_view = self.stock_owned_only_checkbox.isChecked()
+        per_asset_limits = {key: dict(value) for key, value in automation_config.stock_market_asset_limits.items()}
+        use_reference_prices = automation_config.stock_market_use_reference_prices
+        buy_on_discount = automation_config.stock_market_buy_on_discount
         self._run_stock_task(
             lambda: self.stock_automation.run_cycle(
                 buy_limit,
                 sell_limit,
                 trend_ticks,
                 reversal_percent,
-                self.stock_auto_trade_checkbox.isChecked(),
-                self.stock_owned_only_checkbox.isChecked(),
+                execute_orders,
+                owned_only_view,
+                per_asset_limits=per_asset_limits,
+                use_reference_prices=use_reference_prices,
+                buy_on_discount=buy_on_discount,
             ),
             self._display_stock_automation_result,
+        )
+
+    def _configure_stock_limits(self):
+        if not self._stock_snapshot or not self._stock_snapshot.status.available:
+            self._show_stock_feedback(False, "Aguarde a leitura do mercado para configurar os ativos.")
+            return
+        dialog = StockLimitsDialog(
+            self._stock_snapshot, automation_config.stock_market_asset_limits,
+            automation_config.stock_market_use_reference_prices,
+            automation_config.stock_market_buy_on_discount, self,
+            buy_limit=self.stock_buy_limit_input.value(), sell_limit=self.stock_sell_limit_input.value(),
+        )
+        if dialog.exec_():
+            automation_config.stock_market_asset_limits = dialog.overrides
+            automation_config.stock_market_use_reference_prices = dialog.use_reference_prices
+            automation_config.stock_market_buy_on_discount = dialog.buy_on_discount
+            save_automation_settings()
+            self._display_stock_snapshot(self._stock_snapshot)
+            logger.info("Mercado: limites por ativo atualizados.")
+
+    def _limits_for_asset(self, asset):
+        return asset_limits(
+            asset, self.stock_buy_limit_input.value(), self.stock_sell_limit_input.value(),
+            automation_config.stock_market_asset_limits, automation_config.stock_market_use_reference_prices,
         )
 
     def _toggle_stock_auto_trade(self, state: int):
@@ -389,6 +431,7 @@ class MainWindow(QMainWindow):
         self.stock_table.setRowCount(0)
         if not snapshot.status.available:
             self.stock_total_profit_label.setText("Lucro total: —")
+            self.stock_goal_label.setText("Meta: —")
             self.stock_candidates_label.setText("")
             self._show_stock_feedback(False, snapshot.status.message)
             self.stock_table.setSortingEnabled(True)
@@ -396,12 +439,22 @@ class MainWindow(QMainWindow):
             return
         total_profit = self.stock_automation.total_profit(snapshot) if self.stock_automation else None
         self.stock_total_profit_label.setText(self._format_stock_total_profit(total_profit))
+        if snapshot.gaseous_assets_won:
+            self.stock_goal_label.setText("Meta: concluída")
+        elif snapshot.profit is not None:
+            self.stock_goal_label.setText(f"Meta: {max(0, snapshot.profit) / GASEOUS_ASSETS_TARGET:.1%}")
+        else:
+            self.stock_goal_label.setText("Meta: —")
+        self.stock_goal_label.setToolTip(
+            f"Saldo do jogo: {self._format_stock_amount(snapshot.profit)} / $31,536,000.00\n"
+            "O achievement considera este saldo, que já desconta compras; ações abertas não contam."
+        )
         assets_by_price = sorted(snapshot.assets, key=lambda asset: asset.price)
         self.stock_table.setRowCount(len(assets_by_price))
-        buy_limit = float(self.stock_buy_limit_input.value())
         trend_ticks = int(self.stock_trend_ticks_input.value())
         self._update_stock_trend_variation_header()
         for row, asset in enumerate(assets_by_price):
+            buy_limit, sell_limit = self._limits_for_asset(asset)
             variation = self._format_variation(asset.price_change_percent)
             trend_value = self._stock_trend_variation(asset, trend_ticks)
             trend_variation = self._format_variation(trend_value)
@@ -421,6 +474,7 @@ class MainWindow(QMainWindow):
                 item = SortableTableWidgetItem(text, sort_value)
                 if column == 0:
                     item.setData(Qt.UserRole, asset.asset_id)
+                    item.setToolTip(f"Compra < ${buy_limit:.2f} | Modo venda ≥ ${sell_limit:.2f}")
                 if column == 2 and asset.price_change_percent is not None:
                     item.setForeground(Qt.green if asset.price_change_percent >= 0 else Qt.red)
                 if column in (3, 5) and sort_value is not None:
@@ -493,9 +547,8 @@ class MainWindow(QMainWindow):
     def _update_stock_candidates(self):
         if not self._stock_snapshot or not self._stock_snapshot.status.available:
             return
-        buy_limit = float(self.stock_buy_limit_input.value())
         candidates = sorted(
-            (asset for asset in self._stock_snapshot.assets if asset.price < buy_limit),
+            (asset for asset in self._stock_snapshot.assets if asset.price < self._limits_for_asset(asset)[0]),
             key=lambda asset: asset.price,
         )
         if not candidates:

@@ -51,13 +51,13 @@ class AutomationBridge:
     def get_stock_market_snapshot(self):
         return self.snapshots.pop(0)
 
-    def buy_stock_max(self, asset_id):
+    def buy_stock_max(self, asset_id, **guards):
         self.calls.append(("buy", asset_id))
         return StockTradeResult(True, "buy", asset_id, 10_000, 5, "Compra máxima executada", is_maximum_order=True)
 
-    def sell_stock_max(self, asset_id):
+    def sell_stock_max(self, asset_id, **guards):
         self.calls.append(("sell", asset_id))
-        return StockTradeResult(True, "sell", asset_id, 10_000, 3, "Venda máxima executada", is_maximum_order=True)
+        return StockTradeResult(True, "sell", asset_id, 10_000, 3, "Venda máxima executada", stock_after=0, is_maximum_order=True)
 
     def set_stock_market_owned_only_view(self, enabled):
         self.calls.append(("view", enabled))
@@ -254,7 +254,7 @@ class StockMarketAutomationTests(unittest.TestCase):
             assets=(
                 StockAsset(0, "Low", "LOW", 14.625, 0, 10,
                            price_history=(14.625, 12.5, 13.0, 14.0, 15.0, 16.0)),
-                StockAsset(1, "Held", "HLD", 88.0, 4, 10, last_bought_price=80.0,
+                StockAsset(1, "Held", "HLD", 88.0, 4, 10, last_bought_price=70.0,
                            price_history=(88.0, 94.0, 93.0, 92.0, 90.0, 88.0)),
                 StockAsset(2, "Ignored", "IGN", 30.0, 0, 10,
                            price_history=(30.0, 29.0, 28.0, 27.0, 26.0, 25.0)),
@@ -264,7 +264,7 @@ class StockMarketAutomationTests(unittest.TestCase):
         bridge = AutomationBridge([before, after])
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = MarketHistoryStore(Path(temporary_directory) / "history.json")
-            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5)
+            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5, buy_on_discount=False)
 
         self.assertIsInstance(result, StockMarketAutomationResult)
         self.assertEqual(bridge.calls, [("sell", 1), ("buy", 0)])
@@ -307,7 +307,7 @@ class StockMarketAutomationTests(unittest.TestCase):
         bridge = AutomationBridge([snapshot])
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = MarketHistoryStore(Path(temporary_directory) / "history.json")
-            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5)
+            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5, buy_on_discount=False)
 
         self.assertFalse(result.signals[0].is_entry_candidate)
         self.assertEqual(result.signals[0].trend_direction, "insufficient")
@@ -329,7 +329,7 @@ class StockMarketAutomationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             result = StockMarketAutomation(
                 bridge, MarketHistoryStore(Path(temporary_directory) / "history.json")
-            ).run_cycle(20.0, 80.0, 5)
+            ).run_cycle(20.0, 80.0, 5, buy_on_discount=False)
 
         self.assertFalse(result.signals[0].is_entry_candidate)
         self.assertEqual(result.signals[0].decision_reason, "aguardando alta de pelo menos 5.00% antes de comprar")
@@ -352,7 +352,7 @@ class StockMarketAutomationTests(unittest.TestCase):
 
         held_signal = result.signals[0]
         self.assertFalse(held_signal.is_exit_candidate)
-        self.assertAlmostEqual(held_signal.exit_target, 81.6)
+        self.assertAlmostEqual(held_signal.exit_target, 96.0)
         self.assertEqual(held_signal.decision_reason, "venda bloqueada abaixo do custo pago")
         self.assertEqual(bridge.calls, [])
 
