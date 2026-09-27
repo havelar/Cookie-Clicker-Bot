@@ -49,6 +49,8 @@ class AutomationConfig:
     enable_fortune_cookie: bool = True
     enable_wrinkler_popper: bool = False
     wrinkler_pop_delay: float = 15.0
+    enable_grimoire_spell_spam: bool = False
+    grimoire_spell_id: int = 0
 
     # Sugar Lump
     enable_sugar_lump_harvest: bool = False
@@ -141,6 +143,16 @@ def load_automation_settings() -> None:
         automation_config.wrinkler_pop_delay,
         type=float,
     )
+    automation_config.enable_grimoire_spell_spam = settings.value(
+        "enable_grimoire_spell_spam",
+        automation_config.enable_grimoire_spell_spam,
+        type=bool,
+    )
+    automation_config.grimoire_spell_id = max(0, settings.value(
+        "grimoire_spell_id",
+        automation_config.grimoire_spell_id,
+        type=int,
+    ))
     automation_config.enable_sugar_lump_harvest = settings.value(
         "enable_sugar_lump_harvest",
         automation_config.enable_sugar_lump_harvest,
@@ -228,6 +240,8 @@ def save_automation_settings() -> None:
     settings.setValue("enable_reindeer", automation_config.enable_reindeer)
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
     settings.setValue("wrinkler_pop_delay", automation_config.wrinkler_pop_delay)
+    settings.setValue("enable_grimoire_spell_spam", automation_config.enable_grimoire_spell_spam)
+    settings.setValue("grimoire_spell_id", automation_config.grimoire_spell_id)
     settings.setValue("enable_sugar_lump_harvest", automation_config.enable_sugar_lump_harvest)
     settings.setValue("preserve_sugar_lump_type_0", automation_config.preserve_sugar_lump_type_0)
     settings.setValue("preserve_sugar_lump_type_1", automation_config.preserve_sugar_lump_type_1)

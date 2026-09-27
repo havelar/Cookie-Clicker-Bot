@@ -6,9 +6,9 @@ from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem)
+from PyQt5.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem)
 
-from app.bridge.js_bridge import CookieClickerBridge
+from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
 from app.core.stock_market import StockMarketAutomation
@@ -126,7 +126,45 @@ class MainWindow(QMainWindow):
         delay.addWidget(QLabel("Intervalo entre wrinklers")); delay.addStretch(); delay.addSpacing(8)
         self.wrinkler_delay_input = QDoubleSpinBox(); self.wrinkler_delay_input.setFixedWidth(96); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
         delay.addWidget(self.wrinkler_delay_input); grid.addLayout(delay, 2, 1)
-        group_layout.addLayout(grid); layout.addWidget(group); layout.addStretch(); return tab
+        group_layout.addLayout(grid); layout.addWidget(group)
+
+        grimoire_group = QGroupBox("Grimoire"); grimoire_layout = QHBoxLayout(grimoire_group)
+        self.grimoire_spell_spam_checkbox = QCheckBox("Spammar Skill")
+        self.grimoire_spell_spam_checkbox.setToolTip(
+            "Aguarda a mana chegar ao máximo e usa uma vez a skill selecionada"
+        )
+        self.grimoire_spell_spam_checkbox.setChecked(automation_config.enable_grimoire_spell_spam)
+        self.grimoire_spell_spam_checkbox.stateChanged.connect(self.toggle_grimoire_spell_spam)
+        grimoire_layout.addWidget(self.grimoire_spell_spam_checkbox)
+        grimoire_layout.addStretch()
+        grimoire_layout.addWidget(QLabel("Skill"))
+        self.grimoire_spell_combo = QComboBox(); self.grimoire_spell_combo.setMinimumWidth(230)
+        self._load_grimoire_spells()
+        self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
+        self.grimoire_spell_combo.setEnabled(automation_config.enable_grimoire_spell_spam)
+        grimoire_layout.addWidget(self.grimoire_spell_combo)
+        layout.addWidget(grimoire_group); layout.addStretch(); return tab
+
+    def _load_grimoire_spells(self):
+        spells = self.bridge.get_grimoire_spells() if self.bridge else []
+        if not spells:
+            spells = [
+                {"id": spell_id, "name": name, "description": ""}
+                for spell_id, name in DEFAULT_GRIMOIRE_SPELLS
+            ]
+        self.grimoire_spell_combo.blockSignals(True)
+        self.grimoire_spell_combo.clear()
+        for spell in spells:
+            self.grimoire_spell_combo.addItem(spell["name"], spell["id"])
+            index = self.grimoire_spell_combo.count() - 1
+            if spell.get("description"):
+                self.grimoire_spell_combo.setItemData(index, spell["description"], Qt.ToolTipRole)
+        selected = self.grimoire_spell_combo.findData(automation_config.grimoire_spell_id)
+        self.grimoire_spell_combo.setCurrentIndex(selected if selected >= 0 else 0)
+        if selected < 0 and self.grimoire_spell_combo.count():
+            automation_config.grimoire_spell_id = int(self.grimoire_spell_combo.currentData())
+            save_automation_settings()
+        self.grimoire_spell_combo.blockSignals(False)
 
     def _sugar_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
@@ -629,6 +667,16 @@ class MainWindow(QMainWindow):
     def toggle_fortune_detection(self, state): self._save("enable_fortune_cookie", state)
     def toggle_reindeer_detection(self, state): self._save("enable_reindeer", state)
     def toggle_wrinkler_detection(self, state): self._save("enable_wrinkler_popper", state); self.wrinkler_delay_input.setEnabled(bool(state))
+    def toggle_grimoire_spell_spam(self, state):
+        self._save("enable_grimoire_spell_spam", state)
+        self.grimoire_spell_combo.setEnabled(bool(state))
+        logger.info(f"Grimoire: spam de skill {'ativado' if state else 'desativado'}")
+    def update_grimoire_spell(self, _index):
+        spell_id = self.grimoire_spell_combo.currentData()
+        if isinstance(spell_id, int):
+            automation_config.grimoire_spell_id = spell_id
+            save_automation_settings()
+            logger.info(f"Grimoire: skill selecionada — {self.grimoire_spell_combo.currentText()}")
     def toggle_sugar_lump_harvest(self, state): self._save("enable_sugar_lump_harvest", state); self.set_sugar_lump_preserve_enabled(bool(state))
     def _set_sugar_lump_type(self, number, state): self._save(f"preserve_sugar_lump_type_{number}", state)
     def toggle_preserve_sugar_lump_type_0(self, state): self._set_sugar_lump_type(0, state)

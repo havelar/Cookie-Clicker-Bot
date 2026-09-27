@@ -23,6 +23,17 @@ from app.utils.logger import logger
 MAX_STOCK_ASSET_ID = 10_000
 MAX_STOCK_TRADE_QUANTITY = 1_000_000_000
 GAME_MAXIMUM_ORDER_SENTINEL = 10_000
+DEFAULT_GRIMOIRE_SPELLS = (
+    (0, "Conjure Baked Goods"),
+    (1, "Force the Hand of Fate"),
+    (2, "Stretch Time"),
+    (3, "Spontaneous Edifice"),
+    (4, "Haggler's Charm"),
+    (5, "Summon Crafty Pixies"),
+    (6, "Gambler's Fever Dream"),
+    (7, "Resurrect Abomination"),
+    (8, "Diminish Ineptitude"),
+)
 
 
 class CookieClickerBridge:
@@ -130,6 +141,81 @@ class CookieClickerBridge:
                 return None
 
     # === Helpers específicos do Cookie Clicker ===
+
+    def get_grimoire_spells(self) -> List[Dict[str, Any]]:
+        """Lista as magias disponíveis no Grimoire carregado."""
+        payload = self.execute_js("""(() => {
+            const tower = globalThis.Game && Game.Objects
+                ? Game.Objects['Wizard tower'] : null;
+            const M = tower && tower.minigameLoaded ? tower.minigame : null;
+            if (!M || !Array.isArray(M.spellsById)) return [];
+            return M.spellsById.map(spell => ({
+                id: Number(spell.id),
+                name: String(spell.name || `Skill ${spell.id}`),
+                description: String(spell.desc || '')
+            }));
+        })()""")
+        if not isinstance(payload, list):
+            return []
+        spells = []
+        for raw in payload:
+            if not isinstance(raw, dict):
+                continue
+            spell_id = self._optional_int(raw.get("id"))
+            if spell_id is None or spell_id < 0:
+                continue
+            spells.append({
+                "id": spell_id,
+                "name": str(raw.get("name") or f"Skill {spell_id}"),
+                "description": str(raw.get("description") or ""),
+            })
+        return spells
+
+    def cast_grimoire_spell_when_full(self, spell_id: int) -> Dict[str, Any]:
+        """Lança uma magia somente se a mana continuar cheia no runtime."""
+        if isinstance(spell_id, bool) or not isinstance(spell_id, int) or spell_id < 0:
+            return {"cast": False, "reason": "invalid_spell", "message": "Skill inválida"}
+        payload = self.execute_js("""(() => {
+            const spellId = %d;
+            const fail = (reason, message, extra = {}) =>
+                Object.assign({cast:false, reason, message}, extra);
+            const tower = globalThis.Game && Game.Objects
+                ? Game.Objects['Wizard tower'] : null;
+            const M = tower && tower.minigameLoaded ? tower.minigame : null;
+            if (!M || !Array.isArray(M.spellsById) || typeof M.castSpell !== 'function'
+                    || typeof M.getSpellCost !== 'function') {
+                return fail('unavailable', 'Grimoire indisponível');
+            }
+            const magic = Number(M.magic), maximum = Number(M.magicM);
+            if (!Number.isFinite(magic) || !Number.isFinite(maximum) || maximum <= 0) {
+                return fail('invalid_mana', 'Estado de mana inválido');
+            }
+            if (magic + 1e-7 < maximum) {
+                return fail('waiting_mana', 'Aguardando mana máxima', {magic, maximum});
+            }
+            const spell = M.spellsById.find(item => Number(item && item.id) === spellId);
+            if (!spell) return fail('missing_spell', 'Skill não encontrada', {magic, maximum});
+            const cost = Number(M.getSpellCost(spell));
+            if (!Number.isFinite(cost) || cost > magic) {
+                return fail('insufficient_mana', 'Mana máxima ainda não cobre o custo da skill',
+                    {magic, maximum, cost, spellName:String(spell.name || spellId)});
+            }
+            let accepted = false;
+            try { accepted = M.castSpell(spell) === true; }
+            catch (error) {
+                return fail('cast_error', `Falha ao usar skill: ${error && error.message ? error.message : error}`,
+                    {magic, maximum, cost, spellName:String(spell.name || spellId)});
+            }
+            const magicAfter = Number(M.magic);
+            return accepted
+                ? {cast:true, reason:'cast', message:'Skill usada', magic, maximum, magicAfter,
+                    cost, spellName:String(spell.name || spellId)}
+                : fail('cast_rejected', 'O jogo recusou a skill',
+                    {magic, maximum, magicAfter, cost, spellName:String(spell.name || spellId)});
+        })()""" % spell_id)
+        if not isinstance(payload, dict):
+            return {"cast": False, "reason": "invalid_response", "message": "Resposta inválida do Grimoire"}
+        return payload
 
     def get_stock_market_status(self) -> StockMarketStatus:
         """Verifica de forma defensiva se o Stock Market está desbloqueado e pronto."""
