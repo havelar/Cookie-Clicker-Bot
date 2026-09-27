@@ -58,7 +58,7 @@ class Application:
         logger.info("Bridge JavaScript conectado com sucesso")
 
         # Criar UI
-        self.app, self.window = create_ui_app()
+        self.app, self.window = create_ui_app(self.bridge)
 
         # Conectar logger à UI
         add_ui_handler(self.window.log_emitter)

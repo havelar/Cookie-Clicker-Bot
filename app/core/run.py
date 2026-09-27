@@ -65,6 +65,8 @@ class AutomationRunner:
         self.cookie_position: Optional[Tuple[int, int]] = None
         self.input_handler = InputHandler(pid=pid, restore_game=False, cookie_position=None)
         self.wrinkler_seen_at: dict[int, float] = {}
+        self._last_grimoire_attempt_at = 0.0
+        self._last_grimoire_failure: Optional[tuple] = None
 
         # Contadores de eventos
         self.cookies_clicked: int = 0
@@ -111,8 +113,8 @@ class AutomationRunner:
                 logger.error(f"Erro no callback de estado do clicker: {e}")
 
     def detector_loop(self) -> None:
-        """Thread dedicada para detectar Golden Cookies, Fortunes e Renas."""
-        logger.info("Thread detector iniciada. Procurando golden cookies, fortunes e renas...")
+        """Thread dedicada às coletas e automações baseadas no runtime."""
+        logger.info("Thread detector iniciada. Monitorando automações do jogo...")
 
         while not self.stop_event.is_set():
             try:
@@ -130,6 +132,10 @@ class AutomationRunner:
                     self.reindeer_popped += 1
                     logger.info("Rena coletada!")
 
+                # O Grimoire regenera mais rápido cheio; só tenta lançar quando
+                # o próprio runtime confirma que a mana segue no máximo.
+                self._run_grimoire_cycle()
+
                 # Verificar wrinklers normais com delay de popagem
                 if automation_config.enable_wrinkler_popper:
                     wrinklers = self.bridge.get_wrinklers() or []
@@ -146,11 +152,9 @@ class AutomationRunner:
                             self.wrinkler_seen_at[index] = current_time
                             continue
 
-                        elapsed = current_time - self.wrinkler_seen_at[index]
-                        if elapsed >= automation_config.wrinkler_pop_delay:
+                        if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
                             if self.bridge.pop_wrinkler_by_index(index):
                                 self.wrinklers_popped += 1
-                                logger.info(f"Wrinkler normal na posição {index} popado após {elapsed:.2f}s")
                             self.wrinkler_seen_at.pop(index, None)
 
                 # Verificar Sugar Lump
@@ -174,16 +178,37 @@ class AutomationRunner:
                                     f"Sugar Lump tipo {lump_type} coletado (ready={lump_ready})"
                                 )
 
-                # Printar HP dos wrinklers a cada verificação
-                if automation_config.enable_wrinkler_hp_log:  # Ou adicione uma config específica
-                    self.bridge.print_wrinkler_hp()
-
                 # Delay configurável
                 time.sleep(app_config.detect_interval)
 
             except Exception as e:
                 logger.error(f"Erro na thread detector: {e}")
                 time.sleep(1)
+
+    def _run_grimoire_cycle(self, now: Optional[float] = None) -> bool:
+        """Tenta uma vez por segundo; a bridge decide atomicamente se a mana está cheia."""
+        if not automation_config.enable_grimoire_spell_spam:
+            self._last_grimoire_failure = None
+            return False
+        current_time = time.monotonic() if now is None else now
+        if current_time - self._last_grimoire_attempt_at < 1.0:
+            return False
+        self._last_grimoire_attempt_at = current_time
+        result = self.bridge.cast_grimoire_spell_when_full(
+            automation_config.grimoire_spell_id
+        )
+        if result.get("cast") is True:
+            logger.info(f"Grimoire: {result.get('spellName', 'skill')} usada com mana máxima.")
+            self._last_grimoire_failure = None
+            return True
+        if result.get("reason") == "waiting_mana":
+            self._last_grimoire_failure = None
+            return False
+        failure = (result.get("reason"), result.get("message"))
+        if failure != self._last_grimoire_failure:
+            logger.warning(f"Grimoire: {failure[1] or 'não foi possível usar a skill'}")
+            self._last_grimoire_failure = failure
+        return False
 
     def clicker_loop(self) -> None:
         """Thread dedicada para clicar no cookie principal."""

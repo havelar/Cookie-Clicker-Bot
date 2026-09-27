@@ -1,10 +1,12 @@
 """
 Configurações centralizadas do Cookie Clicker Bot.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 from typing import Optional
 
 from PyQt5.QtCore import QSettings
+from app.core.stock_policy import valid_limits
 
 
 @dataclass
@@ -47,6 +49,8 @@ class AutomationConfig:
     enable_fortune_cookie: bool = True
     enable_wrinkler_popper: bool = False
     wrinkler_pop_delay: float = 15.0
+    enable_grimoire_spell_spam: bool = False
+    grimoire_spell_id: int = 0
 
     # Sugar Lump
     enable_sugar_lump_harvest: bool = False
@@ -59,7 +63,15 @@ class AutomationConfig:
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
 
-    enable_wrinkler_hp_log: bool = False # Nova configuração para log de HP dos wrinklers
+    # Stock Market
+    enable_stock_market_auto_trade: bool = False
+    stock_market_buy_price_limit: float = 20.0
+    stock_market_sell_price_limit: float = 80.0
+    stock_market_trend_ticks: int = 5
+    stock_market_reversal_percent: float = 5.0
+    enable_stock_market_owned_only_view: bool = False
+    stock_market_use_reference_prices: bool = True
+    stock_market_asset_limits: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -130,6 +142,16 @@ def load_automation_settings() -> None:
         automation_config.wrinkler_pop_delay,
         type=float,
     )
+    automation_config.enable_grimoire_spell_spam = settings.value(
+        "enable_grimoire_spell_spam",
+        automation_config.enable_grimoire_spell_spam,
+        type=bool,
+    )
+    automation_config.grimoire_spell_id = max(0, settings.value(
+        "grimoire_spell_id",
+        automation_config.grimoire_spell_id,
+        type=int,
+    ))
     automation_config.enable_sugar_lump_harvest = settings.value(
         "enable_sugar_lump_harvest",
         automation_config.enable_sugar_lump_harvest,
@@ -160,6 +182,47 @@ def load_automation_settings() -> None:
         automation_config.preserve_sugar_lump_type_4,
         type=bool,
     )
+    automation_config.enable_stock_market_auto_trade = settings.value(
+        "enable_stock_market_auto_trade",
+        automation_config.enable_stock_market_auto_trade,
+        type=bool,
+    )
+    automation_config.stock_market_buy_price_limit = settings.value(
+        "stock_market_buy_price_limit",
+        automation_config.stock_market_buy_price_limit,
+        type=float,
+    )
+    automation_config.stock_market_sell_price_limit = settings.value(
+        "stock_market_sell_price_limit",
+        automation_config.stock_market_sell_price_limit,
+        type=float,
+    )
+    automation_config.stock_market_trend_ticks = max(2, settings.value(
+        "stock_market_trend_ticks",
+        automation_config.stock_market_trend_ticks,
+        type=int,
+    ))
+    automation_config.stock_market_reversal_percent = max(0.01, settings.value(
+        "stock_market_reversal_percent",
+        automation_config.stock_market_reversal_percent,
+        type=float,
+    ))
+    automation_config.enable_stock_market_owned_only_view = settings.value(
+        "enable_stock_market_owned_only_view",
+        automation_config.enable_stock_market_owned_only_view,
+        type=bool,
+    )
+    automation_config.stock_market_use_reference_prices = settings.value(
+        "stock_market_use_reference_prices", True, type=bool,
+    )
+    try:
+        limits = json.loads(settings.value("stock_market_asset_limits", "{}", type=str))
+        automation_config.stock_market_asset_limits = {
+            key: value for key, value in limits.items()
+            if key.isdigit() and valid_limits(value)
+        } if isinstance(limits, dict) else {}
+    except (ValueError, TypeError):
+        automation_config.stock_market_asset_limits = {}
     settings.endGroup()
 
 
@@ -173,12 +236,22 @@ def save_automation_settings() -> None:
     settings.setValue("enable_reindeer", automation_config.enable_reindeer)
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
     settings.setValue("wrinkler_pop_delay", automation_config.wrinkler_pop_delay)
+    settings.setValue("enable_grimoire_spell_spam", automation_config.enable_grimoire_spell_spam)
+    settings.setValue("grimoire_spell_id", automation_config.grimoire_spell_id)
     settings.setValue("enable_sugar_lump_harvest", automation_config.enable_sugar_lump_harvest)
     settings.setValue("preserve_sugar_lump_type_0", automation_config.preserve_sugar_lump_type_0)
     settings.setValue("preserve_sugar_lump_type_1", automation_config.preserve_sugar_lump_type_1)
     settings.setValue("preserve_sugar_lump_type_2", automation_config.preserve_sugar_lump_type_2)
     settings.setValue("preserve_sugar_lump_type_3", automation_config.preserve_sugar_lump_type_3)
     settings.setValue("preserve_sugar_lump_type_4", automation_config.preserve_sugar_lump_type_4)
+    settings.setValue("enable_stock_market_auto_trade", automation_config.enable_stock_market_auto_trade)
+    settings.setValue("stock_market_buy_price_limit", automation_config.stock_market_buy_price_limit)
+    settings.setValue("stock_market_sell_price_limit", automation_config.stock_market_sell_price_limit)
+    settings.setValue("stock_market_trend_ticks", automation_config.stock_market_trend_ticks)
+    settings.setValue("stock_market_reversal_percent", automation_config.stock_market_reversal_percent)
+    settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
+    settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
+    settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
     settings.endGroup()
     settings.sync()
 

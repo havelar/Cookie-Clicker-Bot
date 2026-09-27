@@ -1,7 +1,9 @@
 """
 Bridge para comunicação com o runtime JavaScript do Cookie Clicker.
 """
+import json
 import time
+import threading
 from typing import Optional, Any, Dict, List
 
 try:
@@ -10,7 +12,28 @@ except ImportError:
     raise ImportError("pychrome não encontrado. Instale com 'pip install pychrome'")
 
 from app.config.settings import app_config
+from app.models.stock_market import (
+    StockAsset,
+    StockMarketSnapshot,
+    StockMarketStatus,
+    StockTradeResult,
+)
 from app.utils.logger import logger
+
+MAX_STOCK_ASSET_ID = 10_000
+MAX_STOCK_TRADE_QUANTITY = 1_000_000_000
+GAME_MAXIMUM_ORDER_SENTINEL = 10_000
+DEFAULT_GRIMOIRE_SPELLS = (
+    (0, "Conjure Baked Goods"),
+    (1, "Force the Hand of Fate"),
+    (2, "Stretch Time"),
+    (3, "Spontaneous Edifice"),
+    (4, "Haggler's Charm"),
+    (5, "Summon Crafty Pixies"),
+    (6, "Gambler's Fever Dream"),
+    (7, "Resurrect Abomination"),
+    (8, "Diminish Ineptitude"),
+)
 
 
 class CookieClickerBridge:
@@ -37,6 +60,8 @@ class CookieClickerBridge:
         self.browser: Optional[pychrome.Browser] = None
         self.tab: Optional[pychrome.Tab] = None
         self.connected = False
+        # pychrome não garante acesso concorrente seguro ao mesmo websocket.
+        self._runtime_lock = threading.RLock()
 
     def connect(self) -> bool:
         """
@@ -45,35 +70,40 @@ class CookieClickerBridge:
         Returns:
             True se conectado com sucesso, False caso contrário
         """
-        try:
-            self.browser = pychrome.Browser(url=f"http://{self.host}:{self.port}")
-            tabs = self.browser.list_tab()
-            if not tabs:
-                logger.error("Nenhuma aba encontrada no remote debugging")
-                return False
+        with self._runtime_lock:
+            try:
+                self.browser = pychrome.Browser(url=f"http://{self.host}:{self.port}")
+                tabs = self.browser.list_tab()
+                if not tabs:
+                    logger.error("Nenhuma aba encontrada no remote debugging")
+                    return False
 
-            # Assume a primeira aba é o jogo
-            self.tab = tabs[0]
-            self.tab.start()
-            self.connected = True
-            logger.info("Conectado ao CEF do Cookie Clicker via CDP")
-            return True
-        except Exception as e:
-            logger.error(f"Erro ao conectar ao remote debugging: {e}")
-            self.connected = False
-            return False
+                # Assume a primeira aba é o jogo
+                self.tab = tabs[0]
+                # Evita despejar cada pacote CDP no console quando a variável
+                # de ambiente DEBUG estiver definida no processo.
+                self.tab.debug = False
+                self.tab.start()
+                self.connected = True
+                logger.info("Conectado ao CEF do Cookie Clicker via CDP")
+                return True
+            except Exception as e:
+                logger.error(f"Erro ao conectar ao remote debugging: {e}")
+                self.connected = False
+                return False
 
     def disconnect(self):
         """Desconecta do remote debugging."""
-        if self.tab:
-            try:
-                self.tab.stop()
-            except Exception as e:
-                logger.warning(f"Erro ao parar aba: {e}")
-        self.browser = None
-        self.tab = None
-        self.connected = False
-        logger.info("Desconectado do remote debugging")
+        with self._runtime_lock:
+            if self.tab:
+                try:
+                    self.tab.stop()
+                except Exception as e:
+                    logger.warning(f"Erro ao parar aba: {e}")
+            self.browser = None
+            self.tab = None
+            self.connected = False
+            logger.info("Desconectado do remote debugging")
 
     def execute_js(self, code: str) -> Optional[Any]:
         """
@@ -85,26 +115,441 @@ class CookieClickerBridge:
         Returns:
             Resultado da execução ou None se erro
         """
-        if not self.connected or not self.tab:
-            logger.warning("Bridge não conectado. Tentando reconectar...")
-            if not self.connect():
-                return None
+        with self._runtime_lock:
+            if not self.connected or not self.tab:
+                logger.warning("Bridge não conectado. Tentando reconectar...")
+                if not self.connect():
+                    return None
 
-        try:
-            result = self.tab.Runtime.evaluate(expression=code, returnByValue=True)
-            if 'result' in result and 'value' in result['result']:
-                return result['result']['value']
-            elif 'exceptionDetails' in result:
-                logger.error(f"Erro JS: {result['exceptionDetails']}")
+            try:
+                result = self.tab.Runtime.evaluate(expression=code, returnByValue=True)
+                if 'result' in result and 'value' in result['result']:
+                    return result['result']['value']
+                elif result.get('result', {}).get('type') == 'undefined':
+                    # Algumas APIs do jogo executam a ação, mas não retornam valor.
+                    # Isso não é uma falha de CDP e não deve poluir o log.
+                    return None
+                elif 'exceptionDetails' in result:
+                    logger.error(f"Erro JS: {result['exceptionDetails']}")
+                    return None
+                else:
+                    logger.error(f"Resposta inesperada do CDP: {result!r}")
+                    return None
+            except Exception as e:
+                logger.error(f"Erro ao executar JS: {e}")
+                self.connected = False  # Marcar como desconectado para tentar reconectar
                 return None
-            else:
-                return None
-        except Exception as e:
-            logger.error(f"Erro ao executar JS: {e}")
-            self.connected = False  # Marcar como desconectado para tentar reconectar
-            return None
 
     # === Helpers específicos do Cookie Clicker ===
+
+    def get_grimoire_spells(self) -> List[Dict[str, Any]]:
+        """Lista as magias disponíveis no Grimoire carregado."""
+        payload = self.execute_js("""(() => {
+            const tower = globalThis.Game && Game.Objects
+                ? Game.Objects['Wizard tower'] : null;
+            const M = tower && tower.minigameLoaded ? tower.minigame : null;
+            if (!M || !Array.isArray(M.spellsById)) return [];
+            return M.spellsById.map(spell => ({
+                id: Number(spell.id),
+                name: String(spell.name || `Skill ${spell.id}`),
+                description: String(spell.desc || '')
+            }));
+        })()""")
+        if not isinstance(payload, list):
+            return []
+        spells = []
+        for raw in payload:
+            if not isinstance(raw, dict):
+                continue
+            spell_id = self._optional_int(raw.get("id"))
+            if spell_id is None or spell_id < 0:
+                continue
+            spells.append({
+                "id": spell_id,
+                "name": str(raw.get("name") or f"Skill {spell_id}"),
+                "description": str(raw.get("description") or ""),
+            })
+        return spells
+
+    def cast_grimoire_spell_when_full(self, spell_id: int) -> Dict[str, Any]:
+        """Lança uma magia somente se a mana continuar cheia no runtime."""
+        if isinstance(spell_id, bool) or not isinstance(spell_id, int) or spell_id < 0:
+            return {"cast": False, "reason": "invalid_spell", "message": "Skill inválida"}
+        payload = self.execute_js("""(() => {
+            const spellId = %d;
+            const fail = (reason, message, extra = {}) =>
+                Object.assign({cast:false, reason, message}, extra);
+            const tower = globalThis.Game && Game.Objects
+                ? Game.Objects['Wizard tower'] : null;
+            const M = tower && tower.minigameLoaded ? tower.minigame : null;
+            if (!M || !Array.isArray(M.spellsById) || typeof M.castSpell !== 'function'
+                    || typeof M.getSpellCost !== 'function') {
+                return fail('unavailable', 'Grimoire indisponível');
+            }
+            const magic = Number(M.magic), maximum = Number(M.magicM);
+            if (!Number.isFinite(magic) || !Number.isFinite(maximum) || maximum <= 0) {
+                return fail('invalid_mana', 'Estado de mana inválido');
+            }
+            if (magic + 1e-7 < maximum) {
+                return fail('waiting_mana', 'Aguardando mana máxima', {magic, maximum});
+            }
+            const spell = M.spellsById.find(item => Number(item && item.id) === spellId);
+            if (!spell) return fail('missing_spell', 'Skill não encontrada', {magic, maximum});
+            const cost = Number(M.getSpellCost(spell));
+            if (!Number.isFinite(cost) || cost > magic) {
+                return fail('insufficient_mana', 'Mana máxima ainda não cobre o custo da skill',
+                    {magic, maximum, cost, spellName:String(spell.name || spellId)});
+            }
+            let accepted = false;
+            try { accepted = M.castSpell(spell) === true; }
+            catch (error) {
+                return fail('cast_error', `Falha ao usar skill: ${error && error.message ? error.message : error}`,
+                    {magic, maximum, cost, spellName:String(spell.name || spellId)});
+            }
+            const magicAfter = Number(M.magic);
+            return accepted
+                ? {cast:true, reason:'cast', message:'Skill usada', magic, maximum, magicAfter,
+                    cost, spellName:String(spell.name || spellId)}
+                : fail('cast_rejected', 'O jogo recusou a skill',
+                    {magic, maximum, magicAfter, cost, spellName:String(spell.name || spellId)});
+        })()""" % spell_id)
+        if not isinstance(payload, dict):
+            return {"cast": False, "reason": "invalid_response", "message": "Resposta inválida do Grimoire"}
+        return payload
+
+    def get_stock_market_status(self) -> StockMarketStatus:
+        """Verifica de forma defensiva se o Stock Market está desbloqueado e pronto."""
+        payload = self.execute_js("""(() => {
+            if (!globalThis.Game || !Game.Objects) {
+                return {available: false, unlocked: false, message: 'Runtime do jogo indisponível'};
+            }
+            const bank = Game.Objects['Bank'];
+            if (!bank) {
+                return {available: false, unlocked: false, message: 'Prédio Banco indisponível'};
+            }
+            const unlocked = Number(bank.level || 0) > 0;
+            if (!unlocked) {
+                return {available: false, unlocked: false, message: 'Stock Market ainda não foi desbloqueado'};
+            }
+            const M = bank.minigame;
+            const ready = !!bank.minigameLoaded && !!M && Array.isArray(M.goodsById)
+                && typeof M.buyGood === 'function' && typeof M.sellGood === 'function';
+            return {
+                available: ready,
+                unlocked: true,
+                message: ready ? 'Stock Market disponível' : 'Stock Market desbloqueado, mas ainda não carregado'
+            };
+        })()""")
+        return self._parse_stock_status(payload)
+
+    def get_stock_market_snapshot(self) -> StockMarketSnapshot:
+        """Obtém recursos e ativos do mercado em uma única leitura consistente."""
+        payload = self.execute_js("""(() => {
+            if (!globalThis.Game || !Game.Objects) {
+                return {status:{available:false,unlocked:false,message:'Runtime do jogo indisponível'}};
+            }
+            const bank = Game.Objects['Bank'];
+            if (!bank) {
+                return {status:{available:false,unlocked:false,message:'Prédio Banco indisponível'}};
+            }
+            const unlocked = Number(bank.level || 0) > 0;
+            if (!unlocked) {
+                return {status:{available:false,unlocked:false,message:'Stock Market ainda não foi desbloqueado'}};
+            }
+            const M = bank.minigame;
+            const ready = !!bank.minigameLoaded && !!M && Array.isArray(M.goodsById)
+                && typeof M.getGoodPrice === 'function' && typeof M.getGoodMaxStock === 'function'
+                && typeof M.buyGood === 'function' && typeof M.sellGood === 'function';
+            if (!ready) {
+                return {status:{available:false,unlocked:true,message:'Stock Market desbloqueado, mas ainda não carregado'}};
+            }
+            const highestCps = Number(Game.cookiesPsRawHighest);
+            const cookies = Number(Game.cookies);
+            const brokers = Math.max(0, Math.trunc(Number(M.brokers) || 0));
+            const overhead = 1 + 0.01 * (20 * Math.pow(0.95, brokers));
+            const bankLevel = Math.max(0, Math.trunc(Number(bank.level) || 0));
+            const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
+            return {
+                status:{available:true,unlocked:true,message:'Stock Market disponível'},
+                cookies: finiteOrNull(cookies),
+                highestRawCps: finiteOrNull(highestCps),
+                tradingFunds: highestCps > 0 ? finiteOrNull(cookies / highestCps) : null,
+                brokers: brokers,
+                brokerOverhead: finiteOrNull(overhead),
+                profit: finiteOrNull(M.profit),
+                tick: Math.max(0, Math.trunc(Number(M.ticks) || 0)),
+                tickProgress: Math.max(0, Math.trunc(Number(M.tickT) || 0)),
+                secondsPerTick: finiteOrNull(M.secondsPerTick),
+                gameSeed: typeof Game.seed === 'string' ? Game.seed : null,
+                bankLevel: bankLevel,
+                gaseousAssetsWon: typeof Game.HasAchiev === 'function'
+                    ? !!Game.HasAchiev('Gaseous assets') : false,
+                assets: M.goodsById.map(good => ({
+                    id: Number(good.id),
+                    name: typeof good.name === 'string'
+                        ? good.name.replace('%1', String(Game.bakeryName || 'You')) : `Ativo ${good.id}`,
+                    symbol: typeof good.symbol === 'string' ? good.symbol : null,
+                    price: finiteOrNull(M.getGoodPrice(good)),
+                    priceChangePercent: typeof M.goodDelta === 'function'
+                        ? finiteOrNull(M.goodDelta(Number(good.id))) : null,
+                    lastBoughtPrice: finiteOrNull(good.prev),
+                    priceHistory: Array.isArray(good.vals)
+                        ? good.vals.slice(0, 180).map(finiteOrNull).filter(value => value !== null)
+                        : [],
+                    owned: Math.max(0, Math.trunc(Number(good.stock) || 0)),
+                    capacity: finiteOrNull(M.getGoodMaxStock(good)),
+                    restingValue: finiteOrNull(typeof M.getRestingVal === 'function'
+                        ? M.getRestingVal(Number(good.id)) : 10 + 10 * Number(good.id) + bankLevel - 1)
+                }))
+            };
+        })()""")
+        return self._parse_stock_snapshot(payload)
+
+    def buy_stock(self, asset_id: int, quantity: int) -> StockTradeResult:
+        """Compra exatamente a quantidade solicitada, se a ordem for aceita."""
+        return self._trade_stock("buy", asset_id, quantity)
+
+    def sell_stock(self, asset_id: int, quantity: int) -> StockTradeResult:
+        """Vende exatamente a quantidade solicitada, se a ordem for aceita."""
+        return self._trade_stock("sell", asset_id, quantity)
+
+    def buy_stock_max(self, asset_id: int, *, price_limit: Optional[float] = None,
+                      require_empty: bool = False) -> StockTradeResult:
+        """Compra o máximo aceito pelo runtime do jogo para o ativo."""
+        return self._trade_stock(
+            "buy", asset_id, GAME_MAXIMUM_ORDER_SENTINEL, is_maximum_order=True,
+            price_limit=price_limit, require_empty=require_empty,
+        )
+
+    def sell_stock_max(self, asset_id: int, *, minimum_price: Optional[float] = None,
+                       expected_purchase_price: Optional[float] = None) -> StockTradeResult:
+        """Vende todo o estoque possuído do ativo pelo comando nativo do jogo."""
+        return self._trade_stock(
+            "sell", asset_id, GAME_MAXIMUM_ORDER_SENTINEL, is_maximum_order=True,
+            minimum_price=minimum_price, expected_purchase_price=expected_purchase_price,
+        )
+
+    def _trade_stock(self, side: str, asset_id: int, quantity: int,
+                     is_maximum_order: bool = False, *, price_limit: Optional[float] = None,
+                     require_empty: bool = False, minimum_price: Optional[float] = None,
+                     expected_purchase_price: Optional[float] = None) -> StockTradeResult:
+        """Valida e executa uma ordem usando exclusivamente a API JS do minigame."""
+        if side not in {"buy", "sell"}:
+            raise ValueError("Lado da ordem inválido")
+        if (isinstance(asset_id, bool) or not isinstance(asset_id, int)
+                or not 0 <= asset_id <= MAX_STOCK_ASSET_ID):
+            return self._invalid_trade(side, asset_id, quantity, "Identificador de ativo inválido")
+        if (isinstance(quantity, bool) or not isinstance(quantity, int)
+                or not 1 <= quantity <= MAX_STOCK_TRADE_QUANTITY):
+            return self._invalid_trade(side, asset_id, quantity, "Quantidade deve estar entre 1 e 1.000.000.000")
+        if not is_maximum_order and quantity == GAME_MAXIMUM_ORDER_SENTINEL:
+            return self._invalid_trade(side, asset_id, quantity, "Use a ordem máxima para a quantidade 10.000")
+        guards = {
+            "priceLimit": price_limit,
+            "minimumPrice": minimum_price,
+            "expectedPurchasePrice": expected_purchase_price,
+        }
+        for key, value in guards.items():
+            if value is not None:
+                parsed = self._optional_float(value)
+                if (not isinstance(value, (int, float)) or parsed is None or parsed <= 0):
+                    return self._invalid_trade(side, asset_id, quantity, "Limite de preço inválido")
+                guards[key] = parsed
+        if not isinstance(require_empty, bool):
+            return self._invalid_trade(side, asset_id, quantity, "Validação de estoque inválida")
+        guards["requireEmpty"] = require_empty
+
+        script = """(() => {
+            const side = '%s', assetId = %d, quantity = %d, isMaximum = %s;
+            const guards = %s;
+            const fail = (message, extra = {}) => Object.assign({ok:false,message}, extra);
+            if (!globalThis.Game || !Game.Objects) return fail('Runtime do jogo indisponível');
+            const bank = Game.Objects['Bank'];
+            if (!bank || Number(bank.level || 0) <= 0) return fail('Stock Market não está desbloqueado');
+            const M = bank.minigame;
+            if (!bank.minigameLoaded || !M || !Array.isArray(M.goodsById)) return fail('Stock Market não está carregado');
+            const operation = side === 'buy' ? M.buyGood : M.sellGood;
+            if (typeof operation !== 'function' || typeof M.getGoodPrice !== 'function') return fail('API de trading incompatível');
+            const good = M.goodsById.find(item => Number(item && item.id) === assetId);
+            if (!good) return fail('Ativo inexistente');
+            const before = Math.max(0, Math.trunc(Number(good.stock) || 0));
+            const price = Number(M.getGoodPrice(good));
+            if (!Number.isFinite(price) || price < 0) return fail('Preço do ativo inválido', {before});
+            if (side === 'buy' && guards.requireEmpty && before !== 0)
+                return fail('Compra bloqueada: o ativo já possui estoque', {before,price});
+            if (side === 'buy' && guards.priceLimit !== null && price >= guards.priceLimit)
+                return fail('Compra bloqueada: preço atual atingiu o limite', {before,price});
+            if (side === 'sell' && guards.expectedPurchasePrice !== null
+                    && Number(good.prev) !== guards.expectedPurchasePrice)
+                return fail('Venda bloqueada: o preço de compra mudou; reavaliando a posição', {before,price});
+            if (side === 'sell' && guards.minimumPrice !== null && price <= guards.minimumPrice)
+                return fail('Venda bloqueada: preço atual não garante lucro sobre o custo', {before,price});
+            const capacity = typeof M.getGoodMaxStock === 'function' ? Math.max(0, Math.trunc(Number(M.getGoodMaxStock(good)) || 0)) : null;
+            if (!isMaximum && side === 'buy' && capacity !== null && quantity > capacity - before) return fail('Quantidade excede a capacidade disponível', {before,price});
+            if (!isMaximum && side === 'sell' && quantity > before) return fail('Quantidade excede o estoque possuído', {before,price});
+            const cps = Number(Game.cookiesPsRawHighest);
+            const brokers = Math.max(0, Math.trunc(Number(M.brokers) || 0));
+            const overhead = 1 + 0.01 * (20 * Math.pow(0.95, brokers));
+            const total = price * quantity * (side === 'buy' ? overhead : 1);
+            if (!isMaximum && side === 'buy' && (!Number.isFinite(cps) || cps <= 0 || Number(Game.cookies) < total * cps)) return fail('Cookies insuficientes para a compra', {before,price,total});
+            let accepted = false;
+            try { accepted = operation.call(M, assetId, quantity) === true; }
+            catch (error) { return fail(`Erro da API de trading: ${error && error.message ? error.message : error}`, {before,price,total}); }
+            const after = Math.max(0, Math.trunc(Number(good.stock) || 0));
+            const executed = side === 'buy' ? after - before : before - after;
+            if (!accepted || (isMaximum ? executed <= 0 : executed !== quantity)) return fail(accepted ? 'Quantidade executada divergiu da solicitada' : 'Ordem recusada pelo jogo (aguarde o próximo tick)', {before,after,executed,price,total});
+            const action = side === 'buy' ? 'Compra' : 'Venda';
+            const executedTotal = price * executed * (side === 'buy' ? overhead : 1);
+            return {ok:true,message:isMaximum ? `${action} máxima executada` : `${action} executada`,before,after,executed,price,total:executedTotal};
+        })()""" % (side, asset_id, quantity, str(is_maximum_order).lower(), json.dumps(guards, allow_nan=False))
+        payload = self.execute_js(script)
+        if not isinstance(payload, dict):
+            message = "Bridge desconectado ou resposta inválida do CDP"
+            logger.error(f"Stock Market: {message}")
+            return StockTradeResult(False, side, asset_id, quantity, 0, message)
+
+        result = StockTradeResult(
+            success=payload.get("ok") is True,
+            side=side,
+            asset_id=asset_id,
+            requested_quantity=quantity,
+            executed_quantity=self._safe_int(payload.get("executed"), 0),
+            message=str(payload.get("message") or "Resposta inválida da operação"),
+            stock_before=self._optional_int(payload.get("before")),
+            stock_after=self._optional_int(payload.get("after")),
+            unit_price=self._optional_float(payload.get("price")),
+            total_value=self._optional_float(payload.get("total")),
+            is_maximum_order=is_maximum_order,
+        )
+        log = logger.debug if result.success else logger.warning
+        log(f"Stock Market: {result.message} (lado={side}, ativo={asset_id}, quantidade={quantity}, executada={result.executed_quantity})")
+        return result
+
+    @staticmethod
+    def _invalid_trade(side: str, asset_id: Any, quantity: Any, message: str) -> StockTradeResult:
+        logger.warning(f"Stock Market: {message} (lado={side}, ativo={asset_id}, quantidade={quantity})")
+        valid_asset_id = asset_id if isinstance(asset_id, int) and not isinstance(asset_id, bool) else -1
+        valid_quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) else 0
+        return StockTradeResult(False, side, valid_asset_id, valid_quantity, 0, message)
+
+    def _parse_stock_status(self, payload: Any) -> StockMarketStatus:
+        if not isinstance(payload, dict):
+            return StockMarketStatus(False, False, "Bridge desconectado ou resposta inválida do CDP")
+        return StockMarketStatus(
+            available=payload.get("available") is True,
+            unlocked=payload.get("unlocked") is True,
+            message=str(payload.get("message") or "Estado do Stock Market desconhecido"),
+        )
+
+    def _parse_stock_snapshot(self, payload: Any) -> StockMarketSnapshot:
+        if not isinstance(payload, dict):
+            status = StockMarketStatus(False, False, "Bridge desconectado ou resposta inválida do CDP")
+            logger.error(f"Stock Market: {status.message}")
+            return StockMarketSnapshot(status=status)
+        status = self._parse_stock_status(payload.get("status"))
+        if not status.available:
+            logger.warning(f"Stock Market: {status.message}")
+            return StockMarketSnapshot(status=status)
+        raw_assets = payload.get("assets")
+        if not isinstance(raw_assets, list):
+            status = StockMarketStatus(False, status.unlocked, "Lista de ativos inválida")
+            logger.error("Stock Market: lista de ativos inválida recebida do runtime")
+            return StockMarketSnapshot(status=status)
+        assets = []
+        try:
+            for raw in raw_assets:
+                if not isinstance(raw, dict):
+                    raise ValueError("item não é um objeto")
+                asset_id = self._safe_int(raw.get("id"))
+                price = self._optional_float(raw.get("price"))
+                if asset_id < 0 or price is None or price < 0:
+                    raise ValueError("id ou preço inválido")
+                assets.append(StockAsset(
+                    asset_id=asset_id,
+                    name=str(raw.get("name") or f"Ativo {asset_id}"),
+                    symbol=str(raw["symbol"]) if raw.get("symbol") else None,
+                    price=price,
+                    owned=max(0, self._safe_int(raw.get("owned"))),
+                    capacity=self._optional_int(raw.get("capacity")),
+                    price_change_percent=self._optional_float(raw.get("priceChangePercent")),
+                    last_bought_price=self._optional_float(raw.get("lastBoughtPrice")),
+                    price_history=self._parse_price_history(raw.get("priceHistory")),
+                    resting_value=self._optional_float(raw.get("restingValue")),
+                ))
+        except (TypeError, ValueError) as error:
+            logger.error(f"Stock Market: ativo inválido na resposta: {error}")
+            return StockMarketSnapshot(status=StockMarketStatus(False, True, "Dados de ativos inválidos"))
+        return StockMarketSnapshot(
+            status=status,
+            cookies=self._optional_float(payload.get("cookies")),
+            highest_raw_cps=self._optional_float(payload.get("highestRawCps")),
+            trading_funds=self._optional_float(payload.get("tradingFunds")),
+            brokers=self._optional_int(payload.get("brokers")),
+            broker_overhead=self._optional_float(payload.get("brokerOverhead")),
+            profit=self._optional_float(payload.get("profit")),
+            tick=self._optional_int(payload.get("tick")),
+            tick_progress=self._optional_int(payload.get("tickProgress")),
+            seconds_per_tick=self._optional_float(payload.get("secondsPerTick")),
+            game_seed=str(payload["gameSeed"]) if payload.get("gameSeed") else None,
+            assets=tuple(assets),
+            bank_level=self._optional_int(payload.get("bankLevel")),
+            gaseous_assets_won=payload.get("gaseousAssetsWon") is True,
+        )
+
+    def set_stock_market_owned_only_view(self, enabled: bool) -> bool:
+        """Controla os olhos nativos para exibir apenas ativos com estoque."""
+        script = """(() => {
+            const bank = globalThis.Game && Game.Objects && Game.Objects['Bank'];
+            const M = bank && bank.minigame;
+            if (!bank || !bank.minigameLoaded || !M || !Array.isArray(M.goodsById)) return false;
+            if (typeof M.updateGoodStyle !== 'function') return false;
+            const ownedOnly = %s;
+            for (const good of M.goodsById) {
+                if (!good) continue;
+                good.hidden = ownedOnly ? Number(good.stock || 0) <= 0 : false;
+                M.updateGoodStyle(good.id);
+            }
+            return true;
+        })()""" % str(bool(enabled)).lower()
+        result = self.execute_js(script)
+        if result is not True:
+            logger.warning("Stock Market: não foi possível atualizar a visualização dos ativos")
+            return False
+        return True
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = -1) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        try:
+            parsed_float = float(value)
+            return int(parsed_float) if parsed_float.is_integer() else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    @staticmethod
+    def _optional_int(value: Any) -> Optional[int]:
+        parsed = CookieClickerBridge._safe_int(value)
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _optional_float(value: Any) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = float(value)
+            return parsed if parsed == parsed and abs(parsed) != float("inf") else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _parse_price_history(value: Any) -> tuple[float, ...]:
+        if not isinstance(value, list):
+            return tuple()
+        return tuple(
+            parsed for item in value
+            if (parsed := CookieClickerBridge._optional_float(item)) is not None and parsed >= 0
+        )
 
     def get_cookie_position(self) -> Optional[Dict[str, int]]:
         """Retorna a posição do cookie principal."""
@@ -278,8 +723,12 @@ class CookieClickerBridge:
     def click_fortune(self) -> bool:
         """Clica na fortune cookie."""
         if self.has_fortune_cookie():
-            result = self.execute_js("Game.tickerL.click()")
-            if result is not None:
+            result = self.execute_js("""(() => {
+                if (!Game.tickerL) return false;
+                Game.tickerL.click();
+                return true;
+            })()""")
+            if result is True:
                 return True
         return False
 
@@ -295,24 +744,6 @@ class CookieClickerBridge:
             'golden_cookie': self.get_golden_cookie() is not None,
             'fortune_cookie': self.has_fortune_cookie(),
         }
-
-    def print_wrinkler_hp(self) -> None:
-        """Imprime o HP de todos os wrinklers."""
-        wrinklers = self.get_wrinklers()
-        
-        if wrinklers is None:
-            logger.info("Nenhum wrinkler encontrado")
-            return
-        
-        if not wrinklers:
-            logger.info("Nenhum wrinkler ativo")
-            return
-        
-        logger.info("=== HP dos Wrinklers ===")
-        for w in wrinklers:
-            shiny_marker = "✨ [DOURADO]" if w['isShiny'] else ""
-            # hp_bar = f"{w['hp']}/{w['maxHp']}"
-            logger.info(f"Wrinkler #{w['index']}: {w['hp']} {shiny_marker}")
 
     # def get_game_save(self) -> Optional[str]:
     #     """Exporta o save atual do jogo."""
