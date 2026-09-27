@@ -16,6 +16,7 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 - **Arquitetura Modular**: Código organizado em módulos desacoplados e reutilizáveis
 - **Type Hints Completos**: Código Python moderno com anotações de tipo
 - **Threading Seguro**: Automação executada em threads separadas para performance
+- **Garden por tick**: reconcilia o layout completo e automatiza opcionalmente a coleção de 34 sementes
 
 ## 🚀 Instalação
 
@@ -68,6 +69,11 @@ app/
 - **`input.py`**: Abstração de entrada (mouse/teclado) usando Win32 APIs
 - **`main_window.py`**: Interface gráfica principal com PyQt5
 - **`settings.py`**: Configurações centralizadas usando dataclasses
+- **`fazendeira.py`**: seleção de metas e reconciliação integral do Garden uma vez por tick
+- **`garden_catalog.py`**: fonte única das receitas e condições de mutação
+
+Os detalhes de segurança, a fonte validada das receitas e as limitações do
+Garden estão em [docs/garden-automation.md](docs/garden-automation.md).
 
 ## ⚙️ Configuração
 
