@@ -52,7 +52,6 @@ class StockMarketAutomation:
         *,
         per_asset_limits: Optional[dict] = None,
         use_reference_prices: bool = True,
-        buy_on_discount: bool = True,
     ) -> StockMarketAutomationResult:
         """Analisa uma vez por tick e, quando autorizado, envia ordens MAX."""
         snapshot = self.capture_snapshot()
@@ -91,7 +90,6 @@ class StockMarketAutomation:
                 overhead,
                 position_peaks[asset.asset_id],
                 self.history_store.purchase_cost(asset),
-                buy_on_discount,
             )
             for asset in snapshot.assets
         )
@@ -172,7 +170,6 @@ class StockMarketAutomation:
         broker_overhead: float,
         position_peak: Optional[float],
         purchase_cost: Optional[float],
-        buy_on_discount: bool = True,
     ) -> StockMarketSignal:
         # Os X pontos anteriores definem a tendência; o preço atual deve
         # inverter com força suficiente para evitar reagir a ruído pequeno.
@@ -193,12 +190,20 @@ class StockMarketAutomation:
             has_complete_window and trend == "falling" and current_move == "rising"
             and current_move_percent is not None and current_move_percent >= required_move
         )
+        # A entrada é única: nunca tenta capturar uma ação enquanto o preço ainda
+        # está caindo. Se a janela anterior também estava em baixa, uma reação do
+        # tamanho configurado distingue recuperação de um pequeno ruído no fundo.
+        stabilized_discount_entry = (
+            has_complete_window
+            and current_move != "falling"
+            and (trend != "falling" or reversal_entry)
+        )
         entry = (
             asset.owned == 0
             and asset.price < buy_price_limit
             and asset.capacity is not None and asset.capacity > 0
             and sell_price_limit * (1 - cls.TRAILING_STOP_PERCENT / 100) > asset.price * broker_overhead
-            and (buy_on_discount or reversal_entry)
+            and stabilized_discount_entry
         )
         above_sale_limit = asset.owned > 0 and asset.price > sell_price_limit
         sell_is_safe = minimum_sale_price is not None and asset.price > minimum_sale_price
@@ -225,15 +230,32 @@ class StockMarketAutomation:
         )
 
         if entry:
-            reason = f"preço abaixo do limite de ${buy_price_limit:.2f}"
+            if reversal_entry:
+                reason = (
+                    f"preço abaixo de ${buy_price_limit:.2f}; "
+                    f"recuperação confirmada de {current_move_percent:+.2f}%"
+                )
+            else:
+                reason = f"preço abaixo de ${buy_price_limit:.2f}; queda estabilizada"
         elif trailing_stop_triggered and sell_is_safe:
             reason = f"queda de {drawdown_percent:+.2f}% desde o pico de ${position_peak:.2f}"
         elif exit_candidate:
             reason = f"acima de ${sell_price_limit:.2f}; queda de {current_move_percent:+.2f}%"
         elif (regular_exit_triggered or trailing_stop_triggered) and not sell_is_safe:
             reason = "venda bloqueada abaixo do custo pago"
+        elif asset.owned == 0 and asset.price < buy_price_limit and not has_complete_window:
+            reason = "aguardando histórico suficiente para validar a compra"
+        elif asset.owned == 0 and asset.price < buy_price_limit and current_move == "falling":
+            reason = "queda ainda em andamento; aguardando estabilização antes de comprar"
         elif asset.owned == 0 and asset.price < buy_price_limit and trend == "falling":
-            reason = f"aguardando alta de pelo menos {required_move:.2f}% antes de comprar"
+            reaction = (
+                f" (reação atual: {current_move_percent:+.2f}%)"
+                if current_move_percent is not None else ""
+            )
+            reason = (
+                f"aguardando recuperação de pelo menos {required_move:.2f}%"
+                f" antes de comprar{reaction}"
+            )
         elif above_sale_limit and trend == "rising":
             reason = f"aguardando queda de pelo menos {required_move:.2f}% antes de vender"
         else:

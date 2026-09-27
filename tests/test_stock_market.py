@@ -264,7 +264,7 @@ class StockMarketAutomationTests(unittest.TestCase):
         bridge = AutomationBridge([before, after])
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = MarketHistoryStore(Path(temporary_directory) / "history.json")
-            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5, buy_on_discount=False)
+            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5)
 
         self.assertIsInstance(result, StockMarketAutomationResult)
         self.assertEqual(bridge.calls, [("sell", 1), ("buy", 0)])
@@ -307,7 +307,7 @@ class StockMarketAutomationTests(unittest.TestCase):
         bridge = AutomationBridge([snapshot])
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = MarketHistoryStore(Path(temporary_directory) / "history.json")
-            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5, buy_on_discount=False)
+            result = StockMarketAutomation(bridge, history_store=store).run_cycle(20.0, 80.0, 5)
 
         self.assertFalse(result.signals[0].is_entry_candidate)
         self.assertEqual(result.signals[0].trend_direction, "insufficient")
@@ -329,10 +329,13 @@ class StockMarketAutomationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             result = StockMarketAutomation(
                 bridge, MarketHistoryStore(Path(temporary_directory) / "history.json")
-            ).run_cycle(20.0, 80.0, 5, buy_on_discount=False)
+            ).run_cycle(20.0, 80.0, 5)
 
         self.assertFalse(result.signals[0].is_entry_candidate)
-        self.assertEqual(result.signals[0].decision_reason, "aguardando alta de pelo menos 5.00% antes de comprar")
+        self.assertEqual(
+            result.signals[0].decision_reason,
+            "queda ainda em andamento; aguardando estabilização antes de comprar",
+        )
         self.assertFalse(result.signals[1].is_exit_candidate)
         self.assertEqual(result.signals[1].decision_reason, "aguardando queda de pelo menos 5.00% antes de vender")
         self.assertEqual(bridge.calls, [])

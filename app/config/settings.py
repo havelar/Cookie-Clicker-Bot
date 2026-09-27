@@ -71,7 +71,6 @@ class AutomationConfig:
     stock_market_reversal_percent: float = 5.0
     enable_stock_market_owned_only_view: bool = False
     stock_market_use_reference_prices: bool = True
-    stock_market_buy_on_discount: bool = True
     stock_market_asset_limits: dict = field(default_factory=dict)
 
 
@@ -216,9 +215,6 @@ def load_automation_settings() -> None:
     automation_config.stock_market_use_reference_prices = settings.value(
         "stock_market_use_reference_prices", True, type=bool,
     )
-    automation_config.stock_market_buy_on_discount = settings.value(
-        "stock_market_buy_on_discount", True, type=bool,
-    )
     try:
         limits = json.loads(settings.value("stock_market_asset_limits", "{}", type=str))
         automation_config.stock_market_asset_limits = {
@@ -255,7 +251,6 @@ def save_automation_settings() -> None:
     settings.setValue("stock_market_reversal_percent", automation_config.stock_market_reversal_percent)
     settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
     settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
-    settings.setValue("stock_market_buy_on_discount", automation_config.stock_market_buy_on_discount)
     settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
     settings.endGroup()
     settings.sync()

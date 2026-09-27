@@ -61,22 +61,63 @@ class StockStrategyRevisionTests(unittest.TestCase):
     def automation(self, bridge):
         return StockMarketAutomation(bridge, MarketHistoryStore(self.path))
 
-    def test_discount_buys_max_without_waiting_for_history_or_reversal(self):
-        empty = StockAsset(0, "Cereals", "CRL", 10, 0, 100)
-        falling = StockAsset(1, "Chocolate", "CHC", 15, 0, 100, price_history=(15, 16, 17))
-        before = snapshot(empty, falling)
-        bridge = RevisionBridge([before, before])
+    def test_discount_waits_for_history_and_does_not_buy_a_falling_knife(self):
+        no_history = StockAsset(0, "Cereals", "CRL", 10, 0, 100)
+        crashing = StockAsset(
+            1, "Chocolate", "CHC", 15, 0, 100,
+            price_history=(15, 24, 32, 40, 48, 56),
+        )
+        before = snapshot(no_history, crashing)
+        bridge = RevisionBridge([before])
 
         result = self.automation(bridge).run_cycle(20, 80)
 
+        self.assertEqual(bridge.calls, [])
+        self.assertEqual(
+            result.signals[0].decision_reason,
+            "aguardando histórico suficiente para validar a compra",
+        )
+        self.assertEqual(
+            result.signals[1].decision_reason,
+            "queda ainda em andamento; aguardando estabilização antes de comprar",
+        )
+
+    def test_discount_buys_max_after_a_falling_asset_recovers_enough(self):
+        recovered = StockAsset(
+            1, "Chocolate", "CHC", 3.30, 0, 100,
+            price_history=(3.30, 3.00, 15.00, 24.00, 32.00, 40.00),
+        )
+        before = snapshot(recovered)
+        bridge = RevisionBridge([before, before])
+
+        result = self.automation(bridge).run_cycle(20, 80, reversal_percent=5)
+
         self.assertEqual(bridge.calls, [
-            ("buy", 0, {"price_limit": 20, "require_empty": True}),
             ("buy", 1, {"price_limit": 20, "require_empty": True}),
         ])
-        self.assertTrue(all(order.is_maximum_order for order in result.orders))
+        self.assertTrue(result.orders[0].is_maximum_order)
+        self.assertIn("recuperação confirmada de +10.00%", result.signals[0].decision_reason)
+
+    def test_discount_buys_after_a_low_price_stabilizes_without_a_large_reversal(self):
+        stable = StockAsset(
+            0, "Cereals", "CRL", 10.10, 0, 100,
+            price_history=(10.10, 10.00, 10.00, 10.00, 10.00, 10.00),
+        )
+        before = snapshot(stable)
+        bridge = RevisionBridge([before, before])
+
+        result = self.automation(bridge).run_cycle(20, 80, reversal_percent=5)
+
+        self.assertEqual(bridge.calls, [
+            ("buy", 0, {"price_limit": 20, "require_empty": True}),
+        ])
+        self.assertIn("queda estabilizada", result.signals[0].decision_reason)
 
     def test_custom_limits_override_reference_and_global_limits(self):
-        asset = StockAsset(7, "Chocolate", "CHC", 40, 0, 100, resting_value=100)
+        asset = StockAsset(
+            7, "Chocolate", "CHC", 40, 0, 100, resting_value=100,
+            price_history=(40, 40, 40, 40, 40, 40),
+        )
         self.assertEqual(asset_limits(asset, 20, 80), (50, 100))
         self.assertEqual(asset_limits(asset, 20, 80, use_reference_prices=False), (20, 80))
         overrides = {"7": {"buy": 45, "sell": 70}}
@@ -90,7 +131,10 @@ class StockStrategyRevisionTests(unittest.TestCase):
         self.assertEqual(bridge.calls, [("buy", 7, {"price_limit": 45, "require_empty": True})])
 
     def test_reference_limits_allow_discount_on_a_higher_value_asset(self):
-        asset = StockAsset(7, "Chocolate", "CHC", 40, 0, 100, resting_value=100)
+        asset = StockAsset(
+            7, "Chocolate", "CHC", 40, 0, 100, resting_value=100,
+            price_history=(40, 40, 40, 40, 40, 40),
+        )
         before = snapshot(asset)
         bridge = RevisionBridge([before, before])
 
@@ -131,7 +175,10 @@ class StockStrategyRevisionTests(unittest.TestCase):
 
     def test_goal_liquidates_profitable_stock_without_trend_and_does_not_rebuy(self):
         held = StockAsset(0, "Cereals", "CRL", 15, 10, 10, last_bought_price=5)
-        cheap = StockAsset(1, "Chocolate", "CHC", 10, 0, 10)
+        cheap = StockAsset(
+            1, "Chocolate", "CHC", 10, 0, 10,
+            price_history=(10, 10, 10, 10, 10, 10),
+        )
         before = snapshot(held, cheap, profit=GASEOUS_ASSETS_TARGET - 150)
         after = snapshot(replace(held, owned=0), cheap, profit=GASEOUS_ASSETS_TARGET, won=True)
         bridge = RevisionBridge([before, after])
@@ -152,7 +199,10 @@ class StockStrategyRevisionTests(unittest.TestCase):
 
     def test_auto_off_only_analyzes_even_when_goal_can_be_reached(self):
         held = StockAsset(0, "Cereals", "CRL", 15, 10, 10, last_bought_price=5)
-        cheap = StockAsset(1, "Chocolate", "CHC", 10, 0, 10)
+        cheap = StockAsset(
+            1, "Chocolate", "CHC", 10, 0, 10,
+            price_history=(10, 10, 10, 10, 10, 10),
+        )
         bridge = RevisionBridge([snapshot(held, cheap, profit=GASEOUS_ASSETS_TARGET - 150)])
 
         result = self.automation(bridge).run_cycle(20, 80, execute_orders=False)

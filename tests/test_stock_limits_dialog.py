@@ -37,7 +37,7 @@ class StockLimitsDialogTests(unittest.TestCase):
 
     def dialog(self, overrides=None, use_reference=True, **kwargs):
         dialog = StockLimitsDialog(
-            self.snapshot, overrides or {}, use_reference, False, **kwargs
+            self.snapshot, overrides or {}, use_reference, **kwargs
         )
         self.dialogs.append(dialog)
         return dialog
@@ -49,6 +49,7 @@ class StockLimitsDialogTests(unittest.TestCase):
     def test_suggestions_use_reference_and_fallback_without_freezing_defaults(self):
         dialog = self.dialog(buy_limit=18.0, sell_limit=75.0)
 
+        self.assertFalse(hasattr(dialog, "discount_checkbox"))
         self.assertEqual(self.limits(dialog, 0), (5.0, 10.0))
         self.assertEqual(self.limits(dialog, 1), (10.0, 20.0))
         self.assertEqual(self.limits(dialog, 2), (18.0, 75.0))
@@ -60,25 +61,21 @@ class StockLimitsDialogTests(unittest.TestCase):
         source = {"0": {"buy": 3.0, "sell": 15.0}}
         dialog = self.dialog(source)
         dialog.table.cellWidget(0, 2).setValue(4.0)
-        dialog.discount_checkbox.setChecked(True)
         dialog.reject()
 
         self.assertEqual(source, {"0": {"buy": 3.0, "sell": 15.0}})
         self.assertEqual(dialog.overrides, source)
-        self.assertFalse(dialog.buy_on_discount)
 
     def test_edit_only_overrides_edited_asset_and_preserves_unlisted_assets(self):
         source = {"9": {"buy": 40.0, "sell": 120.0}}
         dialog = self.dialog(source)
         dialog.table.cellWidget(1, 2).setValue(8.0)
-        dialog.discount_checkbox.setChecked(True)
         dialog.accept()
 
         self.assertEqual(dialog.overrides, {
             "1": {"buy": 8.0, "sell": 20.0},
             "9": {"buy": 40.0, "sell": 120.0},
         })
-        self.assertTrue(dialog.buy_on_discount)
         self.assertEqual(source, {"9": {"buy": 40.0, "sell": 120.0}})
 
     def test_switching_reference_preserves_explicit_limits(self):

@@ -31,7 +31,6 @@ class StockLimitsDialog(QDialog):
         snapshot: StockMarketSnapshot,
         overrides: Dict[str, Dict[str, float]],
         use_reference_prices: bool,
-        buy_on_discount: bool,
         parent=None,
         *,
         buy_limit: float = 20.0,
@@ -40,7 +39,6 @@ class StockLimitsDialog(QDialog):
         super().__init__(parent)
         self.overrides = deepcopy(overrides)
         self.use_reference_prices = bool(use_reference_prices)
-        self.buy_on_discount = bool(buy_on_discount)
         self._draft_overrides = deepcopy(overrides)
         self._assets = {str(asset.asset_id): asset for asset in snapshot.assets}
         self._fallback_limits = (float(buy_limit), float(sell_limit))
@@ -62,14 +60,6 @@ class StockLimitsDialog(QDialog):
             "Limites personalizados têm prioridade; sem referência, valem os limites gerais."
         )
         layout.addWidget(self.reference_checkbox)
-
-        self.discount_checkbox = QCheckBox("Comprar assim que estiver barato")
-        self.discount_checkbox.setChecked(self.buy_on_discount)
-        self.discount_checkbox.setToolTip(
-            "Ligado: compra MAX quando não há estoque e o preço fica abaixo do limite. "
-            "Desligado: também exige a confirmação de reversão de alta configurada."
-        )
-        layout.addWidget(self.discount_checkbox)
 
         self.table = QTableWidget(len(snapshot.assets), 4)
         self.table.setHorizontalHeaderLabels(
@@ -190,5 +180,4 @@ class StockLimitsDialog(QDialog):
                 return
         self.overrides = deepcopy(self._draft_overrides)
         self.use_reference_prices = self.reference_checkbox.isChecked()
-        self.buy_on_discount = self.discount_checkbox.isChecked()
         super().accept()

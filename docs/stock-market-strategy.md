@@ -6,10 +6,10 @@ O jogo tem um preço de referência diferente por ativo: `10 × (id + 1) + níve
 
 ## Sugestão inicial implementada
 
-- Comprar MAX com estoque zero e preço estritamente abaixo de 50% da referência. Não exige uma alta isolada de 5%, que poderia deixar passar recuperações lentas.
+- Comprar MAX com estoque zero e preço estritamente abaixo de 50% da referência, somente depois que a queda parar. Se a janela anterior ainda estiver em baixa, a reação precisa alcançar o percentual configurado para confirmar a recuperação.
 - Ativar o acompanhamento do pico quando alcançar 100% da referência. Os limites podem ser personalizados em **Limites por ativo**, e são preservados entre execuções.
 - Após ativado, vender MAX ao recuar 10% do maior preço observado. A saída por tendência anterior de alta seguida de queda percentual continua funcionando como saída antecipada acima do alvo.
-- A opção de exigir reversão na compra continua disponível. Os controles de ticks e percentual seguem servindo para a saída por tendência e para essa compra opcional.
+- Há uma única estratégia de entrada. Os controles de ticks e percentual definem a janela analisada e a força mínima da recuperação, e também servem para a saída por tendência.
 - Não comprar quando nem o alvo descontado do recuo de 10% cobre o custo atual estimado com taxas.
 
 Exemplo com Banco nível 10 (o app usa o nível real):
@@ -31,6 +31,6 @@ Posições antigas não contêm a taxa histórica no save; para lotes únicos id
 
 O histórico nativo tem prioridade nas decisões. Períodos separados por reinício de ticks recebem identificadores distintos, evitando preços antigos no lugar dos novos. Custos e picos ficam no JSON existente. O pico é zerado depois de uma liquidação confirmada.
 
-**Meta** mostra o saldo nativo em relação a $31.536.000; **Lucro total** continua sendo a variação patrimonial da sessão, que é outra métrica. Se a venda das posições lucrativas já permite alcançar o achievement, o bot tenta liquidá-las sem esperar outra reversão. Compras automáticas param ao atingir a meta ou detectar o achievement. Tudo depende do toggle **Auto**.
+**Meta** mostra o saldo nativo em relação a $31.536.000; **Lucro total** continua sendo a variação patrimonial da sessão, que é outra métrica. Se a venda das posições lucrativas já permite alcançar o achievement, o bot tenta liquidá-las sem esperar outra reversão. Compras automáticas param ao atingir a meta ou detectar o achievement. Tudo depende do toggle **Automação**; os ajustes menos frequentes ficam na aba **Configurações**.
 
 Nenhuma regra assegura lucro futuro, execução em 100% dos casos ou prazo mínimo num mercado aleatório. As proteções limitam o preço aceito nas vendas automáticas; uma posição pode ficar imobilizada à espera de recuperação. Capacidade de estoque, caixa disponível, brokers e tempo de jogo aberto também limitam o ritmo; esta alteração não compra prédios, brokers nem executa ascensão.
