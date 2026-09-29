@@ -23,7 +23,7 @@ from app.models.garden import (
 
 def snapshot(
     unlocked, plants=(), *, available=True, soil="dirt", tiles=None,
-    next_tick_at=None,
+    next_tick_at=None, green_aching_thumb_won=None, green_aching_thumb_progress=None,
 ):
     seeds = tuple(
         GardenSeed(
@@ -44,6 +44,8 @@ def snapshot(
         farm_level=9, farm_amount=500, soil_key=soil, plot_width=4, plot_height=4,
         next_tick_at=next_tick_at, unlocked_tiles=tiles, seeds=seeds,
         plants=tuple(plants), soils=soils,
+        green_aching_thumb_won=green_aching_thumb_won,
+        green_aching_thumb_progress=green_aching_thumb_progress,
     )
 
 
@@ -390,6 +392,115 @@ class FazendeiraPlanningTests(unittest.TestCase):
         self.assertEqual(bridge.mutable_calls, [])
         self.assertTrue(simulated.plan.actions)
 
+    def test_green_aching_thumb_aguarda_thumbcorn_sem_limpar_o_garden(self):
+        current = snapshot({"bakerWheat"}, green_aching_thumb_won=False)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(
+            current, green_aching_thumb_enabled=True,
+        )
+        self.assertEqual(plan.mode, "green_aching_thumb_waiting")
+        self.assertEqual(plan.goal.target_key, "thumbcorn")
+        self.assertIn("aguardando o desbloqueio", plan.explanation)
+        self.assertFalse(any(action.seed_key == "thumbcorn" for action in plan.actions))
+
+    def test_green_aching_thumb_planta_todos_os_canteiros_vazios(self):
+        current = snapshot(
+            {"bakerWheat", "thumbcorn"},
+            green_aching_thumb_won=False,
+            green_aching_thumb_progress=42,
+        )
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(
+            current, green_aching_thumb_enabled=True,
+        )
+        plantings = [action for action in plan.actions if action.kind == "plant"]
+        self.assertEqual(plan.mode, "green_aching_thumb")
+        self.assertEqual(len(plantings), len(current.unlocked_tiles))
+        self.assertEqual({action.seed_key for action in plantings}, {"thumbcorn"})
+        self.assertIn("42/1000", plan.explanation)
+
+    def test_green_aching_thumb_preserva_thumbcorn_em_crescimento(self):
+        growing = GardenPlant(1, 1, 1, "thumbcorn", "Thumbcorn", 10, 50, False)
+        current = snapshot(
+            {"bakerWheat", "thumbcorn"}, (growing,), green_aching_thumb_won=False,
+        )
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(
+            current, green_aching_thumb_enabled=True,
+        )
+        self.assertFalse(any(
+            action.kind == "harvest" and (action.x, action.y) == (1, 1)
+            for action in plan.actions
+        ))
+        self.assertFalse(any(
+            action.kind == "plant" and (action.x, action.y) == (1, 1)
+            for action in plan.actions
+        ))
+
+    def test_green_aching_thumb_colhe_apenas_thumbcorn_madura(self):
+        mature = GardenPlant(1, 1, 1, "thumbcorn", "Thumbcorn", 55, 50, True)
+        current = snapshot(
+            {"bakerWheat", "thumbcorn"}, (mature,), green_aching_thumb_won=False,
+        )
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(
+            current, green_aching_thumb_enabled=True,
+        )
+        harvests = [action for action in plan.actions if action.kind == "harvest"]
+        self.assertEqual(len(harvests), 1)
+        self.assertEqual(harvests[0].seed_key, "thumbcorn")
+        self.assertTrue(harvests[0].require_mature)
+        self.assertFalse(any(
+            action.kind == "plant" and (action.x, action.y) == (1, 1)
+            for action in plan.actions
+        ))
+
+    def test_green_aching_thumb_concluida_para_o_modo_e_retorna_a_colecao(self):
+        current = snapshot(
+            {"bakerWheat", "thumbcorn"}, green_aching_thumb_won=True,
+        )
+        farmer = Fazendeira(FakeGardenBridge(current))
+        completed = farmer.build_plan(current, green_aching_thumb_enabled=True)
+        resumed = farmer.build_plan(current)
+        self.assertTrue(completed.completed)
+        self.assertEqual(completed.actions, ())
+        self.assertEqual(resumed.goal.target_key, "cronerice")
+
+    def test_green_aching_thumb_sem_achievement_confirmavel_nao_muta(self):
+        bridge = FakeGardenBridge(snapshot({"bakerWheat", "thumbcorn"}))
+        result = Fazendeira(bridge).run_cycle(
+            dry_run=False, automation_enabled=True, green_aching_thumb_enabled=True,
+        )
+        self.assertTrue(result.plan.waiting)
+        self.assertEqual(bridge.mutable_calls, [])
+
+    def test_green_aching_thumb_previa_e_automacao_desligada_nao_mutam(self):
+        bridge = FakeGardenBridge(snapshot(
+            {"bakerWheat", "thumbcorn"}, green_aching_thumb_won=False,
+        ))
+        farmer = Fazendeira(bridge)
+        preview = farmer.run_cycle(
+            dry_run=True, automation_enabled=True, green_aching_thumb_enabled=True,
+        )
+        disabled = farmer.run_cycle(
+            dry_run=False, automation_enabled=False, green_aching_thumb_enabled=True,
+        )
+        self.assertTrue(preview.plan.actions)
+        self.assertTrue(disabled.dry_run)
+        self.assertEqual(bridge.mutable_calls, [])
+
+    def test_green_aching_thumb_execucao_real_chama_apenas_colheita_madura_planejada(self):
+        mature = GardenPlant(1, 1, 1, "thumbcorn", "Thumbcorn", 55, 50, True)
+        bridge = FakeGardenBridge(snapshot(
+            {"bakerWheat", "thumbcorn"}, (mature,), green_aching_thumb_won=False,
+        ))
+        result = Fazendeira(bridge).run_cycle(
+            dry_run=False, automation_enabled=True, green_aching_thumb_enabled=True,
+        )
+        self.assertFalse(result.dry_run)
+        self.assertIn(("harvest", "thumbcorn", 1, 1), bridge.mutable_calls)
+        self.assertNotIn(("plant", "thumbcorn", 1, 1), bridge.mutable_calls)
+        self.assertTrue(all(
+            call[0] != "harvest" or call[1] == "thumbcorn"
+            for call in bridge.mutable_calls
+        ))
+
     def test_enabled_real_mode_executes_prebuilt_plan(self):
         bridge = FakeGardenBridge(snapshot({"bakerWheat"}))
         result = Fazendeira(bridge, clock=lambda: 1_000).run_cycle(
@@ -430,6 +541,21 @@ class GardenBridgeTests(unittest.TestCase):
         self.assertFalse(result.success)
         bridge.execute_js.assert_not_called()
 
+    def test_snapshot_expoe_conquista_e_progresso_do_runtime(self):
+        bridge = CookieClickerBridge()
+        bridge.execute_js = Mock(return_value={
+            "status": {"available": True, "unlocked": True, "message": "Garden disponível"},
+            "seeds": [{"id": 0, "key": "bakerWheat", "name": "Baker's wheat", "unlocked": True, "plantable": True, "matureAge": 50}],
+            "plants": [], "soils": [], "unlockedTiles": [],
+            "greenAchingThumbWon": False,
+            "greenAchingThumbProgress": 999,
+            "greenAchingThumbMessage": "Conquista confirmada por Game.HasAchiev",
+        })
+        result = bridge.get_garden_snapshot()
+        self.assertFalse(result.green_aching_thumb_won)
+        self.assertEqual(result.green_aching_thumb_progress, 999)
+        self.assertIn("Game.HasAchiev", result.green_aching_thumb_message)
+
 
 class GardenUiTests(unittest.TestCase):
     @classmethod
@@ -441,19 +567,24 @@ class GardenUiTests(unittest.TestCase):
     def test_tab_exposes_simulation_progress_and_explicit_real_toggle(self):
         from app.ui.main_window import MainWindow
         previous = automation_config.enable_garden_automation
+        previous_thumbcorn = automation_config.enable_green_aching_thumb
         automation_config.enable_garden_automation = False
+        automation_config.enable_green_aching_thumb = False
         try:
             window = MainWindow()
             tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
             self.assertIn("Garden", tabs)
             self.assertEqual(window.garden_simulate_button.text(), "Simular próximo tick")
             self.assertEqual(window.garden_auto_checkbox.text(), "Automação real")
+            self.assertEqual(window.garden_thumbcorn_checkbox.text(), "Green, aching thumb")
+            self.assertIn("Prioriza Thumbcorn", window.garden_thumbcorn_checkbox.toolTip())
             self.assertFalse(window.garden_auto_checkbox.isChecked())
             self.assertGreaterEqual(window.garden_interval_input.minimum(), 30)
             self.assertTrue(window.garden_refresh_timer.isSingleShot())
             window.close()
         finally:
             automation_config.enable_garden_automation = previous
+            automation_config.enable_green_aching_thumb = previous_thumbcorn
 
     def test_valid_result_displays_one_explainable_goal(self):
         from app.ui.main_window import MainWindow

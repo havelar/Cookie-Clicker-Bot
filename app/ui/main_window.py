@@ -227,8 +227,15 @@ class MainWindow(QMainWindow):
         )
         self.garden_auto_checkbox.setChecked(automation_config.enable_garden_automation)
         self.garden_auto_checkbox.stateChanged.connect(self._toggle_garden_automation)
+        self.garden_thumbcorn_checkbox = QCheckBox("Green, aching thumb")
+        self.garden_thumbcorn_checkbox.setToolTip(
+            "Prioriza Thumbcorn até obter a conquista de colher 1.000 plantas maduras. "
+            "Ações reais exigem que ‘Automação real’ esteja habilitada."
+        )
+        self.garden_thumbcorn_checkbox.setChecked(automation_config.enable_green_aching_thumb)
+        self.garden_thumbcorn_checkbox.stateChanged.connect(self._toggle_green_aching_thumb)
         toolbar.addWidget(self.garden_status_label); toolbar.addWidget(self.garden_progress_label); toolbar.addStretch()
-        toolbar.addWidget(self.garden_refresh_button); toolbar.addWidget(self.garden_simulate_button); toolbar.addWidget(self.garden_auto_checkbox)
+        toolbar.addWidget(self.garden_refresh_button); toolbar.addWidget(self.garden_simulate_button); toolbar.addWidget(self.garden_thumbcorn_checkbox); toolbar.addWidget(self.garden_auto_checkbox)
         layout.addLayout(toolbar)
 
         goal_group = QGroupBox("Próxima meta prioritária"); goal_layout = QVBoxLayout(goal_group)
@@ -858,8 +865,13 @@ class MainWindow(QMainWindow):
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
             return
+        green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
         self._run_garden_task(
-            lambda: self.fazendeira.run_cycle(dry_run=True, automation_enabled=False),
+            lambda: self.fazendeira.run_cycle(
+                dry_run=True,
+                automation_enabled=False,
+                green_aching_thumb_enabled=green_aching_thumb_enabled,
+            ),
             self._display_garden_result,
         )
 
@@ -869,8 +881,13 @@ class MainWindow(QMainWindow):
             self._show_garden_feedback(False, "Bridge não está disponível.")
             return
         logger.info("Garden: simulação solicitada; nenhuma ação será enviada ao jogo")
+        green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
         self._run_garden_task(
-            lambda: self.fazendeira.run_cycle(dry_run=True, automation_enabled=False),
+            lambda: self.fazendeira.run_cycle(
+                dry_run=True,
+                automation_enabled=False,
+                green_aching_thumb_enabled=green_aching_thumb_enabled,
+            ),
             self._display_garden_result,
         )
 
@@ -879,9 +896,11 @@ class MainWindow(QMainWindow):
             return
         self._garden_run_when_idle = False
         enabled = self.garden_auto_checkbox.isChecked()
+        green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
         self._run_garden_task(
             lambda: self.fazendeira.run_cycle(
                 dry_run=not enabled, automation_enabled=enabled,
+                green_aching_thumb_enabled=green_aching_thumb_enabled,
             ),
             self._display_garden_result,
         )
@@ -916,6 +935,20 @@ class MainWindow(QMainWindow):
             logger.error("Garden: worker retornou resultado inválido")
             return
         snapshot, plan = value.snapshot, value.plan
+        achievement_completed = plan.mode == "green_aching_thumb" and plan.completed
+        if achievement_completed and self.garden_thumbcorn_checkbox.isChecked():
+            self.garden_thumbcorn_checkbox.blockSignals(True)
+            self.garden_thumbcorn_checkbox.setChecked(False)
+            self.garden_thumbcorn_checkbox.blockSignals(False)
+            automation_config.enable_green_aching_thumb = False
+            save_automation_settings()
+            logger.info("Garden: conquista Green, aching thumb obtida; modo Thumbcorn desativado")
+            # O próximo ciclo real continua a coleção normal. A prévia abaixo
+            # também a mostra imediatamente, sem nova chamada à bridge.
+            if self.fazendeira:
+                plan = self.fazendeira.build_plan(snapshot)
+            if self.garden_auto_checkbox.isChecked():
+                self._garden_run_when_idle = True
         self._schedule_next_garden_tick(snapshot)
         self._garden_available = snapshot.status.available
         color = "#65d6a5" if snapshot.status.available else (
@@ -962,7 +995,12 @@ class MainWindow(QMainWindow):
         else:
             plan_text += "\n\nNenhuma mutação será enviada neste tick."
         self.garden_plan_text.setPlainText(plan_text)
-        if value.action_results:
+        if achievement_completed:
+            self._show_garden_feedback(
+                True,
+                "Conquista Green, aching thumb obtida no runtime; modo Thumbcorn desativado e coleção normal retomada.",
+            )
+        elif value.action_results:
             successes = sum(result.success for result in value.action_results)
             details = "; ".join(result.message for result in value.action_results)
             self._show_garden_feedback(
@@ -995,6 +1033,7 @@ class MainWindow(QMainWindow):
         self.garden_refresh_button.setEnabled(not busy)
         self.garden_simulate_button.setEnabled(not busy)
         self.garden_auto_checkbox.setEnabled(not busy)
+        self.garden_thumbcorn_checkbox.setEnabled(not busy)
         if busy:
             self.garden_feedback_label.setText("Consultando o runtime do Garden em segundo plano...")
             self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
@@ -1014,6 +1053,24 @@ class MainWindow(QMainWindow):
                 self._garden_run_when_idle = True
             else:
                 QTimer.singleShot(0, self._on_garden_timer)
+
+    def _toggle_green_aching_thumb(self, state: int):
+        enabled = bool(state)
+        automation_config.enable_green_aching_thumb = enabled
+        save_automation_settings()
+        logger.info(
+            f"Garden: modo Green, aching thumb {'habilitado' if enabled else 'desativado'}"
+        )
+        if enabled and not self.garden_auto_checkbox.isChecked():
+            message = "Modo Green, aching thumb habilitado para prévia; Automação real continua desativada."
+        else:
+            message = (
+                "Modo Green, aching thumb habilitado."
+                if enabled else "Modo Green, aching thumb desativado."
+            )
+        self._show_garden_feedback(enabled, message)
+        if enabled and not (self._garden_worker and self._garden_worker.isRunning()):
+            QTimer.singleShot(0, self.refresh_garden)
 
     def _schedule_next_garden_tick(self, snapshot):
         """Agenda uma única leitura logo após ``M.nextStep`` avançar."""

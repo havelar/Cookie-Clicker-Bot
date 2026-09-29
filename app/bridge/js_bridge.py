@@ -600,6 +600,24 @@ class CookieClickerBridge:
             }
             const xs=unlockedTiles.map(tile=>tile[0]), ys=unlockedTiles.map(tile=>tile[1]);
             const currentSoil=M.soilsById[Number(M.soil)];
+            const achievementName='Green, aching thumb';
+            const achievement=Game.Achievements && Game.Achievements[achievementName];
+            let greenAchingThumbWon=null;
+            let greenAchingThumbMessage='Conquista indisponível no runtime';
+            if (typeof Game.HasAchiev==='function') {
+                try {
+                    greenAchingThumbWon=!!Game.HasAchiev(achievementName);
+                    greenAchingThumbMessage='Conquista confirmada por Game.HasAchiev';
+                } catch (error) {
+                    greenAchingThumbMessage='Não foi possível consultar a conquista no runtime';
+                }
+            } else if (achievement && (achievement.won===0 || achievement.won===1 || typeof achievement.won==='boolean')) {
+                greenAchingThumbWon=!!achievement.won;
+                greenAchingThumbMessage='Conquista confirmada pelo registro de achievements';
+            }
+            const rawHarvests=Number(M.harvests);
+            const greenAchingThumbProgress=Number.isFinite(rawHarvests) && rawHarvests>=0
+                ? Math.trunc(rawHarvests) : null;
             return {
                 status:{available:true, unlocked:true, message:'Garden disponível'},
                 farmLevel:Math.max(0,Math.trunc(Number(farm.level)||0)),
@@ -611,6 +629,9 @@ class CookieClickerBridge:
                 nextSoilAt:finiteOrNull(M.nextSoil),
                 gameSeed:typeof Game.seed === 'string' ? Game.seed : null,
                 gameVersion:Game.version === undefined ? null : String(Game.version),
+                greenAchingThumbWon,
+                greenAchingThumbProgress,
+                greenAchingThumbMessage,
                 plotWidth:xs.length ? Math.max(...xs)-Math.min(...xs)+1 : 0,
                 plotHeight:ys.length ? Math.max(...ys)-Math.min(...ys)+1 : 0,
                 unlockedTiles,
@@ -1094,6 +1115,15 @@ class CookieClickerBridge:
             seeds=tuple(sorted(seeds, key=lambda seed: seed.seed_id)),
             plants=tuple(sorted(plants, key=lambda plant: (plant.y, plant.x))),
             soils=tuple(sorted(soils, key=lambda soil: soil.soil_id)),
+            green_aching_thumb_won=(
+                payload.get("greenAchingThumbWon")
+                if isinstance(payload.get("greenAchingThumbWon"), bool) else None
+            ),
+            green_aching_thumb_progress=self._optional_int(payload.get("greenAchingThumbProgress")),
+            green_aching_thumb_message=str(
+                payload.get("greenAchingThumbMessage")
+                or "Estado da conquista Green, aching thumb indisponível no runtime."
+            ),
         )
 
     @staticmethod
