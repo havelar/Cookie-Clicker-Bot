@@ -148,7 +148,9 @@ class Fazendeira:
             strategy=recipe.strategy,
         )
 
-    def build_plan(self, snapshot: GardenSnapshot) -> GardenPlan:
+    def build_plan(
+        self, snapshot: GardenSnapshot, *, green_aching_thumb_enabled: bool = False,
+    ) -> GardenPlan:
         """Gera o plano completo antes de qualquer chamada mutável."""
         if snapshot.status.available:
             runtime_keys = {seed.key for seed in snapshot.seeds}
@@ -165,6 +167,21 @@ class Fazendeira:
                     None,
                     explanation="Catálogo incompatível com esta versão do jogo; " + "; ".join(details) + ".",
                     waiting=True,
+                )
+        if green_aching_thumb_enabled:
+            thumbcorn_plan = self._build_green_aching_thumb_plan(snapshot)
+            if thumbcorn_plan is not None:
+                return thumbcorn_plan
+            if snapshot.status.available and "thumbcorn" not in snapshot.unlocked_seed_keys:
+                normal_plan = self.build_plan(snapshot)
+                return replace(
+                    normal_plan,
+                    explanation=(
+                        "Modo Green, aching thumb aguardando o desbloqueio de Thumbcorn; "
+                        "a coleção normal continuará sem limpar o Garden. "
+                        + normal_plan.explanation
+                    ),
+                    mode="green_aching_thumb_waiting",
                 )
         goal = self.select_next_goal(snapshot)
         if goal is None:
@@ -282,10 +299,13 @@ class Fazendeira:
         *,
         dry_run: bool = True,
         automation_enabled: bool = False,
+        green_aching_thumb_enabled: bool = False,
     ) -> GardenCycleResult:
         """Simula ou executa um ciclo; sem autorização, jamais muta o jogo."""
         snapshot = self.capture_snapshot()
-        plan = self.build_plan(snapshot)
+        plan = self.build_plan(
+            snapshot, green_aching_thumb_enabled=green_aching_thumb_enabled,
+        )
         if dry_run or not automation_enabled or not snapshot.status.available:
             return GardenCycleResult(snapshot, plan, True, ())
 
@@ -306,6 +326,103 @@ class Fazendeira:
             else:
                 logger.warning(f"Garden: {result.message}")
         return GardenCycleResult(snapshot, plan, False, tuple(results))
+
+    def _build_green_aching_thumb_plan(
+        self, snapshot: GardenSnapshot,
+    ) -> Optional[GardenPlan]:
+        """Monta o plano isolado para a conquista sem desviar a coleção cedo demais."""
+        if not snapshot.status.available:
+            return None
+        goal = GardenGoal(
+            target_key="thumbcorn",
+            target_name="Green, aching thumb",
+            parent_keys=("thumbcorn",),
+            parent_names=("Thumbcorn",),
+            reason="Priorizar Thumbcorn para colher plantas maduras até a conquista ser confirmada pelo jogo.",
+            pending_prerequisites=(),
+            success_condition="Game.HasAchiev confirma que Green, aching thumb foi obtida.",
+            strategy="colheita_thumbcorn",
+        )
+        if snapshot.green_aching_thumb_won is True:
+            return GardenPlan(
+                goal,
+                explanation=(
+                    "Conquista Green, aching thumb confirmada no runtime; encerrar o modo "
+                    "Thumbcorn e retomar o planejamento normal da coleção."
+                ),
+                waiting=True,
+                mode="green_aching_thumb",
+                completed=True,
+            )
+        if "thumbcorn" not in snapshot.unlocked_seed_keys:
+            # A coleção usual é a única fonte segura do desbloqueio. Não há
+            # preparação, limpeza nem alteração de solo antes dele.
+            return None
+        if snapshot.green_aching_thumb_won is not False:
+            return GardenPlan(
+                goal,
+                explanation=(
+                    "Modo Green, aching thumb em pausa: "
+                    f"{snapshot.green_aching_thumb_message} Nenhuma ação especial será enviada."
+                ),
+                waiting=True,
+                mode="green_aching_thumb",
+            )
+
+        unlocked_tiles = set(snapshot.unlocked_tiles)
+        plants_by_position = {
+            (plant.x, plant.y): plant
+            for plant in snapshot.plants
+            if (plant.x, plant.y) in unlocked_tiles
+        }
+        replacements = []
+        mature_thumbcorn = []
+        for position, plant in sorted(plants_by_position.items(), key=lambda item: (item[0][1], item[0][0])):
+            if plant.key == "thumbcorn":
+                if plant.mature:
+                    mature_thumbcorn.append(plant)
+                continue
+            replacements.append(GardenAction(
+                "harvest",
+                "Substituir a planta existente por Thumbcorn conforme o plano declarado do modo da conquista.",
+                x=position[0], y=position[1], seed_key=plant.key, require_mature=False,
+            ))
+
+        harvests = [
+            GardenAction(
+                "harvest",
+                "Colher somente Thumbcorn madura para avançar a conquista.",
+                x=plant.x, y=plant.y, seed_key="thumbcorn", require_mature=True,
+            )
+            for plant in mature_thumbcorn
+        ]
+        replacement_positions = {(action.x, action.y) for action in replacements}
+        mature_positions = {(plant.x, plant.y) for plant in mature_thumbcorn}
+        plantings = [
+            GardenAction(
+                "plant", "Preencher o canteiro desbloqueado com Thumbcorn.",
+                x=x, y=y, seed_key="thumbcorn",
+            )
+            for x, y in sorted(unlocked_tiles, key=lambda pos: (pos[1], pos[0]))
+            if (x, y) not in mature_positions
+            and ((x, y) not in plants_by_position or (x, y) in replacement_positions)
+        ]
+        actions = tuple(replacements + harvests + plantings)
+        if replacements or plantings:
+            actions = self._prepend_operational_actions(snapshot, actions)
+        progress = (
+            f" Progresso informado pelo runtime: {snapshot.green_aching_thumb_progress}/1000."
+            if snapshot.green_aching_thumb_progress is not None else ""
+        )
+        explanation = (
+            "Modo Green, aching thumb em execução: preservar Thumbcorn em crescimento, "
+            f"substituir {len(replacements)} planta(s) conforme o plano, colher "
+            f"{len(harvests)} Thumbcorn madura(s) e plantar {len(plantings)} canteiro(s) vazio(s)."
+            f"{progress} Thumbcorns colhidas serão replantadas no ciclo seguinte."
+        )
+        return GardenPlan(
+            goal, actions, explanation, waiting=not actions, mode="green_aching_thumb",
+        )
 
     def _execute_action(self, action: GardenAction) -> GardenActionResult:
         if action.kind == "plant":
