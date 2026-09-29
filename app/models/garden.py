@@ -77,6 +77,9 @@ class GardenSnapshot:
     seeds: Tuple[GardenSeed, ...] = field(default_factory=tuple)
     plants: Tuple[GardenPlant, ...] = field(default_factory=tuple)
     soils: Tuple[GardenSoil, ...] = field(default_factory=tuple)
+    green_aching_thumb_won: Optional[bool] = None
+    green_aching_thumb_progress: Optional[int] = None
+    green_aching_thumb_message: str = "Estado da conquista Green, aching thumb indisponível no runtime."
 
     @property
     def unlocked_seed_keys(self) -> frozenset[str]:
@@ -142,6 +145,8 @@ class GardenPlan:
     actions: Tuple[GardenAction, ...] = field(default_factory=tuple)
     explanation: str = ""
     waiting: bool = False
+    mode: Optional[str] = None
+    completed: bool = False
 
 
 @dataclass(frozen=True)
