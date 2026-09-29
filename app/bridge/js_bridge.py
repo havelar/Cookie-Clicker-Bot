@@ -26,6 +26,13 @@ from app.models.stock_market import (
     StockMarketStatus,
     StockTradeResult,
 )
+from app.models.auto_ascensao import (
+    Construcao,
+    HeavenlyUpgrade,
+    ResultadoAcaoAscensao,
+    SnapshotAscensao,
+    UpgradeNormal,
+)
 from app.utils.logger import logger
 
 MAX_STOCK_ASSET_ID = 10_000
@@ -149,6 +156,309 @@ class CookieClickerBridge:
                 return None
 
     # === Helpers específicos do Cookie Clicker ===
+
+    def get_ascension_snapshot(self) -> SnapshotAscensao:
+        """Obtém em uma avaliação o estado necessário para a Auto Ascensão."""
+        payload = self.execute_js("""(() => {
+            const unavailable = message => ({available:false, screen:'indisponivel', message});
+            if (!globalThis.Game) return unavailable('Runtime do jogo indisponível');
+
+            const finite = (value, fallback=0) => {
+                const number = Number(value);
+                return Number.isFinite(number) ? number : fallback;
+            };
+            const onAscend = !!Game.OnAscend;
+            const ascendTimer = finite(Game.AscendTimer);
+            const reincarnateTimer = finite(Game.ReincarnateTimer);
+            const screen = onAscend ? 'ascensao'
+                : (ascendTimer > 0 || reincarnateTimer > 0 ? 'transicao' : 'jogo');
+            const cookies = Math.max(0, finite(Game.cookies));
+            const prestige = Math.max(0, finite(Game.prestige));
+            let totalPrestige = prestige;
+            if (typeof Game.HowMuchPrestige === 'function') {
+                try {
+                    totalPrestige = finite(Game.HowMuchPrestige(
+                        finite(Game.cookiesReset) + finite(Game.cookiesEarned)
+                    ), prestige);
+                } catch (_) { totalPrestige = prestige; }
+            }
+
+            const heavenly = Object.values(Game.UpgradesById || {})
+                .filter(upgrade => upgrade && upgrade.pool === 'prestige' && !upgrade.bought)
+                .map(upgrade => {
+                    let price = Infinity;
+                    try { price = finite(upgrade.getPrice(), Infinity); } catch (_) {}
+                    const parents = Array.isArray(upgrade.parents) ? upgrade.parents : [];
+                    const parentsBought = parents.every(parent => parent && parent.bought);
+                    const simple = !upgrade.clickFunction && !upgrade.choicesFunction;
+                    const affordable = price <= finite(Game.heavenlyChips);
+                    const eligible = onAscend && parentsBought && simple && affordable;
+                    let reason = '';
+                    if (!onAscend) reason = 'fora da tela de ascensão';
+                    else if (!parentsBought) reason = 'pré-requisito celestial ausente';
+                    else if (!simple) reason = 'upgrade exige interação especial';
+                    else if (!affordable) reason = 'Heavenly Chips insuficientes';
+                    return {id:Number(upgrade.id), name:String(upgrade.name || upgrade.id),
+                        price:Number.isFinite(price) ? price : 0, eligible, reason};
+                });
+
+            const store = Array.from(Game.UpgradesInStore || []);
+            const buyAllAvailable = typeof Game.storeBuyAll === 'function'
+                && typeof Game.Has === 'function' && !!Game.Has('Inspired checklist');
+            const normal = store.filter(upgrade => upgrade && !upgrade.bought).map(upgrade => {
+                let price = Infinity, canBuy = false, vaulted = true;
+                try { price = finite(upgrade.getPrice(), Infinity); } catch (_) {}
+                try { canBuy = typeof upgrade.canBuy === 'function' && !!upgrade.canBuy(); } catch (_) {}
+                try { vaulted = typeof upgrade.isVaulted === 'function' ? !!upgrade.isVaulted() : true; }
+                catch (_) { vaulted = true; }
+                const acceptedByBuyAll = !vaulted && upgrade.pool !== 'toggle' && upgrade.pool !== 'tech';
+                const eligible = buyAllAvailable && !onAscend && screen === 'jogo' && acceptedByBuyAll
+                    && canBuy && price <= cookies;
+                let reason = '';
+                if (onAscend || screen !== 'jogo') reason = 'fora do jogo normal';
+                else if (!buyAllAvailable) reason = 'botão Comprar todos indisponível';
+                else if (!acceptedByBuyAll) reason = 'upgrade ignorado pelo botão Comprar todos';
+                else if (!canBuy || price > cookies) reason = 'cookies insuficientes';
+                return {id:Number(upgrade.id), name:String(upgrade.name || upgrade.id),
+                    price:Number.isFinite(price) ? price : 0, eligible, reason};
+            });
+
+            const buildings = Object.values(Game.ObjectsById || {}).filter(Boolean).map(object => {
+                const unlocked = object.unlocked !== 0;
+                let unitPrice = Infinity, maximum = 0;
+                try { unitPrice = finite(object.getPrice(), Infinity); } catch (_) {}
+                if (unlocked && Number(Game.buyMode) !== -1 && unitPrice <= cookies) {
+                    if (typeof object.getSumPrice === 'function') {
+                        const affordable = quantity => {
+                            try { return finite(object.getSumPrice(quantity), Infinity) <= cookies; }
+                            catch (_) { return false; }
+                        };
+                        let low = 1, high = 1;
+                        while (high < 1000 && affordable(high)) {
+                            low = high;
+                            high = Math.min(1000, high * 2);
+                            if (high === low) break;
+                        }
+                        if (high === 1000 && affordable(high)) maximum = 1000;
+                        else {
+                            let left = low, right = high - 1;
+                            while (left <= right) {
+                                const middle = Math.floor((left + right) / 2);
+                                if (affordable(middle)) { maximum = middle; left = middle + 1; }
+                                else right = middle - 1;
+                            }
+                        }
+                    } else maximum = 1;
+                }
+                return {id:Number(object.id), name:String(object.name || object.id),
+                    amount:Math.max(0, Math.trunc(finite(object.amount))),
+                    unitPrice:Number.isFinite(unitPrice) ? unitPrice : 0,
+                    maximum:Math.max(0, Math.trunc(maximum)), unlocked};
+            });
+
+            return {
+                available:true, screen, message:screen === 'ascensao'
+                    ? 'Tela de ascensão disponível'
+                    : (screen === 'transicao' ? 'Transição do jogo em andamento' : 'Jogo normal disponível'),
+                version:Game.version === undefined ? null : String(Game.version),
+                cookies, cookiesPerSecond:Math.max(0, finite(Game.cookiesPs)),
+                prestige, prestigeGain:Math.max(0, totalPrestige - prestige),
+                heavenlyChips:Math.max(0, finite(Game.heavenlyChips)),
+                ascendTimer, reincarnateTimer, buyAllAvailable, heavenly, normal, buildings
+            };
+        })()""")
+        return self._parse_ascension_snapshot(payload)
+
+    def buy_heavenly_upgrade(self, upgrade_id: int) -> ResultadoAcaoAscensao:
+        """Compra um Heavenly Upgrade simples, elegível e confirma a mudança."""
+        if isinstance(upgrade_id, bool) or not isinstance(upgrade_id, int) or upgrade_id < 0:
+            return self._invalid_ascension_action("comprar_heavenly", "Identificador inválido")
+        payload = self.execute_js("""(() => {
+            const id=%d, fail=(reason,message,extra={}) =>
+                Object.assign({ok:false,reason,message,id},extra);
+            if (!globalThis.Game || !Game.OnAscend)
+                return fail('wrong_screen','A compra celestial exige a tela de ascensão');
+            const upgrade=Game.UpgradesById && Game.UpgradesById[id];
+            if (!upgrade || upgrade.pool!=='prestige')
+                return fail('missing_upgrade','Heavenly Upgrade não encontrado');
+            if (upgrade.bought) return fail('already_bought','Heavenly Upgrade já comprado');
+            if (upgrade.clickFunction || upgrade.choicesFunction)
+                return fail('special_interaction','Upgrade exige interação especial');
+            const parents=Array.isArray(upgrade.parents)?upgrade.parents:[];
+            if (!parents.every(parent=>parent && parent.bought))
+                return fail('missing_parent','Pré-requisito celestial ainda não comprado');
+            const price=Number(upgrade.getPrice());
+            const before=Number(Game.heavenlyChips);
+            if (!Number.isFinite(price) || !Number.isFinite(before) || before<price)
+                return fail('insufficient_chips','Heavenly Chips insuficientes',{before});
+            let accepted=0;
+            try { accepted=upgrade.buy(); }
+            catch(error) { return fail('operation_error',`Falha ao comprar: ${error && error.message ? error.message : error}`,{before}); }
+            const after=Number(Game.heavenlyChips);
+            const ok=accepted===1 && !!upgrade.bought && Number.isFinite(after) && after<=before;
+            return {ok,reason:ok?'verified':'ambiguous_result',
+                message:ok?'Heavenly Upgrade comprado e verificado':'O jogo não confirmou a compra celestial',
+                id,quantity:ok?1:0,before,after};
+        })()""" % upgrade_id)
+        result = self._parse_ascension_action(payload, "comprar_heavenly", upgrade_id)
+        self._log_ascension_action(result)
+        return result
+
+    def reincarnate(self) -> ResultadoAcaoAscensao:
+        """Reencarna somente a partir da tela de ascensão e verifica a saída dela."""
+        payload = self.execute_js("""(() => {
+            const fail=(reason,message)=>({ok:false,reason,message});
+            if (!globalThis.Game || typeof Game.Reincarnate!=='function')
+                return fail('unavailable','API de reencarnação indisponível');
+            if (!Game.OnAscend) return fail('wrong_screen','O jogo não está na tela de ascensão');
+            if (Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
+                return fail('transition','Já existe uma transição em andamento');
+            const before=Number(Game.resets||0);
+            try { Game.Reincarnate(1); }
+            catch(error) { return fail('operation_error',`Falha ao reencarnar: ${error && error.message ? error.message : error}`); }
+            const after=Number(Game.resets||0);
+            const ok=!Game.OnAscend || Number(Game.ReincarnateTimer)>0;
+            return {ok,reason:ok?'verified':'ambiguous_result',
+                message:ok?'Reencarnação iniciada e verificada':'O jogo não confirmou a reencarnação',
+                before,after};
+        })()""")
+        result = self._parse_ascension_action(payload, "reencarnar")
+        self._log_ascension_action(result)
+        return result
+
+    def buy_all_normal_upgrades(self) -> ResultadoAcaoAscensao:
+        """Aciona uma vez o botão nativo de comprar todos e verifica as compras."""
+        payload = self.execute_js("""(() => {
+            const fail=(reason,message,extra={}) =>
+                Object.assign({ok:false,reason,message,quantity:0},extra);
+            if (!globalThis.Game || Game.OnAscend || Number(Game.AscendTimer)>0
+                    || Number(Game.ReincarnateTimer)>0)
+                return fail('wrong_screen','A compra exige o jogo normal e sem transição');
+            if (typeof Game.storeBuyAll!=='function' || typeof Game.Has!=='function'
+                    || !Game.Has('Inspired checklist'))
+                return fail('unavailable','O botão Comprar todos os upgrades está indisponível');
+            const allowed=upgrade => {
+                if (!upgrade || upgrade.bought || typeof upgrade.isVaulted!=='function') return false;
+                let vaulted=true;
+                try { vaulted=!!upgrade.isVaulted(); } catch(_) { return false; }
+                return !vaulted && upgrade.pool!=='toggle' && upgrade.pool!=='tech';
+            };
+            const beforeStore=Array.from(Game.UpgradesInStore||[]).filter(allowed);
+            const beforeOwned=Number(Game.UpgradesOwned||0);
+            const cookiesBefore=Number(Game.cookies||0);
+            if (!beforeStore.some(upgrade => {
+                try { return typeof upgrade.canBuy==='function' && upgrade.canBuy(); }
+                catch(_) { return false; }
+            })) return fail('nothing_affordable','Nenhum upgrade do botão está acessível agora',
+                {before:beforeOwned,after:beforeOwned});
+            try { Game.storeBuyAll(); }
+            catch(error) {
+                return fail('operation_error',`Falha ao comprar todos: ${error && error.message ? error.message : error}`,
+                    {before:beforeOwned,after:Number(Game.UpgradesOwned||0)});
+            }
+            const boughtIds=beforeStore.filter(upgrade=>!!upgrade.bought).map(upgrade=>Number(upgrade.id));
+            const afterOwned=Number(Game.UpgradesOwned||0);
+            const cookiesAfter=Number(Game.cookies||0);
+            const ok=boughtIds.length>0 && Number.isFinite(cookiesAfter) && cookiesAfter<=cookiesBefore;
+            return {ok,reason:ok?'verified':'ambiguous_result',
+                message:ok
+                    ? `${boughtIds.length} upgrade(s) comprado(s) e verificado(s) pelo botão nativo`
+                    : 'O jogo não confirmou nenhuma compra pelo botão Comprar todos',
+                quantity:boughtIds.length,before:beforeOwned,after:afterOwned,boughtIds};
+        })()""")
+        result = self._parse_ascension_action(payload, "comprar_todos_upgrades")
+        self._log_ascension_action(result)
+        return result
+
+    def buy_buildings_batch(
+        self, building_ids: List[int], quantity_limit: int = 100,
+    ) -> ResultadoAcaoAscensao:
+        """Compra até um lote de cada construção, priorizando os maiores IDs."""
+        if (
+            not isinstance(building_ids, list) or not building_ids
+            or any(isinstance(item, bool) or not isinstance(item, int) or not 0 <= item <= 10_000
+                   for item in building_ids)
+            or isinstance(quantity_limit, bool) or not isinstance(quantity_limit, int)
+            or not 1 <= quantity_limit <= 1000
+        ):
+            return self._invalid_ascension_action(
+                "comprar_lote_construcoes", "Parâmetros do lote de construções inválidos"
+            )
+        ordered_ids = sorted(set(building_ids), reverse=True)
+        payload = self.execute_js("""(() => {
+            const ids=%s, limit=%d, fail=(reason,message,extra={}) =>
+                Object.assign({ok:false,reason,message,quantity:0},extra);
+            if (!globalThis.Game || Game.OnAscend || Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
+                return fail('wrong_screen','A compra exige o jogo normal e sem transição');
+            if (Number(Game.buyMode)===-1)
+                return fail('sell_mode','O jogo está no modo de venda; compra bloqueada');
+            const objects=ids.map(id=>Game.ObjectsById && Game.ObjectsById[id]);
+            if (objects.some(object=>!object || object.unlocked===0 || typeof object.buy!=='function'
+                    || typeof object.getPrice!=='function'))
+                return fail('missing_building','Uma construção planejada ficou indisponível');
+            const before=objects.reduce((sum,object)=>sum+Number(object.amount||0),0);
+            let total=0, changed=0;
+            const purchases=[];
+            for (const object of objects) {
+                const amountBefore=Number(object.amount), cookies=Number(Game.cookies);
+                let price=Infinity;
+                try { price=Number(object.getPrice()); } catch(_) {}
+                if (!Number.isFinite(price) || !Number.isFinite(cookies) || price>cookies) continue;
+                try { object.buy(limit); }
+                catch(error) {
+                    return fail('operation_error',
+                        `Falha no lote após ${changed} construção(ões): ${error && error.message ? error.message : error}`,
+                        {quantity:total,before,after:objects.reduce((sum,item)=>sum+Number(item.amount||0),0)});
+                }
+                const amountAfter=Number(object.amount), executed=amountAfter-amountBefore;
+                if (!Number.isFinite(executed) || executed<0 || executed>limit)
+                    return fail('ambiguous_result','O jogo retornou uma quantidade inesperada no lote',
+                        {quantity:total,before,after:objects.reduce((sum,item)=>sum+Number(item.amount||0),0)});
+                if (executed>0) {
+                    total+=Math.trunc(executed);
+                    changed++;
+                    purchases.push({id:Number(object.id),quantity:Math.trunc(executed)});
+                }
+            }
+            const after=objects.reduce((sum,object)=>sum+Number(object.amount||0),0);
+            const ok=total>0 && after-before===total;
+            return {ok,reason:ok?'verified':'ambiguous_result',
+                message:ok
+                    ? `${total} unidade(s) comprada(s) em ${changed} construção(ões), das melhores para as básicas`
+                    : 'O jogo não confirmou compras no lote de construções',
+                quantity:total,before,after,purchases};
+        })()""" % (json.dumps(ordered_ids), quantity_limit))
+        result = self._parse_ascension_action(payload, "comprar_lote_construcoes")
+        self._log_ascension_action(result)
+        return result
+
+    def start_ascension(self, minimum_prestige_gain: float) -> ResultadoAcaoAscensao:
+        """Inicia ascensão apenas após revalidar atomicamente o ganho mínimo."""
+        minimum = self._optional_float(minimum_prestige_gain)
+        if minimum is None or minimum < 0:
+            return self._invalid_ascension_action("ascender", "Ganho mínimo de prestígio inválido")
+        payload = self.execute_js("""(() => {
+            const minimum=%s, fail=(reason,message,extra={}) =>
+                Object.assign({ok:false,reason,message},extra);
+            if (!globalThis.Game || typeof Game.Ascend!=='function' || typeof Game.HowMuchPrestige!=='function')
+                return fail('unavailable','API de ascensão indisponível');
+            if (Game.OnAscend || Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
+                return fail('wrong_screen','O jogo não está pronto para ascender');
+            const current=Number(Game.prestige||0);
+            const total=Number(Game.HowMuchPrestige(Number(Game.cookiesReset||0)+Number(Game.cookiesEarned||0)));
+            const gain=Math.max(0,total-current);
+            if (!Number.isFinite(gain) || gain<minimum)
+                return fail('insufficient_prestige','Ganho mínimo de prestígio ainda não atingido',{before:gain});
+            try { Game.Ascend(1); }
+            catch(error) { return fail('operation_error',`Falha ao iniciar ascensão: ${error && error.message ? error.message : error}`,{before:gain}); }
+            const ok=!!Game.OnAscend || Number(Game.AscendTimer)>0;
+            return {ok,reason:ok?'verified':'ambiguous_result',
+                message:ok?'Ascensão iniciada e verificada':'O jogo não confirmou o início da ascensão',
+                before:gain,after:gain};
+        })()""" % json.dumps(minimum))
+        result = self._parse_ascension_action(payload, "ascender")
+        self._log_ascension_action(result)
+        return result
 
     def get_grimoire_spells(self) -> List[Dict[str, Any]]:
         """Lista as magias disponíveis no Grimoire carregado."""
@@ -825,6 +1135,118 @@ class CookieClickerBridge:
         if parsed is None:
             return None
         return parsed / 1000.0 if parsed > 10_000_000_000 else parsed
+
+    @classmethod
+    def _parse_ascension_snapshot(cls, payload: Any) -> SnapshotAscensao:
+        """Converte dados do runtime sem propagar tipos ou números inválidos."""
+        if not isinstance(payload, dict) or payload.get("available") is not True:
+            message = payload.get("message") if isinstance(payload, dict) else None
+            return SnapshotAscensao(
+                False, "indisponivel",
+                str(message or "Resposta inválida ou bridge desconectada."),
+            )
+        screen = str(payload.get("screen") or "indisponivel")
+        if screen not in {"jogo", "ascensao", "transicao"}:
+            return SnapshotAscensao(False, "indisponivel", "Tela informada pelo runtime é inválida.")
+
+        heavenly = []
+        for raw in payload.get("heavenly", ()):
+            if not isinstance(raw, dict):
+                continue
+            upgrade_id = cls._optional_int(raw.get("id"))
+            price = cls._optional_float(raw.get("price"))
+            if upgrade_id is None or price is None or price < 0:
+                continue
+            heavenly.append(HeavenlyUpgrade(
+                upgrade_id, str(raw.get("name") or upgrade_id), price,
+                bool(raw.get("eligible")), str(raw.get("reason") or ""),
+            ))
+
+        normal = []
+        for raw in payload.get("normal", ()):
+            if not isinstance(raw, dict):
+                continue
+            upgrade_id = cls._optional_int(raw.get("id"))
+            price = cls._optional_float(raw.get("price"))
+            if upgrade_id is None or price is None or price < 0:
+                continue
+            normal.append(UpgradeNormal(
+                upgrade_id, str(raw.get("name") or upgrade_id), price,
+                bool(raw.get("eligible")), str(raw.get("reason") or ""),
+            ))
+
+        buildings = []
+        for raw in payload.get("buildings", ()):
+            if not isinstance(raw, dict):
+                continue
+            building_id = cls._optional_int(raw.get("id"))
+            amount = cls._optional_int(raw.get("amount"))
+            maximum = cls._optional_int(raw.get("maximum"))
+            unit_price = cls._optional_float(raw.get("unitPrice"))
+            if None in (building_id, amount, maximum, unit_price) or unit_price < 0:
+                continue
+            buildings.append(Construcao(
+                building_id, str(raw.get("name") or building_id), amount,
+                unit_price, maximum, bool(raw.get("unlocked")),
+            ))
+
+        number = lambda key: max(0.0, cls._optional_float(payload.get(key)) or 0.0)
+        return SnapshotAscensao(
+            disponivel=True,
+            tela=screen,
+            mensagem=str(payload.get("message") or "Estado disponível"),
+            versao=str(payload["version"]) if payload.get("version") is not None else None,
+            cookies=number("cookies"),
+            cookies_por_segundo=number("cookiesPerSecond"),
+            prestigio_atual=number("prestige"),
+            ganho_prestigio=number("prestigeGain"),
+            heavenly_chips=number("heavenlyChips"),
+            ascend_timer=number("ascendTimer"),
+            reincarnate_timer=number("reincarnateTimer"),
+            compra_todos_disponivel=bool(payload.get("buyAllAvailable")),
+            heavenly_upgrades=tuple(sorted(heavenly, key=lambda item: item.id)),
+            upgrades_normais=tuple(sorted(normal, key=lambda item: item.id)),
+            construcoes=tuple(sorted(buildings, key=lambda item: item.id)),
+        )
+
+    @classmethod
+    def _parse_ascension_action(
+        cls, payload: Any, action: str, target_id: Optional[int] = None,
+    ) -> ResultadoAcaoAscensao:
+        if not isinstance(payload, dict):
+            return ResultadoAcaoAscensao(
+                False, action, "Resposta inválida ou bridge desconectada.",
+                id_alvo=target_id, motivo="invalid_response",
+            )
+        runtime_id = cls._optional_int(payload.get("id"))
+        quantity = cls._optional_int(payload.get("quantity")) or 0
+        return ResultadoAcaoAscensao(
+            sucesso=payload.get("ok") is True,
+            acao=action,
+            mensagem=str(payload.get("message") or "Operação sem mensagem do runtime"),
+            id_alvo=runtime_id if runtime_id is not None else target_id,
+            quantidade_executada=quantity,
+            antes=cls._optional_float(payload.get("before")),
+            depois=cls._optional_float(payload.get("after")),
+            motivo=str(payload.get("reason") or ""),
+        )
+
+    @staticmethod
+    def _invalid_ascension_action(action: str, message: str) -> ResultadoAcaoAscensao:
+        result = ResultadoAcaoAscensao(False, action, message, motivo="invalid_arguments")
+        logger.warning(f"Auto Ascensão: {action} recusada antes do runtime — {message}")
+        return result
+
+    @staticmethod
+    def _log_ascension_action(result: ResultadoAcaoAscensao) -> None:
+        context = (
+            f"ação={result.acao}, alvo={result.id_alvo}, "
+            f"quantidade={result.quantidade_executada}, motivo={result.motivo or 'sem código'}"
+        )
+        if result.sucesso:
+            logger.info(f"Auto Ascensão: {result.mensagem} ({context})")
+        else:
+            logger.warning(f"Auto Ascensão: {result.mensagem} ({context})")
 
     def set_stock_market_owned_only_view(self, enabled: bool) -> bool:
         """Controla os olhos nativos para exibir apenas ativos com estoque."""

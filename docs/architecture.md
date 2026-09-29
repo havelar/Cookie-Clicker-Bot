@@ -13,6 +13,7 @@ Cada módulo tem uma responsabilidade clara e bem definida:
 - **UI**: Interface gráfica
 - **Utils**: Utilitários compartilhados
 - **Config**: Configurações centralizadas
+- **Auto Ascensão**: máquina de estados que separa snapshot, decisão e ação verificada
 
 ### 2. Injeção de Dependências
 As dependências são injetadas explicitamente, facilitando testes e manutenção:
@@ -100,6 +101,12 @@ logger.info("Operação executada com sucesso")
 - Clica no cookie principal
 - Intervalo configurável (padrão: 5ms)
 - Controlado por toggle (SCROLL LOCK)
+
+### Worker de Auto Ascensão
+- Executa fora do event loop do Qt
+- Faz polling pelo snapshot estruturado da bridge
+- Emite relatórios imutáveis para a aba “Auto Ascensão”
+- Interrompe antes de novas mutações quando recebe o pedido de parada
 
 ## Tratamento de Erros
 

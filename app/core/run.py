@@ -60,6 +60,7 @@ class AutomationRunner:
         self.bridge = bridge
         self.is_running = False
         self.stop_event = threading.Event()
+        self._clicker_state_lock = threading.RLock()
         self.on_clicker_state_change = state_change_callback
 
         self.cookie_position: Optional[Tuple[int, int]] = None
@@ -98,19 +99,52 @@ class AutomationRunner:
 
     def toggle_clicker(self) -> None:
         """Liga/desliga o clicker do cookie."""
-        if not self.is_running:
-            if not self.update_cookie_position():
+        with self._clicker_state_lock:
+            if not self.is_running and not self.update_cookie_position():
                 return
-
-        self.is_running = not self.is_running
-        status = "INICIADO" if self.is_running else "PARADO"
+            self.is_running = not self.is_running
+            current_state = self.is_running
+        status = "INICIADO" if current_state else "PARADO"
         logger.info(f"Macro {status}!")
 
         if self.on_clicker_state_change:
             try:
-                self.on_clicker_state_change(self.is_running)
+                self.on_clicker_state_change(current_state)
             except Exception as e:
                 logger.error(f"Erro no callback de estado do clicker: {e}")
+
+    def ensure_clicker_running(self) -> bool:
+        """Habilita o clicker de forma idempotente para a fase de produção."""
+        with self._clicker_state_lock:
+            if self.stop_event.is_set():
+                logger.warning("Clicker não foi habilitado porque o runner está encerrando")
+                return False
+            if self.is_running:
+                return True
+            if not self.update_cookie_position():
+                return False
+            self.is_running = True
+        logger.info("Clicker habilitado pela Auto Ascensão")
+        if self.on_clicker_state_change:
+            try:
+                self.on_clicker_state_change(True)
+            except Exception as error:
+                logger.error(f"Erro no callback de estado do clicker: {error}")
+        return True
+
+    def ensure_clicker_stopped(self) -> bool:
+        """Desabilita o clicker de forma idempotente durante transições seguras."""
+        with self._clicker_state_lock:
+            if not self.is_running:
+                return True
+            self.is_running = False
+        logger.info("Clicker desabilitado pela Auto Ascensão")
+        if self.on_clicker_state_change:
+            try:
+                self.on_clicker_state_change(False)
+            except Exception as error:
+                logger.error(f"Erro no callback de estado do clicker: {error}")
+        return True
 
     def detector_loop(self) -> None:
         """Thread dedicada às coletas e automações baseadas no runtime."""
