@@ -129,6 +129,33 @@ class StockHistoryContinuityTests(unittest.TestCase):
         self.assertEqual(restored.observe_position_peak(asset, 80.0), 100.0)
         self.assertEqual(restored.purchase_cost(asset), 8.0)
 
+    def test_game_cent_truncation_preserves_tracked_cost_and_peak_after_reload(self):
+        precise_price = 59.21816564172177
+        precise_unit_cost = 59.260149420780394
+        initial = self.asset(price=100.0, owned=3, purchase_price=precise_price)
+        self.store.record_purchase(StockTradeResult(
+            success=True,
+            side="buy",
+            asset_id=0,
+            requested_quantity=10_000,
+            executed_quantity=3,
+            message="Bought maximum",
+            stock_before=0,
+            stock_after=3,
+            unit_price=precise_price,
+            total_value=precise_unit_cost * 3,
+            is_maximum_order=True,
+        ))
+        self.assertEqual(self.store.observe_position_peak(initial, 80.0), 100.0)
+
+        restored = MarketHistoryStore(self.path)
+        from_game_save = self.asset(price=90.0, owned=3, purchase_price=59.21)
+        self.assertAlmostEqual(restored.purchase_cost(from_game_save), precise_unit_cost)
+        self.assertEqual(restored.observe_position_peak(from_game_save, 80.0), 100.0)
+
+        different_purchase = self.asset(price=90.0, owned=3, purchase_price=59.20)
+        self.assertIsNone(restored.purchase_cost(different_purchase))
+
     def test_different_save_discards_peak_and_cost_even_with_same_purchase_price(self):
         self.tracked_position()
         self.store = MarketHistoryStore(self.path)

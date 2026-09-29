@@ -14,10 +14,16 @@ A estratégia funciona como reconciliação de estado:
 - remove, mesmo imaturas, plantas erradas, plantas fora do layout e mutações
   indesejadas; se uma posição correta estava ocupada, limpa e replanta no mesmo
   plano;
-- quando a mutação-alvo aparece, remove as outras plantas e a preserva até ela
-  amadurecer;
-- depois de colher a mutação-alvo madura, limpa o restante do canteiro; a meta
-  seguinte é escolhida no próximo tick, já com o desbloqueio confirmado;
+- quando a mutação-alvo aparece, protege essa planta até ela amadurecer e já
+  calcula a próxima meta como se sua semente estivesse desbloqueada;
+- a cada snapshot, mantém uma lista derivada de todas as plantas presentes cuja
+  semente ainda está bloqueada; nenhuma delas pode ser removida pelo layout
+  seguinte, mesmo quando várias descobertas estão amadurecendo ao mesmo tempo;
+- enquanto a meta cresce, prepara em paralelo todas as partes plantáveis do
+  próximo layout; posições ocupadas pela meta e sementes ainda bloqueadas são
+  deixadas pendentes;
+- quando a meta amadurece, colhe-a primeiro e completa no mesmo plano os pontos
+  do próximo layout que dependiam da semente recém-desbloqueada;
 - pode selecionar fertilizante durante crescimento e lascas de madeira quando
   os pais da mutação estão maduros;
 - descongela quando o crescimento precisa continuar, mas nunca congela
@@ -36,6 +42,42 @@ referência com dez plantas. Para pais diferentes, as duas faixas são
 no diagrama de referência representam mutações indesejadas possíveis, não
 sementes que devam ser plantadas. Em canteiros menores, o planejador continua
 calculando uma variante compatível com os quadrados desbloqueados.
+
+Receitas de alta contagem não são forçadas nesse padrão genérico. Para
+**Golden clover**, o Garden 6×6 usa o setup otimizado específico de 20
+**Ordinary clovers**, deixando 16 casas de mutação com pelo menos quatro pais
+vizinhos:
+
+```text
+G.G..G
+.GGGGG
+GG....
+....GG
+GGGGG.
+G..G.G
+```
+
+`G` representa **Ordinary clover** e `.` uma casa que deve permanecer vazia.
+Em Gardens menores, a receita volta ao anel local de quatro Ordinary clovers.
+
+Para **Juicy queenbeet**, o Garden 6×6 usa 32 **Queenbeets** e quatro centros
+vazios. Cada centro fica cercado pelas oito Queenbeets exigidas pela receita:
+
+```text
+QQQQQQ
+Q.QQ.Q
+QQQQQQ
+QQQQQQ
+Q.QQ.Q
+QQQQQQ
+```
+
+`Q` representa **Queenbeet**. Em Gardens menores, o planejador volta para um
+anel local de oito plantas. **Shriekbulb** usa como receita preferencial três
+**Duketaters** de qualquer idade (0,5%), em vez de cinco Queenbeets maduras
+(0,1%). **Everdaisy** continua exigindo três **Tidygrasses** e três
+**Elderworts** maduras. Ambas usam estratégias próprias de anel e nunca passam
+pelo gerador genérico de dois pais.
 
 Os nomes de sementes apresentados ao usuário seguem os nomes oficiais em inglês;
 as explicações, mensagens, logs e documentação permanecem em português.

@@ -1,4 +1,5 @@
 """Testes da bridge, catálogo, planejamento, UI e segurança do Garden."""
+from collections import Counter
 import os
 import unittest
 from unittest.mock import Mock
@@ -79,6 +80,10 @@ class GardenCatalogTests(unittest.TestCase):
         self.assertEqual(GARDEN_CATALOG["queenbeetLump"].parents[0].count, 8)
         self.assertEqual(GARDEN_CATALOG["everdaisy"].parents[0].count, 3)
         self.assertEqual(GARDEN_CATALOG["everdaisy"].parents[1].count, 3)
+        self.assertEqual(GARDEN_CATALOG["whiteMildew"].maximum_neighbors, (("whiteMildew", 1),))
+        self.assertEqual(GARDEN_CATALOG["shriekbulb"].parents[0].key, "duketater")
+        self.assertEqual(GARDEN_CATALOG["shriekbulb"].parents[0].count, 3)
+        self.assertFalse(GARDEN_CATALOG["shriekbulb"].parents[0].mature)
         self.assertEqual(GARDEN_CATALOG["bakerWheat"].name, "Baker's wheat")
         self.assertEqual(GARDEN_CATALOG["queenbeetLump"].name, "Juicy queenbeet")
 
@@ -130,37 +135,188 @@ class FazendeiraPlanningTests(unittest.TestCase):
             [layout.get((x, 4)) for x in range(6)],
             ["bakerWheat", "thumbcorn", None, "bakerWheat", "thumbcorn", "bakerWheat"],
         )
-    def test_special_eight_parent_recipe_keeps_ring_layout(self):
+    def test_juicy_queenbeet_uses_four_complete_rings_on_maximum_garden(self):
         six_by_six = tuple((x, y) for y in range(6) for x in range(6))
         unlocked = set(TARGET_SEED_KEYS) - {"queenbeetLump"}
         current = snapshot(unlocked, tiles=six_by_six)
         plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
         plants = [action for action in plan.actions if action.kind == "plant"]
+        layout = {(action.x, action.y): action.seed_key for action in plants}
+
+        self.assertEqual(plan.goal.target_key, "queenbeetLump")
+        self.assertEqual(len(plants), 32)
+        self.assertEqual({action.seed_key for action in plants}, {"queenbeet"})
+        self.assertNotIn("layout genérico", plan.explanation)
+        self.assertIn("4 espaços", plan.explanation)
+        self.assertEqual(
+            tuple("".join("Q" if (x, y) in layout else "." for x in range(6)) for y in range(6)),
+            ("QQQQQQ", "Q.QQ.Q", "QQQQQQ", "QQQQQQ", "Q.QQ.Q", "QQQQQQ"),
+        )
+        mutation_tiles = set(six_by_six) - set(layout)
+        self.assertEqual(mutation_tiles, {(1, 1), (4, 1), (1, 4), (4, 4)})
+        self.assertTrue(all(
+            sum(neighbor in layout for neighbor in Fazendeira._neighbors(position)) == 8
+            for position in mutation_tiles
+        ))
+
+    def test_juicy_queenbeet_falls_back_to_one_ring_on_smaller_garden(self):
+        unlocked = set(TARGET_SEED_KEYS) - {"queenbeetLump"}
+        current = snapshot(unlocked)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        plants = [action for action in plan.actions if action.kind == "plant"]
+
         self.assertEqual(plan.goal.target_key, "queenbeetLump")
         self.assertEqual(len(plants), 8)
         self.assertEqual({action.seed_key for action in plants}, {"queenbeet"})
-        self.assertNotIn("layout genérico", plan.explanation)
+        self.assertIn("anel", plan.explanation)
 
-    def test_mature_target_is_harvested_before_new_recipe(self):
+    def test_shriekbulb_prefers_three_duketaters_of_any_age(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        unlocked = set(TARGET_SEED_KEYS) - {"shriekbulb"}
+        current = snapshot(unlocked, tiles=six_by_six)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        plants = [action for action in plan.actions if action.kind == "plant"]
+
+        self.assertEqual(plan.goal.target_key, "shriekbulb")
+        self.assertEqual(len(plants), 3)
+        self.assertEqual({action.seed_key for action in plants}, {"duketater"})
+        self.assertEqual(plan.goal.parent_names, ("3× Duketater",))
+
+    def test_golden_clover_uses_optimized_maximum_garden_layout(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        unlocked = set(TARGET_SEED_KEYS) - {"goldenClover"}
+        current = snapshot(unlocked, tiles=six_by_six)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        plants = [action for action in plan.actions if action.kind == "plant"]
+        layout = {(action.x, action.y): action.seed_key for action in plants}
+
+        self.assertEqual(plan.goal.target_key, "goldenClover")
+        self.assertEqual(len(plants), 20)
+        self.assertEqual(set(layout.values()), {"clover"})
+        self.assertIn("setup otimizado específico", plan.explanation)
+        self.assertIn("16 espaços", plan.explanation)
+        self.assertEqual(
+            tuple("".join("G" if (x, y) in layout else "." for x in range(6)) for y in range(6)),
+            ("G.G..G", ".GGGGG", "GG....", "....GG", "GGGGG.", "G..G.G"),
+        )
+
+        recipe = GARDEN_CATALOG["goldenClover"]
+        mutation_tiles = set(six_by_six) - set(layout)
+        self.assertEqual(len(mutation_tiles), 16)
+        neighbor_counts = Counter(
+            sum(neighbor in layout for neighbor in Fazendeira._neighbors(position))
+            for position in mutation_tiles
+        )
+        self.assertEqual(neighbor_counts, Counter({4: 14, 5: 2}))
+        self.assertTrue(all(
+            Fazendeira(FakeGardenBridge(current))._intended_tile_matches(
+                position, layout, {}, recipe,
+            )
+            for position in mutation_tiles
+        ))
+
+    def test_golden_clover_falls_back_to_local_ring_on_smaller_garden(self):
+        unlocked = set(TARGET_SEED_KEYS) - {"goldenClover"}
+        current = snapshot(unlocked)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        plants = [action for action in plan.actions if action.kind == "plant"]
+
+        self.assertEqual(plan.goal.target_key, "goldenClover")
+        self.assertEqual(len(plants), 4)
+        self.assertEqual({action.seed_key for action in plants}, {"clover"})
+        self.assertIn("anel", plan.explanation)
+
+    def test_mature_golden_clover_layout_switches_to_woodchips(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        unlocked = set(TARGET_SEED_KEYS) - {"goldenClover"}
+        empty = snapshot(unlocked, tiles=six_by_six)
+        initial = Fazendeira(FakeGardenBridge(empty)).build_plan(empty)
+        plants = tuple(
+            GardenPlant(
+                action.x, action.y, 0, "clover", "Ordinary clover", 55, 50, True,
+            )
+            for action in initial.actions if action.kind == "plant"
+        )
+        current = snapshot(unlocked, plants, tiles=six_by_six)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+
+        self.assertEqual(len(plan.actions), 1)
+        self.assertEqual(plan.actions[0].kind, "change_soil")
+        self.assertEqual(plan.actions[0].soil_key, "woodchips")
+        self.assertIn("16 espaços", plan.explanation)
+
+    def test_mature_target_is_harvested_before_completing_next_layout(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
         plant = GardenPlant(2, 2, 1, "thumbcorn", "Thumbcorn", 55, 50, True)
-        current = snapshot({"bakerWheat"}, (plant,))
+        current = snapshot({"bakerWheat"}, (plant,), tiles=six_by_six)
         plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
         self.assertEqual(plan.goal.target_key, "thumbcorn")
-        self.assertEqual(len(plan.actions), 1)
         self.assertEqual(plan.actions[0].kind, "harvest")
         self.assertTrue(plan.actions[0].require_mature)
+        plant_actions = [action for action in plan.actions if action.kind == "plant"]
+        self.assertEqual(len(plant_actions), 10)
+        self.assertEqual(
+            {action.seed_key for action in plant_actions},
+            {"bakerWheat", "thumbcorn"},
+        )
+        self.assertIn("Cronerice", plan.explanation)
 
-    def test_mature_target_is_harvested_then_entire_plot_is_cleared(self):
-        target = GardenPlant(2, 2, 1, "thumbcorn", "Thumbcorn", 55, 50, True)
-        parent = GardenPlant(1, 1, 0, "bakerWheat", "Baker's wheat", 20, 50, False)
-        other_target = GardenPlant(3, 3, 1, "thumbcorn", "Thumbcorn", 10, 50, False)
-        current = snapshot({"bakerWheat"}, (parent, target, other_target))
+    def test_immature_target_is_protected_while_next_layout_is_prepared(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        target = GardenPlant(2, 2, 1, "thumbcorn", "Thumbcorn", 10, 50, False)
+        current = snapshot({"bakerWheat"}, (target,), tiles=six_by_six)
         plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
-        harvests = [action for action in plan.actions if action.kind == "harvest"]
-        self.assertEqual(len(harvests), 3)
-        self.assertEqual((harvests[0].x, harvests[0].y), (2, 2))
-        self.assertTrue(harvests[0].require_mature)
-        self.assertTrue(all(not action.require_mature for action in harvests[1:]))
+        self.assertFalse(any(
+            action.kind == "harvest" and (action.x, action.y) == (2, 2)
+            for action in plan.actions
+        ))
+        self.assertFalse(any(
+            action.kind == "plant" and (action.x, action.y) == (2, 2)
+            for action in plan.actions
+        ))
+        plants = [action for action in plan.actions if action.kind == "plant"]
+        self.assertEqual(len(plants), 6)
+        self.assertEqual({action.seed_key for action in plants}, {"bakerWheat"})
+        self.assertIn("Cronerice", plan.explanation)
+
+    def test_immature_target_already_in_next_layout_is_reused(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        target = GardenPlant(1, 1, 1, "thumbcorn", "Thumbcorn", 10, 50, False)
+        current = snapshot({"bakerWheat"}, (target,), tiles=six_by_six)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        self.assertFalse(any(
+            (action.x, action.y) == (1, 1)
+            for action in plan.actions if action.kind in {"harvest", "plant"}
+        ))
+
+    def test_all_locked_discoveries_are_protected_while_pipeline_advances(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        older = GardenPlant(5, 5, 1, "thumbcorn", "Thumbcorn", 20, 50, False)
+        newer = GardenPlant(0, 0, 2, "cronerice", "Cronerice", 2, 50, False)
+        current = snapshot({"bakerWheat"}, (older, newer), tiles=six_by_six)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        protected = {(5, 5), (0, 0)}
+        self.assertEqual(len(Fazendeira(FakeGardenBridge(current))._pending_discoveries(current)), 2)
+        self.assertFalse(any(
+            action.kind == "harvest" and (action.x, action.y) in protected
+            for action in plan.actions
+        ))
+        self.assertIn("2 descoberta(s)", plan.explanation)
+
+    def test_harvesting_one_discovery_does_not_remove_another_immature_one(self):
+        six_by_six = tuple((x, y) for y in range(6) for x in range(6))
+        mature = GardenPlant(5, 5, 1, "thumbcorn", "Thumbcorn", 55, 50, True)
+        immature = GardenPlant(0, 0, 2, "cronerice", "Cronerice", 2, 50, False)
+        current = snapshot({"bakerWheat"}, (mature, immature), tiles=six_by_six)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        self.assertTrue(any(
+            action.kind == "harvest" and (action.x, action.y) == (5, 5)
+            and action.require_mature for action in plan.actions
+        ))
+        self.assertFalse(any(
+            action.kind == "harvest" and (action.x, action.y) == (0, 0)
+            for action in plan.actions
+        ))
 
     def test_reconciliation_removes_wrong_plants_keeps_correct_and_replants_same_tick(self):
         six_by_six = tuple((x, y) for y in range(6) for x in range(6))

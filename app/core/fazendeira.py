@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 from app.core.garden_catalog import GARDEN_CATALOG, TARGET_SEED_KEYS, GardenRecipe
@@ -33,7 +34,7 @@ class Fazendeira:
         "cronerice": "_estrategia_mutacao_adjacente",
         "gildmillet": "_estrategia_mutacao_adjacente",
         "clover": "_estrategia_mutacao_adjacente",
-        "goldenClover": "_estrategia_anel",
+        "goldenClover": "_estrategia_layout_especial",
         "shimmerlily": "_estrategia_mutacao_adjacente",
         "elderwort": "_estrategia_mutacao_adjacente",
         "bakeberry": "_estrategia_mutacao_adjacente",
@@ -49,7 +50,7 @@ class Fazendeira:
         "wardlichen": "_estrategia_mutacao_adjacente",
         "keenmoss": "_estrategia_mutacao_adjacente",
         "queenbeet": "_estrategia_mutacao_adjacente",
-        "queenbeetLump": "_estrategia_anel",
+        "queenbeetLump": "_estrategia_layout_especial",
         "duketater": "_estrategia_mutacao_adjacente",
         "crumbspore": "_estrategia_derivado_erva",
         "doughshroom": "_estrategia_mutacao_adjacente",
@@ -62,6 +63,27 @@ class Fazendeira:
         "tidygrass": "_estrategia_mutacao_adjacente",
         "everdaisy": "_estrategia_anel",
         "ichorpuff": "_estrategia_mutacao_adjacente",
+    }
+
+    # Layouts de referência que não podem ser reduzidos ao padrão genérico
+    # de dois pais. As coordenadas são relativas ao canto superior esquerdo do
+    # Garden 6×6. Casas omitidas ficam vazias para receber a mutação.
+    MAXIMUM_SPECIAL_LAYOUTS = {
+        "goldenClover": {
+            (0, 0): "clover", (2, 0): "clover", (5, 0): "clover",
+            (1, 1): "clover", (2, 1): "clover", (3, 1): "clover",
+            (4, 1): "clover", (5, 1): "clover",
+            (0, 2): "clover", (1, 2): "clover",
+            (4, 3): "clover", (5, 3): "clover",
+            (0, 4): "clover", (1, 4): "clover", (2, 4): "clover",
+            (3, 4): "clover", (4, 4): "clover",
+            (0, 5): "clover", (3, 5): "clover", (5, 5): "clover",
+        },
+        "queenbeetLump": {
+            (x, y): "queenbeet"
+            for y in range(6) for x in range(6)
+            if (x, y) not in {(1, 1), (4, 1), (1, 4), (4, 4)}
+        },
     }
 
     def __init__(self, bridge, *, clock=None):
@@ -154,36 +176,92 @@ class Fazendeira:
             return GardenPlan(None, explanation=explanation, waiting=True)
 
         recipe = GARDEN_CATALOG[goal.target_key]
+        pending_discoveries = self._pending_discoveries(snapshot)
+        assumed_unlocks = {plant.key for plant in pending_discoveries}
         target_plants = tuple(plant for plant in snapshot.plants if plant.key == goal.target_key)
         mature_target = next((plant for plant in target_plants if plant.mature), None)
         if mature_target:
-            actions = [GardenAction(
-                "harvest", f"Colher {goal.target_name} madura e confirmar o desbloqueio da semente.",
-                x=mature_target.x, y=mature_target.y, seed_key=goal.target_key,
-            )]
+            mature_discoveries = tuple(
+                sorted(
+                    (plant for plant in pending_discoveries if plant.mature),
+                    key=lambda plant: (
+                        plant.key != goal.target_key, plant.y, plant.x, plant.key,
+                    ),
+                )
+            )
+            mature_positions = {(plant.x, plant.y) for plant in mature_discoveries}
+            protected_positions = {
+                (plant.x, plant.y) for plant in pending_discoveries if not plant.mature
+            }
+            followup = self._select_followup_goal(snapshot, assumed_unlocks)
+            planning_snapshot = replace(
+                snapshot,
+                plants=tuple(
+                    plant for plant in snapshot.plants
+                    if (plant.x, plant.y) not in mature_positions
+                ),
+            )
+            followup_actions = self._plan_followup_setup(
+                planning_snapshot,
+                followup,
+                protected_positions=protected_positions,
+                newly_unlocked_keys={plant.key for plant in mature_discoveries},
+            )
+            actions = []
+            if snapshot.frozen:
+                actions.append(GardenAction(
+                    "set_freeze", "Descongelar o Garden antes de avançar para a próxima meta.",
+                    freeze=False,
+                ))
             actions.extend(
                 GardenAction(
-                    "harvest", "Limpar o layout concluído antes da próxima meta.",
-                    x=plant.x, y=plant.y, seed_key=plant.key, require_mature=False,
+                    "harvest",
+                    f"Colher {GARDEN_CATALOG[plant.key].name} madura e confirmar o desbloqueio da semente.",
+                    x=plant.x, y=plant.y, seed_key=plant.key,
                 )
-                for plant in self._sorted_plants(snapshot)
-                if (plant.x, plant.y) != (mature_target.x, mature_target.y)
+                for plant in mature_discoveries
             )
-            actions = list(self._prepend_operational_actions(snapshot, actions))
+            actions.extend(
+                action for action in followup_actions if action.kind != "set_freeze"
+            )
             return GardenPlan(
                 goal, tuple(actions),
-                "A meta madura será colhida e o canteiro será limpo; o próximo tick escolherá a próxima meta.",
+                (
+                    f"{len(mature_discoveries)} descoberta(s) madura(s) serão colhidas; em seguida, o layout de "
+                    f"{followup.target_name} será completado no mesmo tick."
+                    if followup else
+                    "As descobertas maduras serão colhidas; as demais continuarão protegidas."
+                ),
             )
         if target_plants:
             oldest = max(target_plants, key=lambda plant: plant.age)
+            followup = self._select_followup_goal(snapshot, assumed_unlocks)
+            protected = {(plant.x, plant.y) for plant in pending_discoveries}
+            followup_actions = self._plan_followup_setup(
+                snapshot, followup, protected_positions=protected,
+            )
+            # Enquanto a meta atual cresce, Fertilizer tem precedência sobre
+            # Wood chips do próximo layout.
             actions = list(self._growth_actions(snapshot))
-            actions.extend(self._remove_plants_except(snapshot, allowed_keys={goal.target_key}))
+            actions.extend(
+                action for action in followup_actions
+                if action.kind not in {"change_soil", "set_freeze"}
+            )
+            if followup is None:
+                actions.extend(self._remove_plants_except(
+                    snapshot, allowed_keys={goal.target_key},
+                ))
             return GardenPlan(
                 goal,
                 tuple(actions),
                 explanation=(
                     f"{goal.target_name} encontrada com idade {oldest.age:.1f}/{oldest.mature_age:.1f}; "
-                    "preservar a meta, remover as demais plantas e aguardar maturidade."
+                    + (
+                        f"preservar {len(pending_discoveries)} descoberta(s) em crescimento enquanto "
+                        f"o layout de {followup.target_name} é preparado em paralelo."
+                        if followup else
+                        f"preservar {len(pending_discoveries)} descoberta(s) e aguardar maturidade."
+                    )
                 ),
                 waiting=not actions,
             )
@@ -243,6 +321,59 @@ class Fazendeira:
             return self.bridge.set_garden_frozen(bool(action.freeze))
         return GardenActionResult(False, action.kind, "Ação do Garden desconhecida.")
 
+    def _pending_discoveries(
+        self, snapshot: GardenSnapshot
+    ) -> Tuple[GardenPlant, ...]:
+        """Lista plantas cujas sementes ainda dependem de uma colheita madura."""
+        missing = snapshot.missing_seed_keys
+        return tuple(
+            plant for plant in self._sorted_plants(snapshot) if plant.key in missing
+        )
+
+    def _select_followup_goal(
+        self, snapshot: GardenSnapshot, assumed_unlocked_keys: set[str]
+    ) -> Optional[GardenGoal]:
+        """Escolhe a próxima meta supondo que todas as descobertas serão colhidas."""
+        hypothetical = replace(
+            snapshot,
+            seeds=tuple(
+                replace(seed, unlocked=True)
+                if seed.key in assumed_unlocked_keys else seed
+                for seed in snapshot.seeds
+            ),
+        )
+        return self.select_next_goal(hypothetical)
+
+    def _plan_followup_setup(
+        self,
+        snapshot: GardenSnapshot,
+        goal: Optional[GardenGoal],
+        *,
+        protected_positions: Optional[set[Tuple[int, int]]] = None,
+        newly_unlocked_keys: Optional[set[str]] = None,
+    ) -> Tuple[GardenAction, ...]:
+        """Planeja antecipadamente o próximo layout sem tocar na meta protegida."""
+        if goal is None or goal.pending_prerequisites:
+            return ()
+        recipe = GARDEN_CATALOG[goal.target_key]
+        method_name = self.ESTRATEGIAS_POR_PLANTA[goal.target_key]
+        actions, _ = getattr(self, method_name)(snapshot, recipe)
+        actions = self._prepend_operational_actions(snapshot, actions)
+        protected_positions = protected_positions or set()
+        plantable_keys = set(snapshot.unlocked_seed_keys)
+        # Estas ações só serão executadas depois das colheitas que abrem as sementes.
+        plantable_keys.update(newly_unlocked_keys or set())
+
+        filtered = []
+        for action in actions:
+            position = (action.x, action.y)
+            if action.x is not None and action.y is not None and position in protected_positions:
+                continue
+            if action.kind == "plant" and action.seed_key not in plantable_keys:
+                continue
+            filtered.append(action)
+        return tuple(filtered)
+
     def _estrategia_inicial(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return (), "A semente inicial deveria estar desbloqueada; aguarde uma nova leitura do runtime."
 
@@ -251,6 +382,19 @@ class Fazendeira:
 
     def _estrategia_anel(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_parent_layout(snapshot, recipe)
+
+    def _estrategia_layout_especial(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
+        layout = self._maximum_special_layout(snapshot, recipe)
+        if layout is None:
+            return self._plan_parent_layout(snapshot, recipe)
+        desired, mutation_tiles = layout
+        return self._plan_mutation_layout(
+            snapshot,
+            recipe,
+            desired,
+            mutation_tiles,
+            f"setup otimizado específico de {recipe.name} no Garden 6×6",
+        )
 
     def _estrategia_fungo_espalhamento(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_parent_layout(snapshot, recipe)
@@ -293,12 +437,29 @@ class Fazendeira:
             return self._plan_parent_layout(snapshot, recipe)
 
         desired, mutation_tiles, orientation = layout
+        return self._plan_mutation_layout(
+            snapshot,
+            recipe,
+            desired,
+            mutation_tiles,
+            f"layout genérico em faixas {orientation}",
+        )
+
+    def _plan_mutation_layout(
+        self,
+        snapshot: GardenSnapshot,
+        recipe: GardenRecipe,
+        desired: Dict[Tuple[int, int], str],
+        mutation_tiles: Tuple[Tuple[int, int], ...],
+        description: str,
+    ):
+        """Reconcilia um layout e administra crescimento e Wood chips."""
         actions = self._reconcile_layout(snapshot, desired)
         if actions:
             removals = sum(action.kind == "harvest" for action in actions)
             plantings = sum(action.kind == "plant" for action in actions)
             return actions, (
-                f"Reconciliar o layout genérico em faixas {orientation}: remover {removals} "
+                f"Reconciliar o {description}: remover {removals} "
                 f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar "
                 f"{len(mutation_tiles)} espaços para a mutação."
             )
@@ -309,7 +470,7 @@ class Fazendeira:
         )
         if not ready_tiles:
             return self._growth_actions(snapshot), (
-                f"Layout genérico completo; aguardando a maturidade dos pais em faixas {orientation}."
+                f"{description.capitalize()} completo; aguardando a maturidade dos pais."
             )
         woodchips = next(
             (soil for soil in snapshot.soils if soil.key == "woodchips" and soil.available), None
@@ -318,16 +479,44 @@ class Fazendeira:
         if woodchips and snapshot.soil_key != "woodchips" and can_change and not snapshot.frozen:
             return (
                 GardenAction(
-                    "change_soil", "Aumentar as tentativas do layout genérico com Wood chips.",
+                    "change_soil", f"Aumentar as tentativas do {description} com Wood chips.",
                     soil_key="woodchips",
                 ),
             ), (
-                f"{len(ready_tiles)} espaços do layout estão prontos; usar Wood chips e aguardar a mutação."
+                f"{len(ready_tiles)} espaços do {description} estão prontos; "
+                "usar Wood chips e aguardar a mutação."
             )
         return (), (
-            f"{len(ready_tiles)} espaços do layout genérico estão cercados pelos pais exigidos; "
+            f"{len(ready_tiles)} espaços do {description} estão cercados pelos pais exigidos; "
             "preservar esses espaços vazios e aguardar a mutação."
         )
+
+    def _maximum_special_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
+        """Materializa um setup especial somente no Garden máximo 6×6."""
+        reference = self.MAXIMUM_SPECIAL_LAYOUTS.get(recipe.key)
+        unlocked = set(snapshot.unlocked_tiles)
+        if reference is None or not unlocked:
+            return None
+        minimum_x = min(x for x, _ in unlocked)
+        minimum_y = min(y for _, y in unlocked)
+        full_plot = {
+            (minimum_x + x, minimum_y + y)
+            for y in range(6) for x in range(6)
+        }
+        if unlocked != full_plot:
+            return None
+        desired = {
+            (minimum_x + x, minimum_y + y): key
+            for (x, y), key in reference.items()
+        }
+        mutation_tiles = tuple(
+            position for position in sorted(unlocked, key=lambda pos: (pos[1], pos[0]))
+            if position not in desired
+            and self._intended_tile_matches(position, desired, {}, recipe)
+        )
+        if not mutation_tiles:
+            return None
+        return desired, mutation_tiles
 
     def _find_generic_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         """Escolhe a faixa que maximiza espaços válidos de mutação."""
