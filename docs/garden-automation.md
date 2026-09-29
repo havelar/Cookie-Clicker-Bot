@@ -30,6 +30,30 @@ A estratégia funciona como reconciliação de estado:
   automaticamente, pois isso pode matar Cheapcaps;
 - não sacrifica o Garden, não compra upgrades e não altera saves.
 
+## Modo Green, aching thumb
+
+O checkbox **Green, aching thumb** prioriza temporariamente Thumbcorn para obter a
+conquista de colher 1.000 plantas maduras. Ele também respeita a separação entre
+planejamento e execução: com **Automação real** desligada, o modo produz somente
+prévia e jamais chama uma operação mutável da bridge.
+
+Enquanto Thumbcorn ainda estiver bloqueado, a Fazendeira continua a coleção
+normal e apenas informa que o modo está aguardando o desbloqueio; ela não limpa
+o Garden, troca solo nem prepara canteiros para esse modo. Depois do desbloqueio,
+o plano isolado preenche somente canteiros desbloqueados com Thumbcorn, preserva
+as que ainda crescem e colhe somente Thumbcorn madura. Plantas diferentes podem
+ser removidas exclusivamente quando a substituição por Thumbcorn estiver declarada
+no mesmo plano; nunca são colhidas apenas para aumentar o contador. Canteiros de
+Thumbcorn madura colhida são replantados no ciclo seguinte.
+
+O snapshot consulta `Game.HasAchiev('Green, aching thumb')` sem mutar o jogo; esta
+é a confirmação final. Quando presente e numérico, `M.harvests` também é exibido
+como progresso informativo, mas nunca decide a conclusão. Se a versão do runtime
+não expuser uma dessas APIs de modo seguro, o modo especial pausa antes de qualquer
+ação Thumbcorn e informa o motivo. Ao confirmar a conquista, a interface desmarca
+e persiste o checkbox, registra o resultado e volta de imediato ao planejamento
+normal da coleção.
+
 Para receitas com dois pais, a Fazendeira usa layouts genéricos em faixas no
 canteiro inteiro. Pais iguais formam faixas de uma mesma semente; pais diferentes
 alternam as duas sementes. A orientação e o deslocamento são escolhidos para
@@ -91,7 +115,8 @@ O catálogo central fica em `app/core/garden_catalog.py`. Ele foi conferido em
 
 Foram validadas as estruturas `M.plants`, `M.plantsById`, `M.getMuts`,
 `M.soils`, `M.soilsById`, `M.plot`, `M.plotLimits`, `M.isTileUnlocked`,
-`M.useTool`, `M.harvest`, `M.freeze`, `M.nextStep`, `M.stepT` e `M.nextSoil`.
+`M.useTool`, `M.harvest`, `M.harvests`, `M.freeze`, `M.nextStep`, `M.stepT` e
+`M.nextSoil`, além de `Game.HasAchiev` para confirmação da conquista.
 O arquivo oficial não declara uma versão própria do minigame. Por isso, o
 snapshot registra `Game.version` em tempo de execução e a data de validação é
 a referência documental. Uma mudança futura nas receitas deve ser feita somente
