@@ -12,6 +12,14 @@ except ImportError:
     raise ImportError("pychrome não encontrado. Instale com 'pip install pychrome'")
 
 from app.config.settings import app_config
+from app.models.garden import (
+    GardenActionResult,
+    GardenPlant,
+    GardenSeed,
+    GardenSnapshot,
+    GardenSoil,
+    GardenStatus,
+)
 from app.models.stock_market import (
     StockAsset,
     StockMarketSnapshot,
@@ -241,6 +249,196 @@ class CookieClickerBridge:
             };
         })()""")
         return self._parse_stock_status(payload)
+
+    def get_garden_snapshot(self) -> GardenSnapshot:
+        """Obtém um snapshot defensivo do Garden em uma única avaliação."""
+        payload = self.execute_js("""(() => {
+            const unavailable = (unlocked, message) => ({
+                status:{available:false, unlocked:!!unlocked, message}
+            });
+            if (!globalThis.Game || !Game.Objects) {
+                return unavailable(false, 'Runtime do jogo indisponível');
+            }
+            const farm = Game.Objects['Farm'];
+            if (!farm) return unavailable(false, 'Prédio Fazenda indisponível');
+            const unlocked = Number(farm.level || 0) > 0;
+            if (!unlocked) return unavailable(false, 'Garden ainda não foi desbloqueado');
+            const M = farm.minigame;
+            const ready = !!farm.minigameLoaded && !!M
+                && Array.isArray(M.plantsById) && Array.isArray(M.soilsById)
+                && Array.isArray(M.plot) && typeof M.isTileUnlocked === 'function';
+            if (!ready) return unavailable(true, 'Garden desbloqueado, mas ainda não carregado');
+            const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
+            const unlockedTiles = [];
+            const plants = [];
+            for (let y=0; y<6; y++) for (let x=0; x<6; x++) {
+                if (!M.isTileUnlocked(x,y)) continue;
+                unlockedTiles.push([x,y]);
+                const tile = M.plot[y] && M.plot[y][x];
+                if (!Array.isArray(tile) || Number(tile[0]) < 1) continue;
+                const seed = M.plantsById[Number(tile[0])-1];
+                if (!seed) continue;
+                const age = Number(tile[1]);
+                const matureAge = Number(seed.mature);
+                plants.push({
+                    x,y, seedId:Number(seed.id), key:String(seed.key || ''),
+                    name:String(seed.name || seed.key || ''), age:finiteOrNull(age),
+                    matureAge:finiteOrNull(matureAge),
+                    mature:Number.isFinite(age) && Number.isFinite(matureAge) && age>=matureAge,
+                    weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
+                });
+            }
+            const xs=unlockedTiles.map(tile=>tile[0]), ys=unlockedTiles.map(tile=>tile[1]);
+            const currentSoil=M.soilsById[Number(M.soil)];
+            return {
+                status:{available:true, unlocked:true, message:'Garden disponível'},
+                farmLevel:Math.max(0,Math.trunc(Number(farm.level)||0)),
+                farmAmount:Math.max(0,Math.trunc(Number(farm.amount)||0)),
+                soilKey:currentSoil ? String(currentSoil.key || '') : null,
+                soilName:currentSoil ? String(currentSoil.name || currentSoil.key || '') : null,
+                frozen:!!M.freeze,
+                nextTickAt:finiteOrNull(M.nextStep), tickSeconds:finiteOrNull(M.stepT),
+                nextSoilAt:finiteOrNull(M.nextSoil),
+                gameSeed:typeof Game.seed === 'string' ? Game.seed : null,
+                gameVersion:Game.version === undefined ? null : String(Game.version),
+                plotWidth:xs.length ? Math.max(...xs)-Math.min(...xs)+1 : 0,
+                plotHeight:ys.length ? Math.max(...ys)-Math.min(...ys)+1 : 0,
+                unlockedTiles,
+                seeds:M.plantsById.map(seed=>({
+                    id:Number(seed.id), key:String(seed.key || ''),
+                    name:String(seed.name || seed.key || ''), unlocked:!!seed.unlocked,
+                    plantable:seed.plantable !== false, matureAge:finiteOrNull(seed.mature),
+                    weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
+                })),
+                plants,
+                soils:M.soilsById.map(soil=>({
+                    id:Number(soil.id), key:String(soil.key || ''),
+                    name:String(soil.name || soil.key || ''),
+                    requiredFarms:Math.max(0,Math.trunc(Number(soil.req)||0)),
+                    tickMinutes:finiteOrNull(soil.tick),
+                    available:Number(farm.amount||0)>=Number(soil.req||0)
+                }))
+            };
+        })()""")
+        return self._parse_garden_snapshot(payload)
+
+    def plant_garden_seed(self, seed_key: str, x: int, y: int) -> GardenActionResult:
+        """Planta uma semente desbloqueada somente em um canteiro vazio."""
+        if not self._valid_garden_key(seed_key) or not self._valid_garden_position(x, y):
+            return GardenActionResult(False, "plant", "Parâmetros de plantio inválidos.", x=x, y=y)
+        payload = self.execute_js("""(() => {
+            const key=%s, x=%d, y=%d;
+            const fail=message=>({ok:false,message,x,y,seedKey:key});
+            const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
+            const M=farm && farm.minigameLoaded ? farm.minigame : null;
+            if (!M || !Array.isArray(M.plot) || typeof M.useTool!=='function')
+                return fail('Garden indisponível ou API incompatível');
+            if (M.freeze) return fail('Garden está congelado');
+            if (!M.isTileUnlocked(x,y)) return fail('Canteiro bloqueado');
+            const seed=M.plants && M.plants[key];
+            if (!seed) return fail('Semente inexistente');
+            if (!seed.unlocked) return fail('Semente ainda não desbloqueada');
+            if (seed.plantable===false) return fail('Esta semente não pode ser plantada');
+            if (!Array.isArray(M.plot[y][x]) || Number(M.plot[y][x][0])!==0)
+                return fail('Canteiro ocupado; nenhuma planta foi substituída');
+            if (typeof M.canPlant==='function' && !M.canPlant(seed))
+                return fail('Recursos insuficientes ou plantio recusado pelo jogo');
+            let accepted=false;
+            try { accepted=M.useTool(Number(seed.id),x,y)===true; }
+            catch (error) { return fail(`Falha ao plantar: ${error && error.message ? error.message : error}`); }
+            const tile=M.plot[y][x];
+            const after=Array.isArray(tile) && Number(tile[0])>0
+                ? M.plantsById[Number(tile[0])-1] : null;
+            const ok=accepted && after && after.key===key;
+            return {ok,message:ok?'Semente plantada e verificada':'O jogo não confirmou o plantio',
+                x,y,seedKey:key,beforeKey:null,afterKey:after?String(after.key):null};
+        })()""" % (json.dumps(seed_key), x, y))
+        return self._parse_garden_action(payload, "plant", x=x, y=y, seed_key=seed_key)
+
+    def harvest_garden_tile(
+        self, x: int, y: int, *, expected_key: Optional[str] = None,
+        require_mature: bool = True,
+    ) -> GardenActionResult:
+        """Colhe uma planta esperada, opcionalmente exigindo maturidade."""
+        if (expected_key is not None and not self._valid_garden_key(expected_key)):
+            return GardenActionResult(False, "harvest", "Semente esperada inválida.", x=x, y=y)
+        if not self._valid_garden_position(x, y) or not isinstance(require_mature, bool):
+            return GardenActionResult(False, "harvest", "Parâmetros de colheita inválidos.", x=x, y=y)
+        payload = self.execute_js("""(() => {
+            const x=%d,y=%d,expected=%s,requireMature=%s;
+            const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:expected},extra);
+            const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
+            const M=farm && farm.minigameLoaded ? farm.minigame : null;
+            if (!M || !Array.isArray(M.plot) || typeof M.harvest!=='function')
+                return fail('Garden indisponível ou API incompatível');
+            if (!M.isTileUnlocked(x,y)) return fail('Canteiro bloqueado');
+            const tile=M.plot[y] && M.plot[y][x];
+            const before=Array.isArray(tile) && Number(tile[0])>0 ? M.plantsById[Number(tile[0])-1] : null;
+            if (!before) return fail('Canteiro vazio');
+            const beforeKey=String(before.key||'');
+            if (expected!==null && beforeKey!==expected)
+                return fail('Planta divergente; colheita cancelada',{beforeKey});
+            if (requireMature && Number(tile[1])<Number(before.mature))
+                return fail('Planta ainda não está madura',{beforeKey});
+            let accepted=false;
+            try { accepted=M.harvest(x,y,1)===true; }
+            catch (error) { return fail(`Falha ao colher: ${error && error.message ? error.message : error}`,{beforeKey}); }
+            const afterTile=M.plot[y][x];
+            const after=Array.isArray(afterTile) && Number(afterTile[0])>0
+                ? M.plantsById[Number(afterTile[0])-1] : null;
+            const afterKey=after?String(after.key||''):null;
+            const unlocked=before && !!before.unlocked;
+            const ok=accepted && afterKey!==beforeKey;
+            return {ok,message:ok
+                ? (unlocked?'Planta colhida e semente confirmada':'Planta colhida; semente ainda não confirmada')
+                :'O jogo não confirmou a colheita',x,y,seedKey:beforeKey,beforeKey,afterKey};
+        })()""" % (x, y, json.dumps(expected_key), "true" if require_mature else "false"))
+        return self._parse_garden_action(payload, "harvest", x=x, y=y, seed_key=expected_key)
+
+    def change_garden_soil(self, soil_key: str) -> GardenActionResult:
+        """Troca o solo somente quando o requisito e o cooldown permitem."""
+        if not self._valid_garden_key(soil_key):
+            return GardenActionResult(False, "change_soil", "Solo inválido.", soil_key=soil_key)
+        payload = self.execute_js("""(() => {
+            const key=%s;
+            const fail=message=>({ok:false,message,soilKey:key});
+            const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
+            const M=farm && farm.minigameLoaded ? farm.minigame : null;
+            if (!M || !M.soils || typeof M.computeStepT!=='function')
+                return fail('Garden indisponível ou API de solo incompatível');
+            const soil=M.soils[key];
+            if (!soil) return fail('Solo inexistente');
+            if (M.freeze) return fail('Descongele o Garden antes de trocar o solo');
+            if (Number(M.soil)===Number(soil.id)) return {ok:true,message:'Solo já estava selecionado',soilKey:key};
+            if (Number(M.nextSoil)>Date.now()) return fail('Troca de solo ainda está em cooldown');
+            if (Number(farm.amount||0)<Number(soil.req||0)) return fail('Quantidade de Fazendas insuficiente para este solo');
+            M.nextSoil=Date.now()+(typeof Game.Has==='function' && Game.Has('Turbo-charged soil')?1:600000);
+            M.toCompute=true; M.soil=Number(soil.id); M.computeStepT();
+            const ok=Number(M.soil)===Number(soil.id);
+            return {ok,message:ok?'Solo alterado e verificado':'O jogo não confirmou a troca de solo',soilKey:key};
+        })()""" % json.dumps(soil_key))
+        return self._parse_garden_action(payload, "change_soil", soil_key=soil_key)
+
+    def set_garden_frozen(self, frozen: bool) -> GardenActionResult:
+        """Congela ou descongela o Garden e verifica o estado resultante."""
+        if not isinstance(frozen, bool):
+            return GardenActionResult(False, "set_freeze", "Estado de congelamento inválido.")
+        payload = self.execute_js("""(() => {
+            const desired=%s;
+            const fail=message=>({ok:false,message});
+            const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
+            const M=farm && farm.minigameLoaded ? farm.minigame : null;
+            if (!M) return fail('Garden indisponível');
+            if (!!M.freeze===desired) return {ok:true,message:desired?'Garden já estava congelado':'Garden já estava descongelado'};
+            // A Fazendeira só solicita descongelamento automático. Congelar pode
+            // matar Cheapcaps e, portanto, permanece uma operação explícita.
+            if (desired) return fail('Congelamento automático bloqueado por segurança');
+            M.freeze=0;
+            if (typeof M.computeEffs==='function') M.computeEffs();
+            const ok=!M.freeze;
+            return {ok,message:ok?'Garden descongelado e verificado':'O jogo não confirmou o descongelamento'};
+        })()""" % ("true" if frozen else "false"))
+        return self._parse_garden_action(payload, "set_freeze")
 
     def get_stock_market_snapshot(self) -> StockMarketSnapshot:
         """Obtém recursos e ativos do mercado em uma única leitura consistente."""
@@ -495,6 +693,138 @@ class CookieClickerBridge:
             bank_level=self._optional_int(payload.get("bankLevel")),
             gaseous_assets_won=payload.get("gaseousAssetsWon") is True,
         )
+
+    def _parse_garden_snapshot(self, payload: Any) -> GardenSnapshot:
+        """Converte dados não confiáveis do JavaScript em modelos tipados."""
+        if not isinstance(payload, dict):
+            return GardenSnapshot(GardenStatus(False, False, "Resposta inválida da bridge do Garden"))
+        raw_status = payload.get("status")
+        if not isinstance(raw_status, dict):
+            return GardenSnapshot(GardenStatus(False, False, "Estado inválido do Garden"))
+        status = GardenStatus(
+            bool(raw_status.get("available")), bool(raw_status.get("unlocked")),
+            str(raw_status.get("message") or "Estado do Garden sem mensagem"),
+        )
+        if not status.available:
+            return GardenSnapshot(status)
+
+        seeds = []
+        for raw in payload.get("seeds", ()):
+            if not isinstance(raw, dict):
+                continue
+            seed_id = self._optional_int(raw.get("id"))
+            mature_age = self._optional_float(raw.get("matureAge"))
+            key = raw.get("key")
+            if seed_id is None or mature_age is None or mature_age < 0 or not self._valid_garden_key(key):
+                continue
+            seeds.append(GardenSeed(
+                seed_id, key, str(raw.get("name") or key), bool(raw.get("unlocked")),
+                bool(raw.get("plantable", True)), mature_age, bool(raw.get("weed")),
+                bool(raw.get("fungus")), bool(raw.get("immortal")),
+            ))
+        if not seeds:
+            return GardenSnapshot(GardenStatus(False, True, "Catálogo de sementes ausente ou inválido no runtime"))
+
+        plants = []
+        for raw in payload.get("plants", ()):
+            if not isinstance(raw, dict):
+                continue
+            x, y = self._optional_int(raw.get("x")), self._optional_int(raw.get("y"))
+            seed_id = self._optional_int(raw.get("seedId"))
+            age = self._optional_float(raw.get("age"))
+            mature_age = self._optional_float(raw.get("matureAge"))
+            key = raw.get("key")
+            if (x is None or y is None or not self._valid_garden_position(x, y)
+                    or seed_id is None or age is None or mature_age is None
+                    or not self._valid_garden_key(key)):
+                continue
+            plants.append(GardenPlant(
+                x, y, seed_id, key, str(raw.get("name") or key), age, mature_age,
+                bool(raw.get("mature")), bool(raw.get("weed")), bool(raw.get("fungus")),
+                bool(raw.get("immortal")),
+            ))
+
+        soils = []
+        for raw in payload.get("soils", ()):
+            if not isinstance(raw, dict) or not self._valid_garden_key(raw.get("key")):
+                continue
+            soil_id = self._optional_int(raw.get("id"))
+            required = self._optional_int(raw.get("requiredFarms"))
+            tick = self._optional_float(raw.get("tickMinutes"))
+            if soil_id is None or required is None or tick is None or tick <= 0:
+                continue
+            soils.append(GardenSoil(
+                soil_id, raw["key"], str(raw.get("name") or raw["key"]), required,
+                tick, bool(raw.get("available")),
+            ))
+
+        unlocked_tiles = []
+        for raw in payload.get("unlockedTiles", ()):
+            if not isinstance(raw, list) or len(raw) != 2:
+                continue
+            x, y = self._optional_int(raw[0]), self._optional_int(raw[1])
+            if x is not None and y is not None and self._valid_garden_position(x, y):
+                unlocked_tiles.append((x, y))
+
+        return GardenSnapshot(
+            status=status,
+            farm_level=self._optional_int(payload.get("farmLevel")),
+            farm_amount=self._optional_int(payload.get("farmAmount")),
+            soil_key=str(payload["soilKey"]) if self._valid_garden_key(payload.get("soilKey")) else None,
+            soil_name=str(payload.get("soilName")) if payload.get("soilName") is not None else None,
+            frozen=bool(payload.get("frozen")),
+            next_tick_at=self._garden_timestamp(payload.get("nextTickAt")),
+            tick_seconds=self._optional_float(payload.get("tickSeconds")),
+            next_soil_at=self._garden_timestamp(payload.get("nextSoilAt")),
+            game_seed=str(payload.get("gameSeed")) if payload.get("gameSeed") is not None else None,
+            game_version=str(payload.get("gameVersion")) if payload.get("gameVersion") is not None else None,
+            plot_width=self._optional_int(payload.get("plotWidth")) or 0,
+            plot_height=self._optional_int(payload.get("plotHeight")) or 0,
+            unlocked_tiles=tuple(sorted(set(unlocked_tiles), key=lambda pos: (pos[1], pos[0]))),
+            seeds=tuple(sorted(seeds, key=lambda seed: seed.seed_id)),
+            plants=tuple(sorted(plants, key=lambda plant: (plant.y, plant.x))),
+            soils=tuple(sorted(soils, key=lambda soil: soil.soil_id)),
+        )
+
+    @staticmethod
+    def _parse_garden_action(
+        payload: Any, action: str, *, x: Optional[int] = None, y: Optional[int] = None,
+        seed_key: Optional[str] = None, soil_key: Optional[str] = None,
+    ) -> GardenActionResult:
+        if not isinstance(payload, dict):
+            return GardenActionResult(
+                False, action, "Resposta inválida ou bridge desconectada.",
+                x=x, y=y, seed_key=seed_key, soil_key=soil_key,
+            )
+        runtime_seed = payload.get("seedKey") or seed_key
+        runtime_soil = payload.get("soilKey") or soil_key
+        return GardenActionResult(
+            bool(payload.get("ok")), action,
+            str(payload.get("message") or "Operação sem mensagem do runtime"),
+            x=x, y=y,
+            seed_key=str(runtime_seed) if runtime_seed else None,
+            soil_key=str(runtime_soil) if runtime_soil else None,
+            before_key=str(payload.get("beforeKey")) if payload.get("beforeKey") is not None else None,
+            after_key=str(payload.get("afterKey")) if payload.get("afterKey") is not None else None,
+        )
+
+    @staticmethod
+    def _valid_garden_key(value: Any) -> bool:
+        return isinstance(value, str) and 1 <= len(value) <= 64 and value.replace("_", "").isalnum()
+
+    @staticmethod
+    def _valid_garden_position(x: Any, y: Any) -> bool:
+        return (
+            isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= 5
+            and isinstance(y, int) and not isinstance(y, bool) and 0 <= y <= 5
+        )
+
+    @staticmethod
+    def _garden_timestamp(value: Any) -> Optional[float]:
+        parsed = CookieClickerBridge._optional_float(value)
+        if parsed is None:
+            return None
+        return parsed / 1000.0 if parsed > 10_000_000_000 else parsed
 
     def set_stock_market_owned_only_view(self, enabled: bool) -> bool:
         """Controla os olhos nativos para exibir apenas ativos com estoque."""

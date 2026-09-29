@@ -73,6 +73,10 @@ class AutomationConfig:
     stock_market_use_reference_prices: bool = True
     stock_market_asset_limits: dict = field(default_factory=dict)
 
+    # Garden: seguro por padrão; intervalo usado somente se M.nextStep faltar.
+    enable_garden_automation: bool = False
+    garden_poll_interval_seconds: int = 60
+
 
 @dataclass
 class BackupConfig:
@@ -223,6 +227,14 @@ def load_automation_settings() -> None:
         } if isinstance(limits, dict) else {}
     except (ValueError, TypeError):
         automation_config.stock_market_asset_limits = {}
+    automation_config.enable_garden_automation = settings.value(
+        "enable_garden_automation", False, type=bool,
+    )
+    automation_config.garden_poll_interval_seconds = min(3600, max(30, settings.value(
+        "garden_poll_interval_seconds",
+        automation_config.garden_poll_interval_seconds,
+        type=int,
+    )))
     settings.endGroup()
 
 
@@ -252,6 +264,8 @@ def save_automation_settings() -> None:
     settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
     settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
     settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
+    settings.setValue("enable_garden_automation", automation_config.enable_garden_automation)
+    settings.setValue("garden_poll_interval_seconds", automation_config.garden_poll_interval_seconds)
     settings.endGroup()
     settings.sync()
 

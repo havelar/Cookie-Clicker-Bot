@@ -58,7 +58,10 @@ class MarketHistoryStore:
                 return None
             if position:
                 # Uma compra adicional desconhecida invalida o custo do lote.
-                if (position["purchase_price"] != asset.last_bought_price
+                # O save oficial persiste ``good.prev`` com ``parseInt(x*100)``;
+                # portanto, após recarregar, só restam os centavos truncados.
+                if (not self._same_saved_purchase_price(
+                            position["purchase_price"], asset.last_bought_price)
                         or asset.owned > position["quantity"]):
                     return None
                 return position["unit_cost"]
@@ -86,7 +89,9 @@ class MarketHistoryStore:
             position = self._position_peaks.get(asset_id)
             if (
                 position is None
-                or position.get("purchase_price") != float(purchase_price)
+                or not self._same_saved_purchase_price(
+                    position.get("purchase_price"), purchase_price
+                )
                 or position.get("peak_price", 0) < activation_price
             ):
                 if current_price < activation_price:
@@ -105,6 +110,18 @@ class MarketHistoryStore:
                 position["peak_price"] = peak_price
                 self._save()
             return peak_price
+
+    @staticmethod
+    def _same_saved_purchase_price(left, right) -> bool:
+        """Compara a identidade que sobrevive ao save de ``good.prev``."""
+        try:
+            left_value, right_value = float(left), float(right)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not all(math.isfinite(value) and value > 0 for value in (left_value, right_value)):
+            return False
+        # Os preços são positivos e o jogo usa parseInt, equivalente a truncar.
+        return math.trunc(left_value * 100 + 1e-7) == math.trunc(right_value * 100 + 1e-7)
 
     def clear_position_peak(self, asset_id: int) -> None:
         """Remove o pico após a venda para a próxima posição começar limpa."""

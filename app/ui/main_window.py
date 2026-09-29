@@ -11,9 +11,11 @@ from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidg
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
+from app.core.fazendeira import Fazendeira
 from app.core.stock_market import StockMarketAutomation
 from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
+from app.models.garden import GardenCycleResult
 from app.ui.backup_dialog import BackupDialog
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
@@ -69,8 +71,12 @@ class MainWindow(QMainWindow):
         self._stock_available = False
         self._refresh_after_order = False
         self._stock_snapshot: Optional[StockMarketSnapshot] = None
+        self._garden_worker: Optional[StockMarketWorker] = None
+        self._garden_available = False
+        self._garden_run_when_idle = False
         self._session_started_at = time.monotonic()
         self.stock_automation = StockMarketAutomation(bridge) if bridge else None
+        self.fazendeira = Fazendeira(bridge) if bridge else None
         self.setup_ui()
         self.log_emitter.log_signal.connect(self.add_log)
         self.clicker_state_changed.connect(self.set_clicker_state)
@@ -108,6 +114,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._automation_tab(), "Automações")
         self.tabs.addTab(self._stock_market_tab(), "Stock Market")
+        self.tabs.addTab(self._garden_tab(), "Garden")
         self.tabs.addTab(self._activity_tab(), "Atividade")
         self.tabs.addTab(self._settings_tab(), "Configurações")
         layout.addWidget(self.tabs, 1)
@@ -118,6 +125,11 @@ class MainWindow(QMainWindow):
         if self.bridge:
             self.stock_refresh_timer.start(5_000)
             QTimer.singleShot(0, self._on_stock_market_timer)
+        self.garden_refresh_timer = QTimer(self)
+        self.garden_refresh_timer.setSingleShot(True)
+        self.garden_refresh_timer.timeout.connect(self._on_garden_timer)
+        if self.bridge:
+            QTimer.singleShot(0, self.refresh_garden)
 
     def _automation_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
@@ -165,6 +177,45 @@ class MainWindow(QMainWindow):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14); group = QGroupBox("Registro de atividades"); group_layout = QVBoxLayout(group)
         self.log_text = QTextEdit(); self.log_text.setReadOnly(True); self.log_text.setMinimumHeight(230); group_layout.addWidget(self.log_text); layout.addWidget(group); return tab
 
+    def _garden_tab(self):
+        """Cria a visão de progresso, planejamento e autorização do Garden."""
+        tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 14, 14, 14); layout.setSpacing(10)
+        toolbar = QHBoxLayout()
+        self.garden_status_label = QLabel("Garden: carregando")
+        self.garden_status_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
+        self.garden_progress_label = QLabel("Sementes: —")
+        self.garden_refresh_button = QPushButton("Atualizar snapshot")
+        self.garden_refresh_button.clicked.connect(self.refresh_garden)
+        self.garden_simulate_button = QPushButton("Simular próximo tick")
+        self.garden_simulate_button.setObjectName("primaryButton")
+        self.garden_simulate_button.clicked.connect(self.simulate_garden)
+        self.garden_auto_checkbox = QCheckBox("Automação real")
+        self.garden_auto_checkbox.setToolTip(
+            "Uma vez por tick, preserva o que está correto, remove plantas divergentes e monta todo o layout da meta."
+        )
+        self.garden_auto_checkbox.setChecked(automation_config.enable_garden_automation)
+        self.garden_auto_checkbox.stateChanged.connect(self._toggle_garden_automation)
+        toolbar.addWidget(self.garden_status_label); toolbar.addWidget(self.garden_progress_label); toolbar.addStretch()
+        toolbar.addWidget(self.garden_refresh_button); toolbar.addWidget(self.garden_simulate_button); toolbar.addWidget(self.garden_auto_checkbox)
+        layout.addLayout(toolbar)
+
+        goal_group = QGroupBox("Próxima meta prioritária"); goal_layout = QVBoxLayout(goal_group)
+        self.garden_goal_label = QLabel("Aguardando snapshot do Garden.")
+        self.garden_goal_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #f4f7fc;")
+        self.garden_parents_label = QLabel("Pais e requisitos: —")
+        self.garden_reason_label = QLabel("")
+        self.garden_reason_label.setWordWrap(True); self.garden_parents_label.setWordWrap(True)
+        goal_layout.addWidget(self.garden_goal_label); goal_layout.addWidget(self.garden_parents_label); goal_layout.addWidget(self.garden_reason_label)
+        layout.addWidget(goal_group)
+
+        plan_group = QGroupBox("Plano antes da execução"); plan_layout = QVBoxLayout(plan_group)
+        self.garden_plan_text = QTextEdit(); self.garden_plan_text.setReadOnly(True); self.garden_plan_text.setMinimumHeight(130)
+        self.garden_feedback_label = QLabel("A simulação é segura e não altera o jogo.")
+        self.garden_feedback_label.setWordWrap(True); self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
+        plan_layout.addWidget(self.garden_plan_text); plan_layout.addWidget(self.garden_feedback_label)
+        layout.addWidget(plan_group, 1)
+        return tab
+
     def _settings_tab(self):
         tab = QWidget(); outer_layout = QVBoxLayout(tab); outer_layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -211,6 +262,17 @@ class MainWindow(QMainWindow):
         stock_hint.setWordWrap(True); stock_hint.setStyleSheet("color: #9aa7ba;")
         stock_form.addRow(stock_hint)
         layout.addWidget(stock_group)
+
+        garden_group = QGroupBox("Garden"); garden_form = QFormLayout(garden_group)
+        garden_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.garden_interval_input = QSpinBox(); self.garden_interval_input.setRange(30, 3600); self.garden_interval_input.setSuffix(" s"); self.garden_interval_input.setMaximumWidth(140)
+        self.garden_interval_input.setValue(automation_config.garden_poll_interval_seconds)
+        self.garden_interval_input.setToolTip("Intervalo de fallback quando o próximo tick não puder ser lido do jogo")
+        self.garden_interval_input.valueChanged.connect(self._update_garden_interval)
+        garden_form.addRow("Fallback de consulta", self.garden_interval_input)
+        garden_hint = QLabel("A automação inicia desativada. Quando ligada, sincroniza com M.nextStep e reconcilia o layout inteiro uma vez por tick.")
+        garden_hint.setWordWrap(True); garden_hint.setStyleSheet("color: #9aa7ba;")
+        garden_form.addRow(garden_hint); layout.addWidget(garden_group)
 
         interface_group = QGroupBox("Interface"); interface_layout = QHBoxLayout(interface_group)
         interface_layout.addWidget(QLabel("Máximo de linhas no registro")); interface_layout.addStretch()
@@ -520,6 +582,191 @@ class MainWindow(QMainWindow):
         self._update_stock_actions()
         logger.debug(f"Stock Market: snapshot carregado com {len(snapshot.assets)} ativos")
 
+    def refresh_garden(self, _checked: bool = False):
+        """Atualiza snapshot e plano sem alterar o Garden."""
+        if not self.fazendeira:
+            self._show_garden_feedback(False, "Bridge não está disponível.")
+            return
+        self._run_garden_task(
+            lambda: self.fazendeira.run_cycle(dry_run=True, automation_enabled=False),
+            self._display_garden_result,
+        )
+
+    def simulate_garden(self, _checked: bool = False):
+        """Executa somente a leitura e o planejamento da Fazendeira."""
+        if not self.fazendeira:
+            self._show_garden_feedback(False, "Bridge não está disponível.")
+            return
+        logger.info("Garden: simulação solicitada; nenhuma ação será enviada ao jogo")
+        self._run_garden_task(
+            lambda: self.fazendeira.run_cycle(dry_run=True, automation_enabled=False),
+            self._display_garden_result,
+        )
+
+    def _on_garden_timer(self):
+        if not self.fazendeira or (self._garden_worker and self._garden_worker.isRunning()):
+            return
+        self._garden_run_when_idle = False
+        enabled = self.garden_auto_checkbox.isChecked()
+        self._run_garden_task(
+            lambda: self.fazendeira.run_cycle(
+                dry_run=not enabled, automation_enabled=enabled,
+            ),
+            self._display_garden_result,
+        )
+
+    def _run_garden_task(self, operation: Callable[[], object], handler: Callable[[object], None]):
+        if self._garden_worker and self._garden_worker.isRunning():
+            self._show_garden_feedback(False, "Aguarde a consulta atual do Garden terminar.")
+            return
+        self._set_garden_busy(True)
+        worker = StockMarketWorker(operation, self)
+        self._garden_worker = worker
+        worker.completed.connect(handler)
+        worker.failed.connect(self._garden_task_failed)
+        worker.finished.connect(self._garden_task_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _garden_task_failed(self, message: str):
+        logger.error(f"Garden: falha inesperada no worker: {message}")
+        self._show_garden_feedback(False, f"Falha inesperada: {message}")
+        self._schedule_next_garden_tick(None)
+
+    def _garden_task_finished(self):
+        self._garden_worker = None
+        self._set_garden_busy(False)
+        if self._garden_run_when_idle and self.garden_auto_checkbox.isChecked():
+            QTimer.singleShot(0, self._on_garden_timer)
+
+    def _display_garden_result(self, value: object):
+        if not isinstance(value, GardenCycleResult):
+            self._show_garden_feedback(False, "Resposta inesperada do ciclo do Garden.")
+            logger.error("Garden: worker retornou resultado inválido")
+            return
+        snapshot, plan = value.snapshot, value.plan
+        self._schedule_next_garden_tick(snapshot)
+        self._garden_available = snapshot.status.available
+        color = "#65d6a5" if snapshot.status.available else (
+            "#e8b766" if snapshot.status.unlocked else "#f07883"
+        )
+        status_text = "Garden: disponível" if snapshot.status.available else (
+            "Garden: carregando" if snapshot.status.unlocked else "Garden: indisponível"
+        )
+        self.garden_status_label.setText(status_text)
+        self.garden_status_label.setToolTip(snapshot.status.message)
+        self.garden_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        unlocked = sum(seed.unlocked for seed in snapshot.seeds)
+        self.garden_progress_label.setText(
+            f"Sementes: {unlocked}/{len(snapshot.seeds)}" if snapshot.seeds else "Sementes: —"
+        )
+        if not snapshot.status.available:
+            self.garden_goal_label.setText("Garden indisponível")
+            self.garden_parents_label.setText("Pais e requisitos: —")
+            self.garden_reason_label.setText(snapshot.status.message)
+            self.garden_plan_text.setPlainText("Nenhuma ação foi planejada.")
+            self._show_garden_feedback(False, snapshot.status.message)
+            return
+        if plan.goal is None:
+            incompatible = plan.explanation.startswith("Catálogo incompatível")
+            self.garden_goal_label.setText("Catálogo incompatível" if incompatible else "Coleção completa")
+            self.garden_parents_label.setText(
+                "A automação foi bloqueada até que as receitas sejam revisadas."
+                if incompatible else "Todas as sementes foram confirmadas no snapshot do jogo."
+            )
+            self.garden_reason_label.setText(plan.explanation)
+        else:
+            goal = plan.goal
+            self.garden_goal_label.setText(goal.target_name)
+            parents = ", ".join(goal.parent_names) if goal.parent_names else "nenhum (condição especial)"
+            self.garden_parents_label.setText(f"Pais e requisitos: {parents}")
+            pending = f" Pendentes: {', '.join(goal.pending_prerequisites)}." if goal.pending_prerequisites else ""
+            self.garden_reason_label.setText(
+                f"{goal.reason}{pending} Condição de sucesso: {goal.success_condition}"
+            )
+        action_lines = [self._format_garden_action(index, action) for index, action in enumerate(plan.actions, 1)]
+        plan_text = plan.explanation
+        if action_lines:
+            plan_text += "\n\n" + "\n".join(action_lines)
+        else:
+            plan_text += "\n\nNenhuma mutação será enviada neste tick."
+        self.garden_plan_text.setPlainText(plan_text)
+        if value.action_results:
+            successes = sum(result.success for result in value.action_results)
+            details = "; ".join(result.message for result in value.action_results)
+            self._show_garden_feedback(
+                successes == len(value.action_results),
+                f"Execução real: {successes}/{len(value.action_results)} ações confirmadas. {details}",
+            )
+        elif value.dry_run:
+            self._show_garden_feedback(True, "Simulação concluída; o estado do jogo não foi alterado.")
+        else:
+            self._show_garden_feedback(True, "Ciclo real concluído sem nova ação necessária.")
+
+    @staticmethod
+    def _format_garden_action(index, action) -> str:
+        labels = {
+            "plant": "Plantar", "harvest": "Colher", "change_soil": "Trocar solo",
+            "set_freeze": "Descongelar",
+        }
+        if action.kind == "harvest" and not action.require_mature:
+            labels["harvest"] = "Remover"
+        position = f" em ({action.x}, {action.y})" if action.x is not None and action.y is not None else ""
+        subject = action.seed_key or action.soil_key or "Garden"
+        return f"{index}. {labels.get(action.kind, action.kind)} {subject}{position} — {action.reason}"
+
+    def _show_garden_feedback(self, success: bool, message: str):
+        self.garden_feedback_label.setText(message)
+        self.garden_feedback_label.setStyleSheet(f"color: {'#65d6a5' if success else '#f07883'};")
+        self.status_bar.showMessage(message, 7000)
+
+    def _set_garden_busy(self, busy: bool):
+        self.garden_refresh_button.setEnabled(not busy)
+        self.garden_simulate_button.setEnabled(not busy)
+        self.garden_auto_checkbox.setEnabled(not busy)
+        if busy:
+            self.garden_feedback_label.setText("Consultando o runtime do Garden em segundo plano...")
+            self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
+
+    def _toggle_garden_automation(self, state: int):
+        enabled = bool(state)
+        automation_config.enable_garden_automation = enabled
+        save_automation_settings()
+        status = "habilitada explicitamente" if enabled else "desativada"
+        logger.info(f"Garden: automação real {status}")
+        self._show_garden_feedback(
+            enabled, f"Automação real {status}." if enabled else "Automação real desativada; somente leitura e simulação.",
+        )
+        if enabled:
+            self.garden_refresh_timer.stop()
+            if self._garden_worker and self._garden_worker.isRunning():
+                self._garden_run_when_idle = True
+            else:
+                QTimer.singleShot(0, self._on_garden_timer)
+
+    def _schedule_next_garden_tick(self, snapshot):
+        """Agenda uma única leitura logo após ``M.nextStep`` avançar."""
+        if not self.bridge:
+            return
+        fallback_ms = automation_config.garden_poll_interval_seconds * 1000
+        delay_ms = fallback_ms
+        if snapshot is not None and snapshot.status.available and snapshot.next_tick_at is not None:
+            remaining_ms = int((snapshot.next_tick_at - time.time()) * 1000)
+            if remaining_ms >= -500:
+                delay_ms = max(250, remaining_ms + 250)
+            elif self.garden_auto_checkbox.isChecked():
+                # O jogo pode estar suspenso em segundo plano; confira sem
+                # executar novamente até ``M.nextStep`` realmente avançar.
+                delay_ms = 1_000
+        self.garden_refresh_timer.start(delay_ms)
+
+    def _update_garden_interval(self, value: int):
+        interval = min(3600, max(30, int(value)))
+        automation_config.garden_poll_interval_seconds = interval
+        save_automation_settings()
+        if not self.garden_auto_checkbox.isChecked():
+            self.garden_refresh_timer.start(interval * 1000)
+
     @staticmethod
     def _format_stock_total_profit(total_profit: Optional[float]) -> str:
         if total_profit is None:
@@ -718,6 +965,8 @@ class MainWindow(QMainWindow):
         """Evita destruir uma thread de consulta ainda em execução."""
         if self._stock_worker and self._stock_worker.isRunning():
             self._stock_worker.wait((app_config.connection_timeout + 1) * 1000)
+        if self._garden_worker and self._garden_worker.isRunning():
+            self._garden_worker.wait((app_config.connection_timeout + 1) * 1000)
         super().closeEvent(event)
 
 
