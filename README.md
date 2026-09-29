@@ -17,6 +17,7 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 - **Type Hints Completos**: Código Python moderno com anotações de tipo
 - **Threading Seguro**: Automação executada em threads separadas para performance
 - **Garden por tick**: reconcilia o layout completo e automatiza opcionalmente a coleção de 34 sementes
+- **Auto Ascensão controlada**: simula ou executa ciclos com meta de prestígio, timeout, confirmação e parada segura
 
 ## 🚀 Instalação
 
@@ -74,6 +75,9 @@ app/
 
 Os detalhes de segurança, a fonte validada das receitas e as limitações do
 Garden estão em [docs/garden-automation.md](docs/garden-automation.md).
+
+O fluxo, as APIs validadas e a regra determinística de compra da Auto Ascensão
+estão em [docs/auto-ascensao.md](docs/auto-ascensao.md).
 
 ## ⚙️ Configuração
 

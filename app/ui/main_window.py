@@ -6,16 +6,18 @@ from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea)
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
 
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
+from app.core.auto_ascensao import AutoAscensao, ConfiguracaoAutoAscensao
 from app.core.fazendeira import Fazendeira
 from app.core.stock_market import StockMarketAutomation
 from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
 from app.models.garden import GardenCycleResult
+from app.models.auto_ascensao import RelatorioAutoAscensao
 from app.ui.backup_dialog import BackupDialog
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
@@ -43,6 +45,33 @@ class StockMarketWorker(QThread):
             self.completed.emit(self.operation())
         except Exception as error:
             self.failed.emit(str(error))
+
+
+class AutoAscensaoWorker(QThread):
+    """Executa a máquina de estados sem bloquear o event loop do Qt."""
+
+    updated = pyqtSignal(object)
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, automation: AutoAscensao, preview: bool, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self.automation = automation
+        self.preview = preview
+
+    def run(self) -> None:
+        try:
+            if self.preview:
+                report = self.automation.gerar_previa()
+                self.updated.emit(report)
+            else:
+                report = self.automation.executar(self.updated.emit)
+            self.completed.emit(report)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+    def stop(self) -> None:
+        self.automation.parar()
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -74,6 +103,8 @@ class MainWindow(QMainWindow):
         self._garden_worker: Optional[StockMarketWorker] = None
         self._garden_available = False
         self._garden_run_when_idle = False
+        self._auto_ascension_worker: Optional[AutoAscensaoWorker] = None
+        self._auto_ascension: Optional[AutoAscensao] = None
         self._session_started_at = time.monotonic()
         self.stock_automation = StockMarketAutomation(bridge) if bridge else None
         self.fazendeira = Fazendeira(bridge) if bridge else None
@@ -115,6 +146,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._automation_tab(), "Automações")
         self.tabs.addTab(self._stock_market_tab(), "Stock Market")
         self.tabs.addTab(self._garden_tab(), "Garden")
+        self.tabs.addTab(self._auto_ascension_tab(), "Auto Ascensão")
         self.tabs.addTab(self._activity_tab(), "Atividade")
         self.tabs.addTab(self._settings_tab(), "Configurações")
         layout.addWidget(self.tabs, 1)
@@ -215,6 +247,245 @@ class MainWindow(QMainWindow):
         plan_layout.addWidget(self.garden_plan_text); plan_layout.addWidget(self.garden_feedback_label)
         layout.addWidget(plan_group, 1)
         return tab
+
+    def _auto_ascension_tab(self):
+        """Cria os controles e o relatório da máquina de Auto Ascensão."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        warning = QLabel(
+            "A ascensão altera permanentemente o save. A execução real só começa "
+            "na tela de ascensão, exige habilitação e pede confirmação a cada início."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet("color: #e8b766; font-weight: 600;")
+        layout.addWidget(warning)
+
+        config_group = QGroupBox("Configuração do ciclo")
+        form = QFormLayout(config_group)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.auto_ascension_cycles_input = QSpinBox()
+        self.auto_ascension_cycles_input.setRange(1, 10_000)
+        self.auto_ascension_cycles_input.setValue(automation_config.auto_ascension_target_cycles)
+        self.auto_ascension_cycles_input.valueChanged.connect(self._save_auto_ascension_settings)
+        form.addRow("Quantidade alvo de ciclos", self.auto_ascension_cycles_input)
+
+        self.auto_ascension_prestige_input = QDoubleSpinBox()
+        self.auto_ascension_prestige_input.setRange(0.0, 1e300)
+        self.auto_ascension_prestige_input.setDecimals(0)
+        self.auto_ascension_prestige_input.setValue(
+            automation_config.auto_ascension_minimum_prestige_gain
+        )
+        self.auto_ascension_prestige_input.valueChanged.connect(self._save_auto_ascension_settings)
+        form.addRow("Ganho mínimo de prestígio", self.auto_ascension_prestige_input)
+
+        self.auto_ascension_interval_input = QDoubleSpinBox()
+        self.auto_ascension_interval_input.setRange(0.1, 3600.0)
+        self.auto_ascension_interval_input.setDecimals(1)
+        self.auto_ascension_interval_input.setSingleStep(0.1)
+        self.auto_ascension_interval_input.setSuffix(" s")
+        self.auto_ascension_interval_input.setValue(
+            automation_config.auto_ascension_poll_interval_seconds
+        )
+        self.auto_ascension_interval_input.valueChanged.connect(self._save_auto_ascension_settings)
+        form.addRow("Intervalo de verificação", self.auto_ascension_interval_input)
+
+        self.auto_ascension_timeout_input = QSpinBox()
+        self.auto_ascension_timeout_input.setRange(1, 31_536_000)
+        self.auto_ascension_timeout_input.setSuffix(" s")
+        self.auto_ascension_timeout_input.setValue(
+            automation_config.auto_ascension_max_cycle_seconds
+        )
+        self.auto_ascension_timeout_input.valueChanged.connect(self._save_auto_ascension_settings)
+        form.addRow("Tempo máximo por ciclo", self.auto_ascension_timeout_input)
+        layout.addWidget(config_group)
+
+        status_group = QGroupBox("Acompanhamento")
+        status_form = QFormLayout(status_group)
+        self.auto_ascension_state_label = QLabel("Não iniciada")
+        self.auto_ascension_cycle_label = QLabel("0 / —")
+        self.auto_ascension_last_action_label = QLabel("Nenhuma ação executada.")
+        self.auto_ascension_next_step_label = QLabel("Gere uma prévia para ler o jogo.")
+        self.auto_ascension_stop_reason_label = QLabel("—")
+        for label in (
+            self.auto_ascension_last_action_label,
+            self.auto_ascension_next_step_label,
+            self.auto_ascension_stop_reason_label,
+        ):
+            label.setWordWrap(True)
+        status_form.addRow("Estado atual", self.auto_ascension_state_label)
+        status_form.addRow("Ciclo atual / total", self.auto_ascension_cycle_label)
+        status_form.addRow("Última ação", self.auto_ascension_last_action_label)
+        status_form.addRow("Próximo passo", self.auto_ascension_next_step_label)
+        status_form.addRow("Parada ou erro", self.auto_ascension_stop_reason_label)
+        layout.addWidget(status_group, 1)
+
+        controls = QHBoxLayout()
+        self.auto_ascension_enable_checkbox = QCheckBox("Habilitar automação real")
+        self.auto_ascension_enable_checkbox.setChecked(automation_config.enable_auto_ascension)
+        self.auto_ascension_enable_checkbox.stateChanged.connect(self._toggle_auto_ascension_enabled)
+        self.auto_ascension_simulation_checkbox = QCheckBox("Modo simulação")
+        self.auto_ascension_simulation_checkbox.setChecked(True)
+        self.auto_ascension_preview_button = QPushButton("Atualizar prévia")
+        self.auto_ascension_preview_button.clicked.connect(self.refresh_auto_ascension_preview)
+        self.auto_ascension_start_button = QPushButton("Iniciar")
+        self.auto_ascension_start_button.setObjectName("primaryButton")
+        self.auto_ascension_start_button.clicked.connect(self.start_auto_ascension)
+        self.auto_ascension_stop_button = QPushButton("Parar imediatamente")
+        self.auto_ascension_stop_button.setObjectName("dangerButton")
+        self.auto_ascension_stop_button.setEnabled(False)
+        self.auto_ascension_stop_button.clicked.connect(self.stop_auto_ascension)
+        controls.addWidget(self.auto_ascension_enable_checkbox)
+        controls.addWidget(self.auto_ascension_simulation_checkbox)
+        controls.addStretch()
+        controls.addWidget(self.auto_ascension_preview_button)
+        controls.addWidget(self.auto_ascension_start_button)
+        controls.addWidget(self.auto_ascension_stop_button)
+        layout.addLayout(controls)
+        return tab
+
+    def _save_auto_ascension_settings(self, _value=None):
+        automation_config.auto_ascension_target_cycles = self.auto_ascension_cycles_input.value()
+        automation_config.auto_ascension_minimum_prestige_gain = (
+            self.auto_ascension_prestige_input.value()
+        )
+        automation_config.auto_ascension_poll_interval_seconds = (
+            self.auto_ascension_interval_input.value()
+        )
+        automation_config.auto_ascension_max_cycle_seconds = (
+            self.auto_ascension_timeout_input.value()
+        )
+        save_automation_settings()
+
+    def _toggle_auto_ascension_enabled(self, state: int):
+        automation_config.enable_auto_ascension = bool(state)
+        save_automation_settings()
+        logger.info(
+            f"Auto Ascensão: execução real {'habilitada' if state else 'desabilitada'}"
+        )
+
+    def _auto_ascension_configuration(self, simulation: bool) -> ConfiguracaoAutoAscensao:
+        self._save_auto_ascension_settings()
+        return ConfiguracaoAutoAscensao(
+            ciclos_alvo=self.auto_ascension_cycles_input.value(),
+            ganho_minimo_prestigio=self.auto_ascension_prestige_input.value(),
+            intervalo_verificacao=self.auto_ascension_interval_input.value(),
+            duracao_maxima_ciclo=self.auto_ascension_timeout_input.value(),
+            simulacao=simulation,
+        )
+
+    def refresh_auto_ascension_preview(self, _checked: bool = False):
+        """Gera uma prévia em worker, sem qualquer operação mutável."""
+        if not self.bridge:
+            self._auto_ascension_failed("Bridge não está disponível.")
+            return
+        if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
+            return
+        automation = AutoAscensao(
+            self.bridge, self._auto_ascension_configuration(simulation=True)
+        )
+        self._run_auto_ascension_worker(automation, preview=True)
+
+    def start_auto_ascension(self, _checked: bool = False):
+        """Inicia uma simulação ou, após confirmação, a execução real."""
+        if self.auto_ascension_simulation_checkbox.isChecked():
+            self.refresh_auto_ascension_preview()
+            return
+        if not self.bridge:
+            self._auto_ascension_failed("Bridge não está disponível.")
+            return
+        if not self.auto_ascension_enable_checkbox.isChecked():
+            self._auto_ascension_failed(
+                "Marque “Habilitar automação real” antes de iniciar."
+            )
+            return
+        if not self.runner:
+            self._auto_ascension_failed("Runner do clicker não está disponível.")
+            return
+        if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
+            return
+        answer = QMessageBox.warning(
+            self,
+            "Confirmar Auto Ascensão",
+            "A execução real pode comprar itens, reincarnar e ascender. "
+            "Ascender altera permanentemente o save.\n\n"
+            "Confirma o início a partir da tela de ascensão?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            logger.info("Auto Ascensão: início real cancelado pelo usuário")
+            return
+        automation = AutoAscensao(
+            self.bridge,
+            self._auto_ascension_configuration(simulation=False),
+            habilitar_producao=self.runner.ensure_clicker_running,
+            desabilitar_producao=self.runner.ensure_clicker_stopped,
+        )
+        self._run_auto_ascension_worker(automation, preview=False)
+
+    def _run_auto_ascension_worker(self, automation: AutoAscensao, preview: bool):
+        self._auto_ascension = automation
+        worker = AutoAscensaoWorker(automation, preview, self)
+        self._auto_ascension_worker = worker
+        worker.updated.connect(self._display_auto_ascension_report)
+        worker.completed.connect(self._display_auto_ascension_report)
+        worker.failed.connect(self._auto_ascension_failed)
+        worker.finished.connect(self._auto_ascension_finished)
+        self._set_auto_ascension_busy(True, preview)
+        worker.start()
+
+    def stop_auto_ascension(self, _checked: bool = False):
+        """Solicita parada cooperativa e bloqueia o início de novas mutações."""
+        if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
+            self._auto_ascension_worker.stop()
+            self.auto_ascension_stop_button.setEnabled(False)
+            self.auto_ascension_next_step_label.setText(
+                "Parada solicitada; nenhuma nova ação mutável será iniciada."
+            )
+            logger.warning("Auto Ascensão: parada imediata solicitada pelo usuário")
+
+    def _display_auto_ascension_report(self, value: object):
+        if not isinstance(value, RelatorioAutoAscensao):
+            self._auto_ascension_failed("Relatório inválido recebido da automação.")
+            return
+        self.auto_ascension_state_label.setText(value.estado.value)
+        self.auto_ascension_cycle_label.setText(f"{value.ciclo_atual} / {value.ciclos_alvo}")
+        self.auto_ascension_last_action_label.setText(value.ultima_acao)
+        self.auto_ascension_next_step_label.setText(value.proximo_passo)
+        self.auto_ascension_stop_reason_label.setText(value.motivo_parada or "—")
+        color = "#f07883" if value.motivo_parada and value.estado.value != "Concluído" else "#65d6a5"
+        self.auto_ascension_state_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+
+    def _auto_ascension_failed(self, message: str):
+        self.auto_ascension_state_label.setText("Erro seguro")
+        self.auto_ascension_state_label.setStyleSheet("color: #f07883; font-weight: 700;")
+        self.auto_ascension_stop_reason_label.setText(message)
+        logger.error(f"Auto Ascensão: {message}")
+
+    def _auto_ascension_finished(self):
+        self._set_auto_ascension_busy(False, preview=False)
+        worker = self._auto_ascension_worker
+        self._auto_ascension_worker = None
+        self._auto_ascension = None
+        if worker:
+            worker.deleteLater()
+
+    def _set_auto_ascension_busy(self, busy: bool, preview: bool):
+        for control in (
+            self.auto_ascension_cycles_input,
+            self.auto_ascension_prestige_input,
+            self.auto_ascension_interval_input,
+            self.auto_ascension_timeout_input,
+            self.auto_ascension_enable_checkbox,
+            self.auto_ascension_simulation_checkbox,
+            self.auto_ascension_preview_button,
+            self.auto_ascension_start_button,
+        ):
+            control.setEnabled(not busy)
+        self.auto_ascension_stop_button.setEnabled(busy and not preview)
 
     def _settings_tab(self):
         tab = QWidget(); outer_layout = QVBoxLayout(tab); outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -963,6 +1234,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Evita destruir uma thread de consulta ainda em execução."""
+        if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
+            self._auto_ascension_worker.stop()
+            self._auto_ascension_worker.wait((app_config.connection_timeout + 1) * 1000)
         if self._stock_worker and self._stock_worker.isRunning():
             self._stock_worker.wait((app_config.connection_timeout + 1) * 1000)
         if self._garden_worker and self._garden_worker.isRunning():
