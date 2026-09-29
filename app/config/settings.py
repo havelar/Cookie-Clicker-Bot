@@ -77,6 +77,13 @@ class AutomationConfig:
     enable_garden_automation: bool = False
     garden_poll_interval_seconds: int = 60
 
+    # Auto Ascensão: sempre desativada por padrão e confirmada a cada execução real.
+    enable_auto_ascension: bool = False
+    auto_ascension_target_cycles: int = 1
+    auto_ascension_minimum_prestige_gain: float = 1.0
+    auto_ascension_poll_interval_seconds: float = 0.1
+    auto_ascension_max_cycle_seconds: int = 86_400
+
 
 @dataclass
 class BackupConfig:
@@ -235,6 +242,29 @@ def load_automation_settings() -> None:
         automation_config.garden_poll_interval_seconds,
         type=int,
     )))
+    automation_config.enable_auto_ascension = settings.value(
+        "enable_auto_ascension", False, type=bool,
+    )
+    automation_config.auto_ascension_target_cycles = min(10_000, max(1, settings.value(
+        "auto_ascension_target_cycles",
+        automation_config.auto_ascension_target_cycles,
+        type=int,
+    )))
+    automation_config.auto_ascension_minimum_prestige_gain = max(0.0, settings.value(
+        "auto_ascension_minimum_prestige_gain",
+        automation_config.auto_ascension_minimum_prestige_gain,
+        type=float,
+    ))
+    automation_config.auto_ascension_poll_interval_seconds = min(3600.0, max(0.1, settings.value(
+        "auto_ascension_poll_interval_seconds",
+        automation_config.auto_ascension_poll_interval_seconds,
+        type=float,
+    )))
+    automation_config.auto_ascension_max_cycle_seconds = min(31_536_000, max(1, settings.value(
+        "auto_ascension_max_cycle_seconds",
+        automation_config.auto_ascension_max_cycle_seconds,
+        type=int,
+    )))
     settings.endGroup()
 
 
@@ -266,6 +296,20 @@ def save_automation_settings() -> None:
     settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
     settings.setValue("enable_garden_automation", automation_config.enable_garden_automation)
     settings.setValue("garden_poll_interval_seconds", automation_config.garden_poll_interval_seconds)
+    settings.setValue("enable_auto_ascension", automation_config.enable_auto_ascension)
+    settings.setValue("auto_ascension_target_cycles", automation_config.auto_ascension_target_cycles)
+    settings.setValue(
+        "auto_ascension_minimum_prestige_gain",
+        automation_config.auto_ascension_minimum_prestige_gain,
+    )
+    settings.setValue(
+        "auto_ascension_poll_interval_seconds",
+        automation_config.auto_ascension_poll_interval_seconds,
+    )
+    settings.setValue(
+        "auto_ascension_max_cycle_seconds",
+        automation_config.auto_ascension_max_cycle_seconds,
+    )
     settings.endGroup()
     settings.sync()
 
