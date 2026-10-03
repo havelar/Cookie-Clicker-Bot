@@ -1,6 +1,7 @@
 """Interface gráfica principal do Cookie Clicker Bot."""
 import sys
 import time
+import ctypes
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -12,12 +13,16 @@ from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
 from app.core.auto_ascensao import AutoAscensao, ConfiguracaoAutoAscensao
+from app.core.combo import ComboAutomation
+from app.core.simple_farm import SimpleFarmAutomation
 from app.core.fazendeira import Fazendeira
 from app.core.stock_market import StockMarketAutomation
 from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
 from app.models.garden import GardenCycleResult
 from app.models.auto_ascensao import RelatorioAutoAscensao
+from app.models.combo import ConfiguracaoCombo, EstadoCombo, RelatorioCombo
+from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
@@ -74,6 +79,32 @@ class AutoAscensaoWorker(QThread):
         self.automation.parar()
 
 
+class ComboWorker(QThread):
+    """Mantém o looper de combo fora do event loop do Qt."""
+
+    updated = pyqtSignal(object)
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, automation, preview: bool, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self.automation = automation
+        self.preview = preview
+
+    def run(self) -> None:
+        try:
+            report = (
+                self.automation.gerar_previa()
+                if self.preview else self.automation.executar(self.updated.emit)
+            )
+            self.completed.emit(report)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+    def stop(self) -> None:
+        self.automation.parar()
+
+
 class SortableTableWidgetItem(QTableWidgetItem):
     """Item que preserva o texto formatado, mas ordena pelo valor real."""
 
@@ -105,6 +136,11 @@ class MainWindow(QMainWindow):
         self._garden_run_when_idle = False
         self._auto_ascension_worker: Optional[AutoAscensaoWorker] = None
         self._auto_ascension: Optional[AutoAscensao] = None
+        self._combo_worker: Optional[ComboWorker] = None
+        self._combo_automation: Optional[ComboAutomation] = None
+        self._simple_farm_automation: Optional[SimpleFarmAutomation] = None
+        self._combo_exclusive = False
+        self._combo_keep_awake = False
         self._session_started_at = time.monotonic()
         self.stock_automation = StockMarketAutomation(bridge) if bridge else None
         self.fazendeira = Fazendeira(bridge) if bridge else None
@@ -146,6 +182,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._automation_tab(), "Automações")
         self.tabs.addTab(self._stock_market_tab(), "Stock Market")
         self.tabs.addTab(self._garden_tab(), "Garden")
+        self.tabs.addTab(self._combo_tab(), "Combo")
         self.tabs.addTab(self._auto_ascension_tab(), "Auto Ascensão")
         self.tabs.addTab(self._activity_tab(), "Atividade")
         self.tabs.addTab(self._settings_tab(), "Configurações")
@@ -254,6 +291,701 @@ class MainWindow(QMainWindow):
         plan_layout.addWidget(self.garden_plan_text); plan_layout.addWidget(self.garden_feedback_label)
         layout.addWidget(plan_group, 1)
         return tab
+
+    def _combo_tab(self):
+        """Cria o painel do planejador e executor autônomo de combo."""
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        warning = QLabel(
+            "Ao iniciar, o modo Combo pausa as demais automações, recalcula a seed continuamente "
+            "e pode vender/recomprar prédios e gastar Sugar Lumps. Ele para em estado seguro se "
+            "qualquer precondição mudar."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet("color: #e8b766; font-weight: 600;")
+        layout.addWidget(warning)
+
+        config_group = QGroupBox("Planejamento on-the-go")
+        form = QFormLayout(config_group)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.combo_search_input = QSpinBox()
+        self.combo_search_input.setRange(4, 100_000)
+        self.combo_search_input.setValue(automation_config.combo_max_search_ahead)
+        self.combo_search_input.setSuffix(" spells")
+        self.combo_search_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Alcance do forecast", self.combo_search_input)
+
+        self.combo_lumps_input = QSpinBox()
+        self.combo_lumps_input.setRange(0, 10_000)
+        self.combo_lumps_input.setValue(automation_config.combo_max_skip_lumps)
+        self.combo_lumps_input.setSuffix(" lumps")
+        self.combo_lumps_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Orçamento para alinhamento", self.combo_lumps_input)
+
+        self.combo_bs_input = QSpinBox()
+        self.combo_bs_input.setRange(1, 6)
+        self.combo_bs_input.setValue(automation_config.combo_required_building_specials)
+        self.combo_bs_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Building Specials totais", self.combo_bs_input)
+
+        self.combo_interval_input = QDoubleSpinBox()
+        self.combo_interval_input.setRange(0.1, 60.0)
+        self.combo_interval_input.setDecimals(1)
+        self.combo_interval_input.setValue(automation_config.combo_poll_interval_seconds)
+        self.combo_interval_input.setSuffix(" s")
+        self.combo_interval_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Intervalo do looper", self.combo_interval_input)
+
+        self.combo_min_buff_input = QDoubleSpinBox()
+        self.combo_min_buff_input.setRange(5.0, 120.0)
+        self.combo_min_buff_input.setDecimals(1)
+        self.combo_min_buff_input.setValue(automation_config.combo_minimum_buff_seconds)
+        self.combo_min_buff_input.setSuffix(" s")
+        self.combo_min_buff_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Duração mínima dos buffs", self.combo_min_buff_input)
+
+        # Em algumas escalas de DPI do Windows, o sizeHint nativo dos spinboxes
+        # ignora o padding do tema e recorta todo o texto do valor.
+        for field in (
+            self.combo_search_input,
+            self.combo_lumps_input,
+            self.combo_bs_input,
+            self.combo_interval_input,
+            self.combo_min_buff_input,
+        ):
+            field.setMinimumHeight(32)
+
+        boosts = QHBoxLayout()
+        self.combo_sugar_checkbox = QCheckBox("Usar Sugar Frenzy na tentativa final")
+        self.combo_sugar_checkbox.setChecked(automation_config.combo_use_sugar_frenzy)
+        self.combo_sugar_checkbox.stateChanged.connect(self._save_combo_settings)
+        self.combo_loans_checkbox = QCheckBox("Usar os três loans")
+        self.combo_loans_checkbox.setChecked(automation_config.combo_use_loans)
+        self.combo_loans_checkbox.stateChanged.connect(self._save_combo_settings)
+        boosts.addWidget(self.combo_sugar_checkbox)
+        boosts.addWidget(self.combo_loans_checkbox)
+        boosts.addStretch()
+        form.addRow("Multiplicadores finais", boosts)
+        self.combo_pause_checkbox = QCheckBox("Pausar quando faltarem 3 skips e aguardar Retomar")
+        self.combo_pause_checkbox.setChecked(automation_config.combo_pause_before_last_skips)
+        self.combo_pause_checkbox.setToolTip(
+            "Pausa uma vez por execução, antes dos últimos 3 skips (ou menos). "
+            "Enquanto aguarda, nenhuma ação no jogo é executada pelo bot."
+        )
+        self.combo_pause_checkbox.stateChanged.connect(self._save_combo_settings)
+        form.addRow("Acompanhar tentativa", self.combo_pause_checkbox)
+        layout.addWidget(config_group)
+
+        status_group = QGroupBox("Acompanhamento")
+        status_form = QFormLayout(status_group)
+        self.combo_state_label = QLabel("Não iniciado")
+        self.combo_plan_label = QLabel("Atualize a prévia para ler a seed atual.")
+        self.combo_progress_label = QLabel("Spells: — | Mana: — | Lumps: —")
+        self.combo_buffs_label = QLabel("Buffs: —")
+        self.combo_garden_label = QLabel("Garden: —")
+        self.combo_message_label = QLabel("Nenhuma ação executada.")
+        self.combo_error_label = QLabel("—")
+        for label in (
+            self.combo_plan_label, self.combo_buffs_label, self.combo_message_label,
+            self.combo_error_label,
+        ):
+            label.setWordWrap(True)
+        status_form.addRow("Estado", self.combo_state_label)
+        status_form.addRow("Plano vivo", self.combo_plan_label)
+        status_form.addRow("Recursos", self.combo_progress_label)
+        status_form.addRow("Buffs", self.combo_buffs_label)
+        status_form.addRow("Garden", self.combo_garden_label)
+        status_form.addRow("Última atualização", self.combo_message_label)
+        status_form.addRow("Bloqueio/erro", self.combo_error_label)
+        layout.addWidget(status_group, 1)
+
+        controls = QHBoxLayout()
+        self.combo_enable_checkbox = QCheckBox("Habilitar execução real")
+        self.combo_enable_checkbox.setChecked(automation_config.enable_combo_automation)
+        self.combo_enable_checkbox.stateChanged.connect(self._toggle_combo_enabled)
+        self.combo_preview_button = QPushButton("Atualizar prévia")
+        self.combo_preview_button.clicked.connect(self.refresh_combo_preview)
+        self.combo_start_button = QPushButton("Iniciar e deixar rodando")
+        self.combo_start_button.setObjectName("primaryButton")
+        self.combo_start_button.clicked.connect(self.start_combo)
+        self.combo_resume_button = QPushButton("Retomar combo")
+        self.combo_resume_button.setEnabled(False)
+        self.combo_resume_button.clicked.connect(self.resume_combo)
+        self.combo_stop_button = QPushButton("Parar imediatamente")
+        self.combo_stop_button.setObjectName("dangerButton")
+        self.combo_stop_button.setEnabled(False)
+        self.combo_stop_button.clicked.connect(self.stop_combo)
+        controls.addWidget(self.combo_enable_checkbox)
+        controls.addStretch()
+        controls.addWidget(self.combo_preview_button)
+        controls.addWidget(self.combo_start_button)
+        controls.addWidget(self.combo_resume_button)
+        controls.addWidget(self.combo_stop_button)
+        layout.addLayout(controls)
+        scroll.setWidget(content)
+        self.combo_scroll_area = scroll
+        self.combo_mode_tabs = QTabWidget()
+        self.combo_mode_tabs.addTab(self._simple_farm_panel(), "Simple Farm")
+        self.combo_mode_tabs.addTab(scroll, "Endgame 1e72")
+        outer_layout.addWidget(self.combo_mode_tabs)
+        return tab
+
+    def _simple_farm_panel(self):
+        """Cria o modo barato que explora naturais e Dualcast sem lumps."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        guarantee = QLabel(
+            "Modo econômico: autoclick somente em janelas fortes; coleta Golden Cookies e usa Dualcast por "
+            "venda/recompra de Wizard Towers. Reinveste parte do excedente em upgrades e "
+            "construções, preservando caixa. Nunca gasta Sugar Lumps, nunca usa loans e não "
+            "altera Garden, Pantheon, auras, season ou Golden Switch. Configure o Pantheon "
+            "manualmente como Godzamok / Mokalsium / Muridal para o melhor resultado."
+        )
+        guarantee.setWordWrap(True)
+        guarantee.setStyleSheet("color: #65d6a5; font-weight: 600;")
+        layout.addWidget(guarantee)
+
+        config_group = QGroupBox("Estratégia automática")
+        form = QFormLayout(config_group)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.simple_farm_search_input = QSpinBox()
+        self.simple_farm_search_input.setRange(2, 10_000)
+        self.simple_farm_search_input.setValue(automation_config.simple_farm_max_search_ahead)
+        self.simple_farm_search_input.setSuffix(" spells")
+        self.simple_farm_search_input.valueChanged.connect(self._save_simple_farm_settings)
+        form.addRow("Alcance do forecast", self.simple_farm_search_input)
+        self.simple_farm_interval_input = QDoubleSpinBox()
+        self.simple_farm_interval_input.setRange(0.1, 10.0)
+        self.simple_farm_interval_input.setDecimals(1)
+        self.simple_farm_interval_input.setSingleStep(0.1)
+        self.simple_farm_interval_input.setValue(automation_config.simple_farm_poll_interval_seconds)
+        self.simple_farm_interval_input.setSuffix(" s")
+        self.simple_farm_interval_input.valueChanged.connect(self._save_simple_farm_settings)
+        form.addRow("Intervalo do looper", self.simple_farm_interval_input)
+        self.simple_farm_min_buff_input = QDoubleSpinBox()
+        self.simple_farm_min_buff_input.setRange(3.0, 60.0)
+        self.simple_farm_min_buff_input.setDecimals(1)
+        self.simple_farm_min_buff_input.setValue(automation_config.simple_farm_minimum_buff_seconds)
+        self.simple_farm_min_buff_input.setSuffix(" s")
+        self.simple_farm_min_buff_input.valueChanged.connect(self._save_simple_farm_settings)
+        form.addRow("Buff natural mínimo", self.simple_farm_min_buff_input)
+        self.simple_farm_reserve_input = QDoubleSpinBox()
+        self.simple_farm_reserve_input.setRange(10.0, 90.0)
+        self.simple_farm_reserve_input.setDecimals(0)
+        self.simple_farm_reserve_input.setValue(automation_config.simple_farm_cash_reserve_percent)
+        self.simple_farm_reserve_input.setSuffix(" %")
+        self.simple_farm_reserve_input.valueChanged.connect(self._save_simple_farm_settings)
+        form.addRow("Reserva mínima de caixa", self.simple_farm_reserve_input)
+        self.simple_farm_investment_input = QDoubleSpinBox()
+        self.simple_farm_investment_input.setRange(1.0, 50.0)
+        self.simple_farm_investment_input.setDecimals(0)
+        self.simple_farm_investment_input.setValue(automation_config.simple_farm_investment_percent)
+        self.simple_farm_investment_input.setSuffix(" %")
+        self.simple_farm_investment_input.valueChanged.connect(self._save_simple_farm_settings)
+        form.addRow("Máximo investido por ciclo", self.simple_farm_investment_input)
+        for field in (
+            self.simple_farm_search_input,
+            self.simple_farm_interval_input,
+            self.simple_farm_min_buff_input,
+            self.simple_farm_reserve_input,
+            self.simple_farm_investment_input,
+        ):
+            field.setMinimumHeight(32)
+        layout.addWidget(config_group)
+
+        status_group = QGroupBox("Acompanhamento")
+        status_form = QFormLayout(status_group)
+        self.simple_farm_state_label = QLabel("Não iniciado")
+        self.simple_farm_plan_label = QLabel("Atualize a prévia para ler a seed atual.")
+        self.simple_farm_resources_label = QLabel("Spells: — | Mana: — | Cookies: —")
+        self.simple_farm_buffs_label = QLabel("Buffs: —")
+        self.simple_farm_counter_label = QLabel("GC naturais: 0 | Dualcasts: 0")
+        self.simple_farm_pantheon_label = QLabel("Pantheon: será apenas lido")
+        self.simple_farm_message_label = QLabel("Nenhuma ação executada.")
+        self.simple_farm_error_label = QLabel("—")
+        for label in (
+            self.simple_farm_plan_label,
+            self.simple_farm_buffs_label,
+            self.simple_farm_message_label,
+            self.simple_farm_error_label,
+        ):
+            label.setWordWrap(True)
+        status_form.addRow("Estado", self.simple_farm_state_label)
+        status_form.addRow("Próximo Dualcast", self.simple_farm_plan_label)
+        status_form.addRow("Recursos", self.simple_farm_resources_label)
+        status_form.addRow("Buffs", self.simple_farm_buffs_label)
+        status_form.addRow("Contadores", self.simple_farm_counter_label)
+        status_form.addRow("Pantheon", self.simple_farm_pantheon_label)
+        status_form.addRow("Última atualização", self.simple_farm_message_label)
+        status_form.addRow("Bloqueio/erro", self.simple_farm_error_label)
+        layout.addWidget(status_group, 1)
+
+        controls = QHBoxLayout()
+        self.simple_farm_enable_checkbox = QCheckBox("Habilitar execução real")
+        self.simple_farm_enable_checkbox.setChecked(automation_config.enable_simple_farm)
+        self.simple_farm_enable_checkbox.stateChanged.connect(self._toggle_simple_farm_enabled)
+        self.simple_farm_preview_button = QPushButton("Atualizar prévia")
+        self.simple_farm_preview_button.clicked.connect(self.refresh_simple_farm_preview)
+        self.simple_farm_start_button = QPushButton("Iniciar Simple Farm")
+        self.simple_farm_start_button.setObjectName("primaryButton")
+        self.simple_farm_start_button.clicked.connect(self.start_simple_farm)
+        self.simple_farm_stop_button = QPushButton("Parar")
+        self.simple_farm_stop_button.setObjectName("dangerButton")
+        self.simple_farm_stop_button.setEnabled(False)
+        self.simple_farm_stop_button.clicked.connect(self.stop_simple_farm)
+        controls.addWidget(self.simple_farm_enable_checkbox)
+        controls.addStretch()
+        controls.addWidget(self.simple_farm_preview_button)
+        controls.addWidget(self.simple_farm_start_button)
+        controls.addWidget(self.simple_farm_stop_button)
+        layout.addLayout(controls)
+        scroll.setWidget(content)
+        self.simple_farm_scroll_area = scroll
+        return scroll
+
+    def _save_combo_settings(self, _value=None):
+        automation_config.combo_max_search_ahead = self.combo_search_input.value()
+        automation_config.combo_max_skip_lumps = self.combo_lumps_input.value()
+        automation_config.combo_required_building_specials = self.combo_bs_input.value()
+        automation_config.combo_poll_interval_seconds = self.combo_interval_input.value()
+        automation_config.combo_minimum_buff_seconds = self.combo_min_buff_input.value()
+        automation_config.combo_use_sugar_frenzy = self.combo_sugar_checkbox.isChecked()
+        automation_config.combo_use_loans = self.combo_loans_checkbox.isChecked()
+        automation_config.combo_pause_before_last_skips = self.combo_pause_checkbox.isChecked()
+        save_automation_settings()
+
+    def _save_simple_farm_settings(self, _value=None):
+        automation_config.simple_farm_max_search_ahead = self.simple_farm_search_input.value()
+        automation_config.simple_farm_poll_interval_seconds = self.simple_farm_interval_input.value()
+        automation_config.simple_farm_minimum_buff_seconds = self.simple_farm_min_buff_input.value()
+        automation_config.simple_farm_cash_reserve_percent = self.simple_farm_reserve_input.value()
+        automation_config.simple_farm_investment_percent = self.simple_farm_investment_input.value()
+        save_automation_settings()
+
+    def _toggle_simple_farm_enabled(self, state: int):
+        automation_config.enable_simple_farm = bool(state)
+        save_automation_settings()
+        logger.info("Simple Farm: execução real %s", "habilitada" if state else "desabilitada")
+
+    def _simple_farm_configuration(self) -> ConfiguracaoSimpleFarm:
+        self._save_simple_farm_settings()
+        return ConfiguracaoSimpleFarm(
+            busca_maxima_spells=self.simple_farm_search_input.value(),
+            intervalo_verificacao=self.simple_farm_interval_input.value(),
+            duracao_minima_buff=self.simple_farm_min_buff_input.value(),
+            reserva_caixa=self.simple_farm_reserve_input.value() / 100.0,
+            investimento_por_ciclo=self.simple_farm_investment_input.value() / 100.0,
+        )
+
+    def refresh_simple_farm_preview(self, _checked: bool = False):
+        if not self.bridge:
+            self._simple_farm_failed("Bridge não está disponível.")
+            return
+        if self._combo_worker and self._combo_worker.isRunning():
+            return
+        automation = SimpleFarmAutomation(self.bridge, self._simple_farm_configuration())
+        self._run_simple_farm_worker(automation, preview=True)
+
+    def start_simple_farm(self, _checked: bool = False):
+        if not self.bridge or not self.runner:
+            self._simple_farm_failed("Bridge ou runner não está disponível.")
+            return
+        if not self.simple_farm_enable_checkbox.isChecked():
+            self._simple_farm_failed("Marque “Habilitar execução real” antes de iniciar.")
+            return
+        if self._combo_worker and self._combo_worker.isRunning():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Iniciar Simple Farm",
+            "O Simple Farm pausará as outras automações, ativará o autoclick apenas durante "
+            "combos úteis e poderá "
+            "vender/recomprar Wizard Towers e reinvestir somente o excedente ao caixa protegido. "
+            "Ele não gastará Sugar Lumps, não "
+            "usará loans e não alterará Garden nem Pantheon. Continuar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
+            self._auto_ascension_worker.stop()
+            self._auto_ascension_worker.wait((app_config.connection_timeout + 1) * 1000)
+            if self._auto_ascension_worker.isRunning():
+                self._simple_farm_failed("Auto Ascensão não parou a tempo.")
+                return
+        if not self.runner.acquire_exclusive("combo"):
+            self._simple_farm_failed(
+                f"Outra automação exclusiva está ativa: {self.runner.exclusive_owner or 'desconhecida'}."
+            )
+            return
+        self._combo_exclusive = True
+        self.stock_refresh_timer.stop()
+        self.garden_refresh_timer.stop()
+        timeout_ms = (app_config.connection_timeout + 1) * 1000
+        for name, worker in (("Stock Market", self._stock_worker), ("Garden", self._garden_worker)):
+            if worker and worker.isRunning():
+                worker.wait(timeout_ms)
+                if worker.isRunning():
+                    self._abort_simple_farm_start(f"{name} não encerrou a operação em andamento a tempo.")
+                    return
+        try:
+            save_data = self.bridge.get_game_save()
+            if not save_data:
+                self._abort_simple_farm_start("Não foi possível exportar o save de segurança.")
+                return
+            backup = self.backup_manager.create_backup(save_data, "antes-do-simple-farm")
+            self.add_log(f"Backup automático criado: {backup.display_name}")
+        except Exception as error:
+            self._abort_simple_farm_start(f"Falha ao criar backup automático: {error}")
+            return
+        automation = SimpleFarmAutomation(
+            self.bridge,
+            self._simple_farm_configuration(),
+            habilitar_clicker=self.runner.ensure_clicker_running,
+            desabilitar_clicker=self.runner.ensure_clicker_stopped,
+        )
+        self._set_combo_keep_awake(True)
+        self._run_simple_farm_worker(automation, preview=False)
+
+    def _abort_simple_farm_start(self, message: str):
+        if self._combo_exclusive and self.runner:
+            self.runner.release_exclusive("combo")
+        self._combo_exclusive = False
+        self._set_combo_keep_awake(False)
+        if self.bridge:
+            self.stock_refresh_timer.start(5_000)
+            QTimer.singleShot(0, self._on_stock_market_timer)
+            QTimer.singleShot(0, self.refresh_garden)
+        self._simple_farm_failed(message)
+
+    def stop_simple_farm(self, _checked: bool = False):
+        if self._combo_worker and self._combo_worker.isRunning():
+            self.simple_farm_stop_button.setEnabled(False)
+            self._combo_worker.stop()
+            self.simple_farm_message_label.setText(
+                "Parada solicitada; aguardando a ação atômica atual terminar."
+            )
+
+    def _run_simple_farm_worker(self, automation: SimpleFarmAutomation, preview: bool):
+        self._simple_farm_automation = automation
+        worker = ComboWorker(automation, preview, self)
+        self._combo_worker = worker
+        worker.updated.connect(self._display_simple_farm_report)
+        worker.completed.connect(self._display_simple_farm_report)
+        worker.failed.connect(self._simple_farm_failed)
+        worker.finished.connect(lambda: self._simple_farm_finished(preview))
+        self._set_simple_farm_busy(True, preview)
+        worker.start()
+
+    def _display_simple_farm_report(self, value: object):
+        if not isinstance(value, RelatorioSimpleFarm):
+            return
+        self.simple_farm_state_label.setText(value.estado.value)
+        self.simple_farm_plan_label.setText(value.plano.resumo if value.plano else "—")
+        mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
+        self.simple_farm_resources_label.setText(
+            f"Spells: {value.cast_atual if value.cast_atual is not None else '—'} | "
+            f"Mana: {mana} | Banco: {self._format_number(value.cookies_no_banco)} | "
+            f"Caixa protegido: {self._format_number(value.caixa_reservado)}"
+        )
+        self.simple_farm_buffs_label.setText(
+            ", ".join(value.buffs_ativos) if value.buffs_ativos else "nenhum"
+        )
+        self.simple_farm_counter_label.setText(
+            f"GC naturais: {value.golden_cookies_coletados} | Dualcasts: {value.dualcasts_executados} | "
+            f"Upgrades: {value.upgrades_comprados} | Construções: {value.construcoes_compradas}"
+        )
+        slots = value.pantheon_slots
+        pantheon = "Godzamok / Mokalsium / Muridal" if slots == (2, 8, 6) else str(slots or "—")
+        self.simple_farm_pantheon_label.setText(f"{pantheon} (somente leitura)")
+        self.simple_farm_message_label.setText(
+            value.mensagem + (f" Próximo: {value.proximo_passo}" if value.proximo_passo else "")
+        )
+        self.simple_farm_error_label.setText(value.erro or "—")
+        self.simple_farm_error_label.setStyleSheet(
+            f"color: {'#f07883' if value.erro else '#9aa7ba'};"
+        )
+
+    def _simple_farm_failed(self, message: str):
+        self.simple_farm_state_label.setText("erro seguro")
+        self.simple_farm_error_label.setText(message)
+        self.simple_farm_error_label.setStyleSheet("color: #f07883;")
+        logger.error("Simple Farm: %s", message)
+
+    def _simple_farm_finished(self, preview: bool):
+        worker = self._combo_worker
+        self._set_simple_farm_busy(False, preview)
+        if not preview and self._combo_exclusive and self.runner:
+            self.runner.release_exclusive("combo")
+            self._combo_exclusive = False
+            self.stock_refresh_timer.start(5_000)
+            QTimer.singleShot(0, self._on_stock_market_timer)
+            QTimer.singleShot(0, self.refresh_garden)
+        if not preview:
+            self._set_combo_keep_awake(False)
+        self._combo_worker = None
+        self._simple_farm_automation = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _set_simple_farm_busy(self, busy: bool, preview: bool):
+        for widget in (
+            self.simple_farm_search_input, self.simple_farm_interval_input,
+            self.simple_farm_min_buff_input, self.simple_farm_reserve_input,
+            self.simple_farm_investment_input, self.simple_farm_enable_checkbox,
+            self.simple_farm_preview_button, self.simple_farm_start_button,
+            self.combo_enable_checkbox, self.combo_preview_button, self.combo_start_button,
+        ):
+            widget.setEnabled(not busy)
+        self.simple_farm_stop_button.setEnabled(busy and not preview)
+        if not preview:
+            for widget in (
+                self.clicker_button, self.golden_checkbox, self.fortune_checkbox,
+                self.reindeer_checkbox, self.wrinkler_checkbox,
+                self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox,
+                self.garden_auto_checkbox, self.garden_thumbcorn_checkbox,
+                self.auto_ascension_start_button, self.stock_auto_trade_checkbox,
+            ):
+                widget.setEnabled(not busy)
+
+    def _toggle_combo_enabled(self, state: int):
+        automation_config.enable_combo_automation = bool(state)
+        save_automation_settings()
+        logger.info("Combo: execução real %s", "habilitada" if state else "desabilitada")
+
+    def _combo_configuration(self) -> ConfiguracaoCombo:
+        self._save_combo_settings()
+        return ConfiguracaoCombo(
+            alvo_cookies=automation_config.combo_target_cookies,
+            busca_maxima_spells=self.combo_search_input.value(),
+            maximo_lumps_alinhamento=self.combo_lumps_input.value(),
+            building_specials_totais=self.combo_bs_input.value(),
+            intervalo_verificacao=self.combo_interval_input.value(),
+            duracao_minima_buff=self.combo_min_buff_input.value(),
+            usar_sugar_frenzy=self.combo_sugar_checkbox.isChecked(),
+            usar_loans=self.combo_loans_checkbox.isChecked(),
+            pausar_antes_ultimos_skips=self.combo_pause_checkbox.isChecked(),
+        )
+
+    def refresh_combo_preview(self, _checked: bool = False):
+        if not self.bridge:
+            self._combo_failed("Bridge não está disponível.")
+            return
+        if self._combo_worker and self._combo_worker.isRunning():
+            return
+        automation = ComboAutomation(self.bridge, self._combo_configuration())
+        self._run_combo_worker(automation, preview=True)
+
+    def start_combo(self, _checked: bool = False):
+        if not self.bridge or not self.runner:
+            self._combo_failed("Bridge ou runner não está disponível.")
+            return
+        if not self.combo_enable_checkbox.isChecked():
+            self._combo_failed("Marque “Habilitar execução real” antes de iniciar.")
+            return
+        if self._combo_worker and self._combo_worker.isRunning():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Iniciar modo Combo",
+            "O modo Combo pausará as outras automações e poderá gastar até "
+            f"{self.combo_lumps_input.value()} lumps no alinhamento, mais o Quadcast/Sugar Frenzy. "
+            "Também venderá e recomprará prédios. Continuar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
+            self._auto_ascension_worker.stop()
+            self._auto_ascension_worker.wait((app_config.connection_timeout + 1) * 1000)
+            if self._auto_ascension_worker.isRunning():
+                self._combo_failed("Auto Ascensão não parou a tempo.")
+                return
+        if not self.runner.acquire_exclusive("combo"):
+            self._combo_failed(
+                f"Outra automação exclusiva está ativa: {self.runner.exclusive_owner or 'desconhecida'}."
+            )
+            return
+        self._combo_exclusive = True
+        self.stock_refresh_timer.stop()
+        self.garden_refresh_timer.stop()
+        timeout_ms = (app_config.connection_timeout + 1) * 1000
+        for name, worker in (("Stock Market", self._stock_worker), ("Garden", self._garden_worker)):
+            if worker and worker.isRunning():
+                worker.wait(timeout_ms)
+                if worker.isRunning():
+                    self._abort_combo_start(f"{name} não encerrou a operação em andamento a tempo.")
+                    return
+        try:
+            save_data = self.bridge.get_game_save()
+            if not save_data:
+                self._abort_combo_start("Não foi possível exportar o save de segurança.")
+                return
+            backup = self.backup_manager.create_backup(save_data, "antes-do-combo")
+            self.add_log(f"Backup automático criado: {backup.display_name}")
+        except Exception as error:
+            self._abort_combo_start(f"Falha ao criar backup automático: {error}")
+            return
+        automation = ComboAutomation(
+            self.bridge,
+            self._combo_configuration(),
+            habilitar_clicker=self.runner.ensure_clicker_running,
+            desabilitar_clicker=self.runner.ensure_clicker_stopped,
+        )
+        self._set_combo_keep_awake(True)
+        self._run_combo_worker(automation, preview=False)
+
+    def _abort_combo_start(self, message: str):
+        """Desfaz a exclusividade quando a preparação da thread não pode terminar."""
+        if self._combo_exclusive and self.runner:
+            self.runner.release_exclusive("combo")
+        self._combo_exclusive = False
+        self._set_combo_keep_awake(False)
+        if self.bridge:
+            self.stock_refresh_timer.start(5_000)
+            QTimer.singleShot(0, self._on_stock_market_timer)
+            QTimer.singleShot(0, self.refresh_garden)
+        self._combo_failed(message)
+
+    def _set_combo_keep_awake(self, enabled: bool):
+        """Impede suspensão do Windows enquanto o modo noturno está ativo."""
+        if sys.platform != "win32":
+            self._combo_keep_awake = enabled
+            return
+        try:
+            es_continuous = 0x80000000
+            es_system_required = 0x00000001
+            flags = es_continuous | es_system_required if enabled else es_continuous
+            result = ctypes.windll.kernel32.SetThreadExecutionState(flags)
+            if not result:
+                raise OSError("SetThreadExecutionState retornou zero")
+            self._combo_keep_awake = enabled
+        except Exception as error:
+            logger.warning("Combo: não foi possível alterar o modo de suspensão: %s", error)
+
+    def stop_combo(self, _checked: bool = False):
+        if self._combo_worker and self._combo_worker.isRunning():
+            self.combo_stop_button.setEnabled(False)
+            self.combo_resume_button.setEnabled(False)
+            self._combo_worker.stop()
+            self.combo_message_label.setText("Parada solicitada; aguardando a ação atômica atual terminar.")
+
+    def resume_combo(self, _checked: bool = False):
+        if self._combo_automation and self._combo_worker and self._combo_worker.isRunning():
+            self.combo_resume_button.setEnabled(False)
+            self._combo_automation.retomar()
+            self.combo_message_label.setText("Retomada solicitada; revalidando o jogo e o plano antes de continuar.")
+
+    def _run_combo_worker(self, automation: ComboAutomation, preview: bool):
+        self._combo_automation = automation
+        worker = ComboWorker(automation, preview, self)
+        self._combo_worker = worker
+        worker.updated.connect(self._display_combo_report)
+        worker.completed.connect(self._display_combo_report)
+        worker.failed.connect(self._combo_failed)
+        worker.finished.connect(lambda: self._combo_finished(preview))
+        self._set_combo_busy(True, preview)
+        worker.start()
+
+    def _display_combo_report(self, value: object):
+        if not isinstance(value, RelatorioCombo):
+            return
+        self.combo_state_label.setText(value.estado.value)
+        self.combo_resume_button.setEnabled(
+            value.estado == EstadoCombo.PAUSADO
+            and self._combo_worker is not None
+            and self._combo_worker.isRunning()
+        )
+        self.combo_plan_label.setText(value.plano.resumo if value.plano else "—")
+        mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
+        self.combo_progress_label.setText(
+            f"Spells: {value.cast_atual if value.cast_atual is not None else '—'} | "
+            f"Mana: {mana} | Lumps: {value.lumps if value.lumps is not None else '—'} "
+            f"(gastos: {value.lumps_gastos}) | Cookies: {self._format_number(value.cookies_assados)}"
+        )
+        self.combo_buffs_label.setText(
+            "Buffs: " + (", ".join(value.buffs_ativos) if value.buffs_ativos else "nenhum")
+            + f" | BS: {value.building_specials_ativos}"
+        )
+        self.combo_garden_label.setText(
+            f"Maduras na última leitura: {value.garden_maduras}/{value.garden_total} | Garden opcional para o combo"
+            if value.garden_total else "Garden opcional: não bloqueia o disparo do combo."
+        )
+        self.combo_message_label.setText(
+            value.mensagem + (f" Próximo: {value.proximo_passo}" if value.proximo_passo else "")
+        )
+        self.combo_error_label.setText(value.erro or "—")
+        self.combo_error_label.setStyleSheet(
+            f"color: {'#f07883' if value.erro else '#9aa7ba'};"
+        )
+
+    def _combo_failed(self, message: str):
+        self.combo_resume_button.setEnabled(False)
+        self.combo_state_label.setText("erro seguro")
+        self.combo_error_label.setText(message)
+        self.combo_error_label.setStyleSheet("color: #f07883;")
+        logger.error("Combo: %s", message)
+
+    def _combo_finished(self, preview: bool):
+        worker = self._combo_worker
+        self._set_combo_busy(False, preview)
+        if not preview and self._combo_exclusive and self.runner:
+            self.runner.release_exclusive("combo")
+            self._combo_exclusive = False
+            self.stock_refresh_timer.start(5_000)
+            QTimer.singleShot(0, self._on_stock_market_timer)
+            QTimer.singleShot(0, self.refresh_garden)
+        if not preview:
+            self._set_combo_keep_awake(False)
+        self._combo_worker = None
+        self._combo_automation = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _set_combo_busy(self, busy: bool, preview: bool):
+        for widget in (
+            self.combo_search_input, self.combo_lumps_input, self.combo_bs_input,
+            self.combo_interval_input, self.combo_min_buff_input,
+            self.combo_sugar_checkbox, self.combo_loans_checkbox, self.combo_pause_checkbox,
+            self.combo_enable_checkbox, self.combo_preview_button, self.combo_start_button,
+            self.simple_farm_search_input, self.simple_farm_interval_input,
+            self.simple_farm_min_buff_input, self.simple_farm_reserve_input,
+            self.simple_farm_investment_input, self.simple_farm_enable_checkbox,
+            self.simple_farm_preview_button, self.simple_farm_start_button,
+        ):
+            widget.setEnabled(not busy)
+        self.combo_stop_button.setEnabled(busy and not preview)
+        self.combo_resume_button.setEnabled(False)
+        if not preview:
+            for widget in (
+                self.clicker_button, self.golden_checkbox, self.fortune_checkbox,
+                self.reindeer_checkbox, self.wrinkler_checkbox,
+                self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox,
+                self.garden_auto_checkbox, self.garden_thumbcorn_checkbox,
+                self.auto_ascension_start_button, self.stock_auto_trade_checkbox,
+            ):
+                widget.setEnabled(not busy)
 
     def _auto_ascension_tab(self):
         """Cria os controles e o relatório da máquina de Auto Ascensão."""
@@ -397,6 +1129,9 @@ class MainWindow(QMainWindow):
 
     def start_auto_ascension(self, _checked: bool = False):
         """Inicia uma simulação ou, após confirmação, a execução real."""
+        if self._combo_exclusive:
+            self._auto_ascension_failed("Modo Combo está ativo e detém exclusividade.")
+            return
         if self.auto_ascension_simulation_checkbox.isChecked():
             self.refresh_auto_ascension_preview()
             return
@@ -626,6 +1361,8 @@ class MainWindow(QMainWindow):
 
     def refresh_stock_market(self, automatic: bool = False):
         """Solicita um snapshot manual sem bloquear a thread da interface."""
+        if self._combo_exclusive:
+            return
         if not self.bridge:
             self._show_stock_unavailable("Bridge não está disponível")
             logger.warning("Stock Market: bridge não está disponível para atualização")
@@ -637,6 +1374,8 @@ class MainWindow(QMainWindow):
 
     def _on_stock_market_timer(self):
         """Atualiza o snapshot a cada 5 segundos e aplica a regra somente se autorizada."""
+        if self._combo_exclusive:
+            return
         if not self.bridge or (self._stock_worker and self._stock_worker.isRunning()):
             return
         if not self.stock_automation:
@@ -726,6 +1465,9 @@ class MainWindow(QMainWindow):
         save_automation_settings()
 
     def _submit_stock_order(self, side: str):
+        if self._combo_exclusive:
+            self._show_stock_feedback(False, "Modo Combo está ativo; ordens estão pausadas.")
+            return
         if not self.bridge:
             self._show_stock_feedback(False, "Bridge não está disponível")
             return
@@ -862,6 +1604,8 @@ class MainWindow(QMainWindow):
 
     def refresh_garden(self, _checked: bool = False):
         """Atualiza snapshot e plano sem alterar o Garden."""
+        if self._combo_exclusive:
+            return
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
             return
@@ -877,6 +1621,8 @@ class MainWindow(QMainWindow):
 
     def simulate_garden(self, _checked: bool = False):
         """Executa somente a leitura e o planejamento da Fazendeira."""
+        if self._combo_exclusive:
+            return
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
             return
@@ -892,6 +1638,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_garden_timer(self):
+        if self._combo_exclusive:
+            return
         if not self.fazendeira or (self._garden_worker and self._garden_worker.isRunning()):
             return
         self._garden_run_when_idle = False
@@ -1291,6 +2039,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Evita destruir uma thread de consulta ainda em execução."""
+        if self._combo_worker and self._combo_worker.isRunning():
+            self._combo_worker.stop()
+            self._combo_worker.wait((app_config.connection_timeout + 2) * 1000)
+        if self._combo_exclusive and self.runner:
+            self.runner.release_exclusive("combo")
+            self._combo_exclusive = False
+        if self._combo_keep_awake:
+            self._set_combo_keep_awake(False)
         if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
             self._auto_ascension_worker.stop()
             self._auto_ascension_worker.wait((app_config.connection_timeout + 1) * 1000)

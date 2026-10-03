@@ -61,6 +61,8 @@ class AutomationRunner:
         self.is_running = False
         self.stop_event = threading.Event()
         self._clicker_state_lock = threading.RLock()
+        self._exclusive_lock = threading.RLock()
+        self._exclusive_owner: Optional[str] = None
         self.on_clicker_state_change = state_change_callback
 
         self.cookie_position: Optional[Tuple[int, int]] = None
@@ -99,6 +101,13 @@ class AutomationRunner:
 
     def toggle_clicker(self) -> None:
         """Liga/desliga o clicker do cookie."""
+        with self._exclusive_lock:
+            if self._exclusive_owner is not None:
+                logger.warning(
+                    "Toggle manual do clicker bloqueado pelo modo exclusivo %s",
+                    self._exclusive_owner,
+                )
+                return
         with self._clicker_state_lock:
             if not self.is_running and not self.update_cookie_position():
                 return
@@ -124,12 +133,39 @@ class AutomationRunner:
             if not self.update_cookie_position():
                 return False
             self.is_running = True
-        logger.info("Clicker habilitado pela Auto Ascensão")
+        logger.info("Clicker habilitado por uma automação controlada")
         if self.on_clicker_state_change:
             try:
                 self.on_clicker_state_change(True)
             except Exception as error:
                 logger.error(f"Erro no callback de estado do clicker: {error}")
+        return True
+
+    @property
+    def exclusive_owner(self) -> Optional[str]:
+        """Nome da automação que detém exclusividade, se houver."""
+        with self._exclusive_lock:
+            return self._exclusive_owner
+
+    def acquire_exclusive(self, owner: str) -> bool:
+        """Pausa o detector compartilhado e reserva ações mutáveis para ``owner``."""
+        if not owner:
+            return False
+        with self._exclusive_lock:
+            if self._exclusive_owner not in (None, owner):
+                return False
+            self._exclusive_owner = owner
+        self.ensure_clicker_stopped()
+        logger.info("Modo exclusivo adquirido por %s", owner)
+        return True
+
+    def release_exclusive(self, owner: str) -> bool:
+        """Libera a reserva sem religar automaticamente nenhuma automação."""
+        with self._exclusive_lock:
+            if self._exclusive_owner != owner:
+                return False
+            self._exclusive_owner = None
+        logger.info("Modo exclusivo liberado por %s", owner)
         return True
 
     def ensure_clicker_stopped(self) -> bool:
@@ -138,7 +174,7 @@ class AutomationRunner:
             if not self.is_running:
                 return True
             self.is_running = False
-        logger.info("Clicker desabilitado pela Auto Ascensão")
+        logger.info("Clicker desabilitado por uma automação controlada")
         if self.on_clicker_state_change:
             try:
                 self.on_clicker_state_change(False)
@@ -152,6 +188,11 @@ class AutomationRunner:
 
         while not self.stop_event.is_set():
             try:
+                if self.exclusive_owner is not None:
+                    # O dono exclusivo usa a mesma bridge e decide quais ações
+                    # são seguras; o detector comum permanece totalmente passivo.
+                    time.sleep(app_config.detect_interval)
+                    continue
                 # Verificar golden cookie
                 if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
                     self.golden_cookies_clicked += 1
