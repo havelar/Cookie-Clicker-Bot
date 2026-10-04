@@ -30,6 +30,31 @@ A estratégia funciona como reconciliação de estado:
   automaticamente, pois isso pode matar Cheapcaps;
 - não sacrifica o Garden, não compra upgrades e não altera saves.
 
+## Saldo insuficiente e retomada
+
+Antes de limpar ou substituir o layout, a automação soma os preços atuais de
+**todos os plantios pendentes**, usando o custo informado pelo próprio Garden.
+Se não puder pagar o lote inteiro, preserva as plantas existentes e não começa
+um plantio parcial. No próximo tick, lê novamente o estado e tenta retomar.
+
+As colheitas maduras já previstas no plano continuam antes dessa decisão:
+sementes novas não são perdidas por falta de dinheiro para o próximo layout,
+e a colheita pode ajudar a financiá-lo. Plantas corretas e descobertas ainda
+imaturas continuam protegidas pelas regras do planejador. Não há empréstimos,
+gasto de lumps ou congelamento para resolver falta de saldo.
+
+A conferência do saldo, dos preços e dos canteiros ocorre imediatamente antes
+das remoções, na mesma chamada JavaScript que executa limpeza e plantio.
+Banco e Simple Farm não podem gastar entre essa conferência e o lote. Se o
+canteiro tiver mudado desde o planejamento ou uma semente não estiver
+liberada, a limpeza não começa. Resultados inesperados durante o lote
+interrompem as ações restantes, sem tentar restaurar o save.
+
+A interface mostra **Garden: aguardando dinheiro** em amarelo, com custo,
+saldo e quanto falta. É uma espera normal, não um erro; avisos iguais não
+são repetidos no log a cada tick. Falhas reais continuam em vermelho.
+A simulação também mostra o custo estimado e o saldo, sem executar ações.
+
 ## Modo Green, aching thumb
 
 O checkbox **Green, aching thumb** prioriza temporariamente Thumbcorn para obter a

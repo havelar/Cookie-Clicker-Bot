@@ -1728,11 +1728,28 @@ class MainWindow(QMainWindow):
             )
         elif value.action_results:
             successes = sum(result.success for result in value.action_results)
-            details = "; ".join(result.message for result in value.action_results)
-            self._show_garden_feedback(
-                successes == len(value.action_results),
-                f"Execução real: {successes}/{len(value.action_results)} ações confirmadas. {details}",
-            )
+            waits = [result for result in value.action_results if result.waiting]
+            errors = [result for result in value.action_results if not result.success and not result.waiting]
+            if waits and not errors:
+                waiting = waits[0]
+                message = waiting.message
+                if waiting.required_cookies is not None and waiting.available_cookies is not None:
+                    missing = max(0.0, waiting.required_cookies - waiting.available_cookies)
+                    message += (f" Custo: {self._format_number(waiting.required_cookies)}; "
+                                f"saldo: {self._format_number(waiting.available_cookies)}; "
+                                f"faltam: {self._format_number(missing)} cookies.")
+                message += " Tentará novamente no próximo tick."
+                self.garden_status_label.setText("Garden: aguardando dinheiro")
+                self.garden_status_label.setStyleSheet("color: #e8b766; font-weight: 600;")
+                self.garden_feedback_label.setText(message)
+                self.garden_feedback_label.setStyleSheet("color: #e8b766;")
+                self.status_bar.showMessage(message, 7000)
+            else:
+                details = "; ".join(result.message for result in value.action_results)
+                self._show_garden_feedback(
+                    not errors and not waits,
+                    f"Execução real: {successes}/{len(value.action_results)} ações confirmadas. {details}",
+                )
         elif value.dry_run:
             self._show_garden_feedback(True, "Simulação concluída; o estado do jogo não foi alterado.")
         else:

@@ -93,6 +93,7 @@ class Fazendeira:
         self.bridge = bridge
         self._clock = clock
         self._last_real_tick_token: Optional[float] = None
+        self._last_budget_wait = False
         self._descendant_counts = self._calculate_descendant_counts()
 
     def capture_snapshot(self) -> GardenSnapshot:
@@ -306,6 +307,15 @@ class Fazendeira:
         plan = self.build_plan(
             snapshot, green_aching_thumb_enabled=green_aching_thumb_enabled,
         )
+        if dry_run or not automation_enabled:
+            costs = {seed.key: seed.cost for seed in snapshot.seeds}
+            plantings = [action for action in plan.actions if action.kind == "plant"]
+            if plantings and snapshot.cookies is not None and all(costs.get(a.seed_key) is not None for a in plantings):
+                required = sum(costs[a.seed_key] for a in plantings)
+                detail = f" Plantios pendentes: {required:.3g} cookies; saldo: {snapshot.cookies:.3g}."
+                if required > snapshot.cookies:
+                    detail += " A troca do layout aguardará dinheiro; colheitas maduras continuam."
+                plan = replace(plan, explanation=plan.explanation + detail, waiting=plan.waiting or required > snapshot.cookies)
         if dry_run or not automation_enabled or not snapshot.status.available:
             return GardenCycleResult(snapshot, plan, True, ())
 
@@ -318,13 +328,32 @@ class Fazendeira:
             self._last_real_tick_token = tick_token
 
         results = []
+        layout = []
         for action in plan.actions:
-            result = self._execute_action(action)
-            results.append(result)
-            if result.success:
+            if action.kind == "plant" or (action.kind == "harvest" and not action.require_mature):
+                layout.append(action)
+            else:
+                # Descobertas e colheitas maduras não dependem de pagar o próximo layout.
+                results.append(self._execute_action(action))
+        if layout:
+            results.extend(self.bridge.execute_garden_layout(tuple(layout)))
+        budget_wait = any(result.waiting and result.reason == "insufficient_funds" for result in results)
+        for result in results:
+            if result.waiting:
+                if not self._last_budget_wait:
+                    logger.info(f"Garden: {result.message}")
+            elif result.success:
                 logger.info(f"Garden: {result.message}")
             else:
                 logger.warning(f"Garden: {result.message}")
+        self._last_budget_wait = budget_wait
+        if budget_wait:
+            waiting = next(result for result in results if result.waiting)
+            detail = waiting.message
+            if waiting.required_cookies is not None and waiting.available_cookies is not None:
+                detail += f" Custo: {waiting.required_cookies:.3g}; saldo: {waiting.available_cookies:.3g}."
+            plan = replace(plan, waiting=True, explanation=plan.explanation + " " + detail +
+                           " Nova avaliação no próximo tick do Garden.")
         return GardenCycleResult(snapshot, plan, False, tuple(results))
 
     def _build_green_aching_thumb_plan(

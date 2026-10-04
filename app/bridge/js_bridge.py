@@ -13,6 +13,7 @@ except ImportError:
 
 from app.config.settings import app_config
 from app.models.garden import (
+    GardenAction,
     GardenActionResult,
     GardenPlant,
     GardenSeed,
@@ -1566,10 +1567,12 @@ class CookieClickerBridge:
                 plotWidth:xs.length ? Math.max(...xs)-Math.min(...xs)+1 : 0,
                 plotHeight:ys.length ? Math.max(...ys)-Math.min(...ys)+1 : 0,
                 unlockedTiles,
+                cookies:finiteOrNull(Game.cookies),
                 seeds:M.plantsById.map(seed=>({
                     id:Number(seed.id), key:String(seed.key || ''),
                     name:String(seed.name || seed.key || ''), unlocked:!!seed.unlocked,
                     plantable:seed.plantable !== false, matureAge:finiteOrNull(seed.mature),
+                    cost:typeof M.getCost==='function' ? finiteOrNull(M.getCost(seed)) : null,
                     weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
                 })),
                 plants,
@@ -1590,7 +1593,7 @@ class CookieClickerBridge:
             return GardenActionResult(False, "plant", "Parâmetros de plantio inválidos.", x=x, y=y)
         payload = self.execute_js("""(() => {
             const key=%s, x=%d, y=%d;
-            const fail=message=>({ok:false,message,x,y,seedKey:key});
+            const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:key},extra);
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
             const M=farm && farm.minigameLoaded ? farm.minigame : null;
             if (!M || !Array.isArray(M.plot) || typeof M.useTool!=='function')
@@ -1603,8 +1606,14 @@ class CookieClickerBridge:
             if (seed.plantable===false) return fail('Esta semente não pode ser plantada');
             if (!Array.isArray(M.plot[y][x]) || Number(M.plot[y][x][0])!==0)
                 return fail('Canteiro ocupado; nenhuma planta foi substituída');
+            const cost=typeof M.getCost==='function' ? Number(M.getCost(seed)) : NaN;
+            const cookies=Number(Game.cookies);
+            if (!Number.isFinite(cost) || cost<0 || !Number.isFinite(cookies))
+                return fail('Não foi possível conferir o custo do plantio');
+            if (cookies<cost) return fail('Aguardando dinheiro para plantar',
+                {waiting:true,reason:'insufficient_funds',requiredCookies:cost,availableCookies:cookies});
             if (typeof M.canPlant==='function' && !M.canPlant(seed))
-                return fail('Recursos insuficientes ou plantio recusado pelo jogo');
+                return fail('Plantio recusado pelo jogo');
             let accepted=false;
             try { accepted=M.useTool(Number(seed.id),x,y)===true; }
             catch (error) { return fail(`Falha ao plantar: ${error && error.message ? error.message : error}`); }
@@ -1616,6 +1625,98 @@ class CookieClickerBridge:
                 x,y,seedKey:key,beforeKey:null,afterKey:after?String(after.key):null};
         })()""" % (json.dumps(seed_key), x, y))
         return self._parse_garden_action(payload, "plant", x=x, y=y, seed_key=seed_key)
+
+    def execute_garden_layout(self, actions) -> tuple[GardenActionResult, ...]:
+        """Confere o lote inteiro antes de limpar; executa sem intercalar outras farms."""
+        if not isinstance(actions, (list, tuple)) or not 1 <= len(actions) <= 72:
+            return (GardenActionResult(False, "layout", "Lote de Garden inválido."),)
+        payload_actions = []
+        seen = set()
+        for action in actions:
+            if (not isinstance(action, GardenAction) or action.kind not in {"plant", "harvest"}
+                    or (action.kind == "harvest" and action.require_mature)
+                    or not self._valid_garden_key(action.seed_key)
+                    or not self._valid_garden_position(action.x, action.y)
+                    or (action.kind, action.x, action.y) in seen):
+                return (GardenActionResult(False, "layout", "Ação de layout inválida."),)
+            seen.add((action.kind, action.x, action.y))
+            payload_actions.append(dict(kind=action.kind, x=action.x, y=action.y, seedKey=action.seed_key))
+        script = """(() => {
+            const actions=__ACTIONS__, results=[];
+            const fail=(message,extra={})=>results.concat([Object.assign({ok:false,action:'layout',message},extra)]);
+            if (!globalThis.Game || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer)
+                return fail('Jogo indisponível ou em transição');
+            const farm=Game.Objects && Game.Objects.Farm;
+            const M=farm && farm.minigameLoaded ? farm.minigame : null;
+            if (!M || !Array.isArray(M.plot) || typeof M.getCost!=='function' ||
+                    typeof M.useTool!=='function' || typeof M.harvest!=='function')
+                return fail('Garden indisponível ou API incompatível');
+            const plantings=actions.filter(a=>a.kind==='plant');
+            if (plantings.length && M.freeze) return fail('Garden está congelado');
+            const removals=new Map(actions.filter(a=>a.kind==='harvest').map(a=>[a.x+','+a.y,a]));
+            const plantAt=(x,y)=>{
+                const tile=M.plot[y] && M.plot[y][x];
+                return Array.isArray(tile) && Number(tile[0])>0 ? M.plantsById[Number(tile[0])-1] : null;
+            };
+            // Valida também o estado dos canteiros antes de remover a primeira planta.
+            let required=0;
+            for (const a of actions) {
+                if (!M.isTileUnlocked(a.x,a.y) || !Array.isArray(M.plot[a.y] && M.plot[a.y][a.x]))
+                    return fail('Canteiro bloqueado ou inválido');
+                const current=plantAt(a.x,a.y), removal=removals.get(a.x+','+a.y);
+                if (a.kind==='harvest') {
+                    if (!current || current.key!==a.seedKey) return fail('O canteiro mudou; replanejar antes de remover');
+                } else {
+                    const seed=M.plants && M.plants[a.seedKey];
+                    if (!seed || !seed.unlocked || seed.plantable===false)
+                        return fail('Semente indisponível; nenhuma planta foi removida');
+                    if (current && (!removal || removal.seedKey!==current.key))
+                        return fail('Canteiro ocupado por planta não prevista para remoção');
+                    const cost=M.getCost(seed);
+                    if (!Number.isFinite(cost) || cost<0) return fail('Custo de semente inválido; layout preservado');
+                    required+=cost;
+                }
+            }
+            const available=Number(Game.cookies);
+            if (!Number.isFinite(required) || !Number.isFinite(available) || available<0)
+                return fail('Orçamento indisponível; layout preservado');
+            if (available<required) return fail('Aguardando dinheiro para completar o layout; plantas preservadas',
+                {waiting:true,reason:'insufficient_funds',requiredCookies:required,availableCookies:available});
+            // O custo nativo usa o CpS deste frame. Nenhuma outra automação roda entre
+            // esta validação, as remoções e os plantios. Nunca antecipamos receita de colheita.
+            const ordered=actions.filter(a=>a.kind==='harvest').concat(plantings);
+            for (const a of ordered) {
+                try {
+                    if (a.kind==='harvest') {
+                        const current=plantAt(a.x,a.y);
+                        if (!current || current.key!==a.seedKey) return fail('Planta mudou durante a limpeza; lote interrompido');
+                        if (M.harvest(a.x,a.y,1)!==true || (plantAt(a.x,a.y) && plantAt(a.x,a.y).key===a.seedKey))
+                            return fail('A remoção não foi confirmada; lote interrompido para preservar o canteiro');
+                    } else {
+                        const seed=M.plants[a.seedKey];
+                        if (plantAt(a.x,a.y)) return fail('Canteiro ocupado; plantio cancelado');
+                        const cost=M.getCost(seed);
+                        if (!Number.isFinite(cost) || cost<0) return fail('Custo mudou para um valor inválido');
+                        if (Number(Game.cookies)<cost) return fail('Aguardando dinheiro; custo mudou durante o lote',
+                            {waiting:true,reason:'insufficient_funds',requiredCookies:cost,availableCookies:Number(Game.cookies)});
+                        if (M.useTool(Number(seed.id),a.x,a.y)!==true ||
+                                !plantAt(a.x,a.y) || plantAt(a.x,a.y).key!==a.seedKey)
+                            return fail('O jogo não confirmou o plantio; lote interrompido');
+                        M.toCompute=true;
+                    }
+                    results.push({ok:true,action:a.kind,x:a.x,y:a.y,seedKey:a.seedKey,
+                        message:a.kind==='plant'?'Semente plantada e verificada':'Remoção confirmada para o novo layout'});
+                } catch (error) { return fail('Falha no layout: '+String(error && error.message || error)); }
+            }
+            return results;
+        })()""".replace("__ACTIONS__", json.dumps(payload_actions))
+        payload = self.execute_js(script)
+        if not isinstance(payload, list) or not payload or any(not isinstance(item, dict) for item in payload):
+            return (GardenActionResult(False, "layout", "Resposta inválida do lote de Garden."),)
+        return tuple(self._parse_garden_action(
+            item, str(item.get("action") or "layout"),
+            x=self._optional_int(item.get("x")), y=self._optional_int(item.get("y")),
+        ) for item in payload)
 
     def harvest_garden_tile(
         self, x: int, y: int, *, expected_key: Optional[str] = None,
@@ -1983,6 +2084,7 @@ class CookieClickerBridge:
                 seed_id, key, str(raw.get("name") or key), bool(raw.get("unlocked")),
                 bool(raw.get("plantable", True)), mature_age, bool(raw.get("weed")),
                 bool(raw.get("fungus")), bool(raw.get("immortal")),
+                cost=self._optional_float(raw.get("cost")),
             ))
         if not seeds:
             return GardenSnapshot(GardenStatus(False, True, "Catálogo de sementes ausente ou inválido no runtime"))
@@ -2030,6 +2132,7 @@ class CookieClickerBridge:
 
         return GardenSnapshot(
             status=status,
+            cookies=self._optional_float(payload.get("cookies")),
             farm_level=self._optional_int(payload.get("farmLevel")),
             farm_amount=self._optional_int(payload.get("farmAmount")),
             soil_key=str(payload["soilKey"]) if self._valid_garden_key(payload.get("soilKey")) else None,
@@ -2077,6 +2180,10 @@ class CookieClickerBridge:
             soil_key=str(runtime_soil) if runtime_soil else None,
             before_key=str(payload.get("beforeKey")) if payload.get("beforeKey") is not None else None,
             after_key=str(payload.get("afterKey")) if payload.get("afterKey") is not None else None,
+            waiting=payload.get("waiting") is True,
+            reason=str(payload.get("reason") or ""),
+            required_cookies=CookieClickerBridge._optional_float(payload.get("requiredCookies")),
+            available_cookies=CookieClickerBridge._optional_float(payload.get("availableCookies")),
         )
 
     @staticmethod
