@@ -1,5 +1,7 @@
 # Estudo técnico — combo para “And a little extra”
 
+> Estudo histórico de 29/09. A recomendação de dois BS naturais foi substituída pela [revalidação de 03/10/2026](revalidacao-combo-2026-10-03.md): padrão de dois BS totais, Garden com crescimento em Fertilizer e limite de busca de três horas.
+
 ## Escopo, evidência e conclusão executiva
 
 Este documento especifica, mas **não implementa**, um futuro looper para buscar a conquista “And a little extra”. Nenhuma magia, venda, compra, troca de aura ou espírito, loan, Golden Switch, Sugar Frenzy, colheita, clique, ascensão ou alteração de save foi executada durante o estudo.

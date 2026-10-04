@@ -79,7 +79,7 @@ def empty_garden():
     garden = mature_garden()
     return GardenSnapshot(
         status=garden.status,
-        soil_key=garden.soil_key,
+        soil_key="fertilizer",
         unlocked_tiles=garden.unlocked_tiles,
         seeds=garden.seeds,
         plants=(),
@@ -148,6 +148,11 @@ class FakeComboBridge:
         self.calls.append(("garden",))
         return self.garden
 
+    def change_garden_soil(self, soil):
+        self.calls.append(("soil", soil))
+        self.garden = replace(self.garden, soil_key=soil)
+        return GardenActionResult(True, "soil", "Solo atualizado")
+
     def pop_combo_natural_shimmer(self, shimmer_id):
         self.calls.append(("pop", shimmer_id))
         return {"ok": True}
@@ -182,6 +187,88 @@ class FakeComboBridge:
 
 
 class ComboStateMachineTests(unittest.TestCase):
+    def test_garden_grows_in_fertilizer_then_collects_in_clay(self):
+        bridge = FakeComboBridge()
+        bridge.garden = full_garden(3, 2)
+        automation = ComboAutomation(bridge, ConfiguracaoCombo())
+        self.assertEqual(automation.executar_passo().estado, EstadoCombo.PREPARANDO)
+        self.assertIn(("soil", "fertilizer"), bridge.calls)
+        bridge.garden = replace(full_garden(12, 6), soil_key="fertilizer")
+        self.assertEqual(automation.executar_passo().estado, EstadoCombo.PREPARANDO)
+        self.assertIn(("soil", "clay"), bridge.calls)
+
+    def test_spell_frenzy_can_supply_missing_or_short_natural_frenzy(self):
+        for frenzy in ([], [{"type": "frenzy", "timeSeconds": 1}]):
+            bridge = FakeComboBridge([combo_snapshot(buffs=frenzy + ready_buffs()[1:3])])
+            bridge.forecast.update(naturalBuildingSpecials=1)
+            report = ComboAutomation(bridge, ConfiguracaoCombo()).executar_passo()
+            self.assertEqual(report.estado, EstadoCombo.CLICANDO)
+
+    def test_no_spell_frenzy_still_requires_natural_frenzy(self):
+        bridge = FakeComboBridge([combo_snapshot(buffs=ready_buffs()[1:])])
+        bridge.forecast.update(results=["blood frenzy", "click frenzy", "building special", "building special"])
+        report = ComboAutomation(bridge, ConfiguracaoCombo()).executar_passo()
+        self.assertEqual(report.estado, EstadoCombo.AGUARDANDO_BUFFS)
+        self.assertIn("Frenzy", report.mensagem)
+
+    def test_negative_buffs_and_dragonflight_wait_without_casting(self):
+        for effect in ("clot", "building debuff", "cursed finger", "dragonflight"):
+            bridge = FakeComboBridge([combo_snapshot(buffs=ready_buffs() + [{"type": effect, "timeSeconds": 4}])])
+            report = ComboAutomation(bridge, ConfiguracaoCombo()).executar_passo()
+            self.assertEqual(report.estado, EstadoCombo.AGUARDANDO_BUFFS)
+            self.assertNotIn("quadcast", [c[0] for c in bridge.calls])
+
+    def test_timeout_stops_before_any_new_mutation_even_if_stack_is_ready(self):
+        bridge = FakeComboBridge()
+        now = [0.0]
+        automation = ComboAutomation(bridge, ConfiguracaoCombo(tempo_maximo_espera=60), relogio=lambda: now[0])
+        automation.executar_passo()
+        bridge.calls.clear()
+        bridge.snapshots[0] = combo_snapshot(buffs=ready_buffs())
+        now[0] = 60
+        report = automation.executar_passo()
+        self.assertEqual(report.estado, EstadoCombo.INTERROMPIDO)
+        self.assertEqual(bridge.calls, [("snapshot",)])
+
+    def test_transient_preflight_failure_stops_clicker_but_keeps_waiting(self):
+        bridge = FakeComboBridge([combo_snapshot(buffs=ready_buffs())])
+        bridge.quadcast_result = {"ok": False, "retryable": True, "mutated": False, "message": "Buff expirou"}
+        events = []
+        automation = ComboAutomation(bridge, ConfiguracaoCombo(),
+                                     habilitar_clicker=lambda: events.append("start") or True,
+                                     desabilitar_clicker=lambda: events.append("stop") or True)
+        report = automation.executar_passo()
+        self.assertEqual(report.estado, EstadoCombo.AGUARDANDO_BUFFS)
+        self.assertEqual(events, ["start", "stop"])
+        self.assertEqual(report.lumps_gastos, 0)
+
+    def test_clicker_must_start_before_quadcast_and_failure_prevents_spending(self):
+        for accepted in (True, False):
+            bridge = FakeComboBridge([combo_snapshot(buffs=ready_buffs())])
+            events = []
+            original = bridge.execute_combo_quadcast
+            def quadcast(**kwargs):
+                events.append("quadcast")
+                return original(**kwargs)
+            bridge.execute_combo_quadcast = quadcast
+            report = ComboAutomation(bridge, ConfiguracaoCombo(),
+                habilitar_clicker=lambda: events.append("start") or accepted).executar_passo()
+            self.assertEqual(events, ["start", "quadcast"] if accepted else ["start"])
+            self.assertEqual(report.estado, EstadoCombo.CLICANDO if accepted else EstadoCombo.ERRO_SEGURO)
+
+    def test_target_does_not_waste_remaining_click_window(self):
+        bridge = FakeComboBridge([combo_snapshot(buffs=ready_buffs())])
+        now = [0.0]
+        automation = ComboAutomation(bridge, ConfiguracaoCombo(), relogio=lambda: now[0])
+        automation.executar_passo()
+        bridge.snapshots[0] = combo_snapshot(cookiesEarned=1e73, buffs=[
+            {"type": "blood frenzy"}, {"type": "click frenzy"},
+        ])
+        now[0] = 2
+        self.assertEqual(automation.executar_passo().estado, EstadoCombo.CLICANDO)
+        now[0] = 9
+        self.assertEqual(automation.executar_passo().estado, EstadoCombo.CONCLUIDO)
+
     def test_preview_only_reads_snapshot_and_forecast(self):
         bridge = FakeComboBridge()
         report = ComboAutomation(bridge, ConfiguracaoCombo()).gerar_previa()
@@ -242,7 +329,7 @@ class ComboStateMachineTests(unittest.TestCase):
 
         self.assertEqual(report.estado, EstadoCombo.ALINHANDO)
         self.assertIn(("skip", 9, 4), bridge.calls)
-        self.assertIn(("forecast", 5000, 3), bridge.calls)
+        self.assertIn(("forecast", 5000, 2), bridge.calls)
 
     def test_alignment_waits_for_maximum_mana_before_casting_cheapest_safe_spell(self):
         bridge = FakeComboBridge([combo_snapshot(spellsCastTotal=9, magic=50, magicM=100, canRefillLump=False)])
@@ -711,6 +798,28 @@ class RunnerExclusiveModeTests(unittest.TestCase):
 
 
 class ComboUiTests(unittest.TestCase):
+    def test_old_preset_migrates_once_and_later_preferences_are_preserved(self):
+        from app.config import settings as settings_module
+        for revision, expected in ((0, 2), (2, 3)):
+            values = {"combo_strategy_revision": revision,
+                      "combo_required_building_specials": 3,
+                      "combo_poll_interval_seconds": 1.0,
+                      "combo_minimum_buff_seconds": 15.0}
+            settings = Mock()
+            settings.value.side_effect = lambda key, default=None, **kwargs: values.get(key, default)
+            settings.setValue.side_effect = lambda key, value: values.update({key: value})
+            config = AutomationConfig()
+            with patch.object(settings_module, "QSettings", return_value=settings), patch.object(
+                settings_module, "automation_config", config,
+            ):
+                settings_module.load_automation_settings()
+            self.assertEqual(config.combo_required_building_specials, expected)
+            self.assertEqual(config.combo_max_wait_minutes, 180)
+            if revision == 0:
+                self.assertEqual(config.combo_minimum_buff_seconds, 12)
+                self.assertEqual(config.combo_poll_interval_seconds, .2)
+                self.assertEqual(values['combo_strategy_revision'], 2)
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -737,7 +846,7 @@ class ComboUiTests(unittest.TestCase):
         config = AutomationConfig()
         self.assertFalse(config.enable_combo_automation)
         self.assertEqual(config.combo_target_cookies, 1e72)
-        self.assertEqual(config.combo_required_building_specials, 3)
+        self.assertEqual(config.combo_required_building_specials, 2)
         self.assertFalse(config.combo_pause_before_last_skips)
         self.assertFalse(ConfiguracaoCombo().pausar_antes_ultimos_skips)
 

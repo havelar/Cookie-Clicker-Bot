@@ -29,14 +29,22 @@ padrão.
 ## Estratégia executada
 
 - Procura quatro FtHoF consecutivos contendo Elder Frenzy, Click Frenzy e pelo menos um Building Special.
-- Completa a meta configurada de Building Specials com até dois efeitos naturais.
+- O padrão é **2 Building Specials distintos no total**: um natural e um de FtHoF. A janela já alinhada na season atual tem prioridade sobre gastar mais skips por um plano teoricamente maior.
 - Alinha o contador com Haggler's Charm, a spell determinística segura de menor custo. Quando há Sugar Lump, orçamento e refill disponível, lança skips até a mana restante não pagar outra spell e só então recarrega. Sem refill disponível, espera a barra cheia antes de cada skip para favorecer a regeneração. Sempre para os skips ao chegar à janela planejada. A recarga respeita o cooldown de 15 minutos e o orçamento informado.
 - Configura Valentine, Golden Switch desligado, Pantheon, auras de preparação, 601 Wizard Towers e o escritório necessário para os loans.
-- Monta Golden Clover + Nursetulip em Clay durante a busca para acelerar a coleta natural. O Garden é opcional para o disparo: maturidade, quantidade de plantas e disponibilidade de sementes não bloqueiam o combo. Assim que a pilha natural necessária estiver pronta, prioriza mana, cooldown e alinhamento, sem consultar nem alterar o Garden antes do Quadcast.
-- Coleta apenas Golden/Wrath Cookies naturais enquanto procura Frenzy + Dragon Harvest + os Building Specials necessários.
+- Monta Golden Clover + Nursetulip. Usa Fertilizer para crescer e Clay quando pelo menos metade do canteiro e metade das Nursetulips estiverem maduras. O Garden é opcional para o disparo: assim que a pilha natural estiver pronta, não consulta nem altera o Garden antes do Quadcast.
+- Coleta Golden/Wrath Cookies naturais enquanto procura Dragon Harvest + os BS necessários. Frenzy pode vir da própria sequência de FtHoF. Se o Frenzy natural tem margem suficiente, mantém o cookie redundante em tela para Dragon's Fortune; caso contrário, ativa o Frenzy da spell.
 - Trata Cookie Storm como evento natural: drena somente os drops identificados pela engine e continua preparando o combo.
 - Recompra pelo menos 601 Cursors depois dos sacrifícios necessários para liberar os loans, preservando essa venda no Godzamok.
 - Revalida tudo em uma única chamada antes do Quadcast. Só então executa `601 → 1 → 601 → 1`, ativa os multiplicadores finais, vende os prédios seguros para Godzamok e inicia o clicker.
+
+O clicker é armado **antes** dessa chamada para aproveitar os buffs curtos. A margem natural padrão é 12 s, o intervalo de verificação é 0,2 s e o limite de preparação/busca é 180 minutos. O limite encerra a busca sem forçar uma tentativa incompleta; não é uma garantia de sucesso. A pausa manual continua aguardando Retomar; o prazo decorrido é conferido ao retomar.
+
+Depois dos casts, o bot ativa os BS e conta **prédios distintos**, antes de gastar Sugar Frenzy/loans. Uma duplicação encerra a tentativa parcial, informa o lump de refill já usado e preserva os boosts de uso único. Sugar Frenzy usa a ativação normal do jogo e só é confirmada com buff ativo e débito de um lump; loans em juros ou prestes a vencer bloqueiam antes dos casts. A janela de cliques considera os buffs necessários e a vida dos cookies preservados, desconta 1 s de margem e inclui a latência da chamada. Mesmo que a meta seja atingida antes, aproveita o restante da janela.
+
+Os buffs exibidos no painel incluem seus segundos restantes. As durações verificadas, os cenários de espera e suas limitações estão em [Revalidação de 03/10/2026](revalidacao-combo-2026-10-03.md).
+
+Ao reabrir o bot pela primeira vez nesta revisão, os antigos valores padrão `3 BS / 1 s / 15 s` são migrados para `2 BS / 0,2 s / 12 s`. Outros valores são preservados. Depois dessa migração, alterações manuais são respeitadas. Um processo já aberto precisa ser reiniciado para carregar o código novo.
 
 Um Building Special de Wizard Towers não é aceito, pois deixaria de existir durante as vendas. Prédios associados a qualquer Building Special ativo também são preservados.
 
@@ -44,7 +52,7 @@ Um Building Special de Wizard Towers não é aceito, pois deixaria de existir du
 
 Enquanto o modo está ativo, o detector comum, o spam do Grimoire, Stock Market, Garden normal, Auto Ascensão, coleta de lumps e atalhos manuais do clicker ficam pausados ou bloqueados. Ao terminar, os timers comuns voltam a funcionar; o clicker fica parado.
 
-Se uma precondição mudar antes dos gastos, a execução entra em **erro seguro**. Se houver falha parcial dentro do Quadcast, o bot registra os lumps já gastos, não repete a tentativa automaticamente e tenta restaurar a quantidade original de Wizard Towers. Use **Parar imediatamente** para pedir uma parada cooperativa; uma operação atômica que já começou termina antes da thread encerrar.
+Se um buff expirar, aparecer um cookie ou a previsão mudar antes dos gastos, o bot desarma o clicker e revalida no próximo ciclo. Dragonflight e efeitos negativos incompatíveis também aguardam expirar. Inconsistências estruturais e falhas parciais entram em **erro seguro**. Numa falha parcial, o bot registra os lumps já gastos, não repete a tentativa automaticamente e tenta restaurar as Wizard Towers. Use **Parar imediatamente** para pedir uma parada cooperativa; uma operação atômica que já começou termina antes da thread encerrar.
 
 ## Limitações
 
