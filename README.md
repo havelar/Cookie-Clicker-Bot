@@ -18,6 +18,8 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 - **Threading Seguro**: Automação executada em threads separadas para performance
 - **Garden por tick**: reconcilia o layout completo e automatiza opcionalmente a coleção de 34 sementes
 - **Auto Ascensão controlada**: simula ou executa ciclos com meta de prestígio, timeout, confirmação e parada segura
+- **Combo endgame autônomo**: busca um BS natural + um da spell, aproveita Frenzy do Quadcast e limita a espera padrão a três horas, com backup obrigatório
+- **Simple Farm**: autoclick sob demanda e Golden Cookies com Dualcast oportunista, sem gastar Sugar Lumps nem tocar em Garden, Pantheon ou loans
 
 ## 🚀 Instalação
 
@@ -78,6 +80,12 @@ Garden estão em [docs/garden-automation.md](docs/garden-automation.md).
 
 O fluxo, as APIs validadas e a regra determinística de compra da Auto Ascensão
 estão em [docs/auto-ascensao.md](docs/auto-ascensao.md).
+
+O planejamento dinâmico, a exclusividade e as salvaguardas do combo endgame
+estão em [docs/combo-automation.md](docs/combo-automation.md).
+
+O modo econômico para preparar a ascensão está documentado em
+[docs/simple-farm.md](docs/simple-farm.md).
 
 ## ⚙️ Configuração
 

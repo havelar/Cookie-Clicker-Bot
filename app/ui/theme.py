@@ -53,7 +53,16 @@ QDoubleSpinBox, QSpinBox, QLineEdit, QTextEdit, QListWidget, QTableWidget {
     border: 1px solid #37404e;
     border-radius: 6px;
     padding: 7px;
+    color: #f4f7fc;
     selection-background-color: #3d86e8;
+}
+QDoubleSpinBox, QSpinBox {
+    min-height: 18px;
+    padding: 4px 24px 4px 8px;
+}
+QDoubleSpinBox:disabled, QSpinBox:disabled, QLineEdit:disabled {
+    color: #778093;
+    background: #20242b;
 }
 QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus, QTextEdit:focus, QListWidget:focus, QTableWidget:focus { border-color: #5799ef; }
 QTextEdit { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 11px; }

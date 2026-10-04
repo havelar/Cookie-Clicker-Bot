@@ -85,6 +85,27 @@ class AutomationConfig:
     auto_ascension_poll_interval_seconds: float = 0.1
     auto_ascension_max_cycle_seconds: int = 86_400
 
+    # Combo endgame: execução real sempre parte desligada.
+    enable_combo_automation: bool = False
+    combo_target_cookies: float = 1e72
+    combo_max_search_ahead: int = 5_000
+    combo_max_skip_lumps: int = 64
+    combo_required_building_specials: int = 2
+    combo_poll_interval_seconds: float = 0.2
+    combo_minimum_buff_seconds: float = 12.0
+    combo_max_wait_minutes: int = 180
+    combo_use_sugar_frenzy: bool = True
+    combo_use_loans: bool = True
+    combo_pause_before_last_skips: bool = False
+
+    # Simple Farm: Dualcast econômico, sem lumps, loans, Garden ou Pantheon.
+    enable_simple_farm: bool = False
+    simple_farm_max_search_ahead: int = 250
+    simple_farm_poll_interval_seconds: float = 0.2
+    simple_farm_minimum_buff_seconds: float = 8.0
+    simple_farm_cash_reserve_percent: float = 30.0
+    simple_farm_investment_percent: float = 10.0
+
 
 @dataclass
 class BackupConfig:
@@ -269,6 +290,81 @@ def load_automation_settings() -> None:
         automation_config.auto_ascension_max_cycle_seconds,
         type=int,
     )))
+    automation_config.enable_combo_automation = settings.value(
+        "enable_combo_automation", False, type=bool,
+    )
+    automation_config.combo_target_cookies = max(1.0, settings.value(
+        "combo_target_cookies", automation_config.combo_target_cookies, type=float,
+    ))
+    automation_config.combo_max_search_ahead = min(100_000, max(4, settings.value(
+        "combo_max_search_ahead", automation_config.combo_max_search_ahead, type=int,
+    )))
+    automation_config.combo_max_skip_lumps = min(10_000, max(0, settings.value(
+        "combo_max_skip_lumps", automation_config.combo_max_skip_lumps, type=int,
+    )))
+    automation_config.combo_required_building_specials = min(6, max(1, settings.value(
+        "combo_required_building_specials",
+        automation_config.combo_required_building_specials,
+        type=int,
+    )))
+    automation_config.combo_poll_interval_seconds = min(60.0, max(0.1, settings.value(
+        "combo_poll_interval_seconds", automation_config.combo_poll_interval_seconds, type=float,
+    )))
+    automation_config.combo_minimum_buff_seconds = min(120.0, max(5.0, settings.value(
+        "combo_minimum_buff_seconds", automation_config.combo_minimum_buff_seconds, type=float,
+    )))
+    automation_config.combo_max_wait_minutes = min(1440, max(1, settings.value(
+        "combo_max_wait_minutes", 180, type=int,
+    )))
+    # Migração única dos antigos padrões: o usuário pediu uma busca em horas.
+    # Valores diferentes dos padrões antigos continuam preservados.
+    if settings.value("combo_strategy_revision", 0, type=int) < 2:
+        for name, old, new in (
+            ("combo_required_building_specials", 3, 2),
+            ("combo_poll_interval_seconds", 1.0, 0.2),
+            ("combo_minimum_buff_seconds", 15.0, 12.0),
+        ):
+            if getattr(automation_config, name) == old:
+                setattr(automation_config, name, new)
+            settings.setValue(name, getattr(automation_config, name))
+        settings.setValue("combo_strategy_revision", 2)
+    automation_config.combo_use_sugar_frenzy = settings.value(
+        "combo_use_sugar_frenzy", True, type=bool,
+    )
+    automation_config.combo_use_loans = settings.value(
+        "combo_use_loans", True, type=bool,
+    )
+    automation_config.combo_pause_before_last_skips = settings.value(
+        "combo_pause_before_last_skips", False, type=bool,
+    )
+    automation_config.enable_simple_farm = settings.value(
+        "enable_simple_farm", False, type=bool,
+    )
+    automation_config.simple_farm_max_search_ahead = min(10_000, max(2, settings.value(
+        "simple_farm_max_search_ahead",
+        automation_config.simple_farm_max_search_ahead,
+        type=int,
+    )))
+    automation_config.simple_farm_poll_interval_seconds = min(10.0, max(0.1, settings.value(
+        "simple_farm_poll_interval_seconds",
+        automation_config.simple_farm_poll_interval_seconds,
+        type=float,
+    )))
+    automation_config.simple_farm_minimum_buff_seconds = min(60.0, max(3.0, settings.value(
+        "simple_farm_minimum_buff_seconds",
+        automation_config.simple_farm_minimum_buff_seconds,
+        type=float,
+    )))
+    automation_config.simple_farm_cash_reserve_percent = min(90.0, max(10.0, settings.value(
+        "simple_farm_cash_reserve_percent",
+        automation_config.simple_farm_cash_reserve_percent,
+        type=float,
+    )))
+    automation_config.simple_farm_investment_percent = min(50.0, max(1.0, settings.value(
+        "simple_farm_investment_percent",
+        automation_config.simple_farm_investment_percent,
+        type=float,
+    )))
     settings.endGroup()
 
 
@@ -315,6 +411,27 @@ def save_automation_settings() -> None:
         "auto_ascension_max_cycle_seconds",
         automation_config.auto_ascension_max_cycle_seconds,
     )
+    settings.setValue("enable_combo_automation", automation_config.enable_combo_automation)
+    settings.setValue("combo_target_cookies", automation_config.combo_target_cookies)
+    settings.setValue("combo_max_search_ahead", automation_config.combo_max_search_ahead)
+    settings.setValue("combo_max_skip_lumps", automation_config.combo_max_skip_lumps)
+    settings.setValue(
+        "combo_required_building_specials",
+        automation_config.combo_required_building_specials,
+    )
+    settings.setValue("combo_poll_interval_seconds", automation_config.combo_poll_interval_seconds)
+    settings.setValue("combo_minimum_buff_seconds", automation_config.combo_minimum_buff_seconds)
+    settings.setValue("combo_max_wait_minutes", automation_config.combo_max_wait_minutes)
+    settings.setValue("combo_strategy_revision", 2)
+    settings.setValue("combo_use_sugar_frenzy", automation_config.combo_use_sugar_frenzy)
+    settings.setValue("combo_use_loans", automation_config.combo_use_loans)
+    settings.setValue("combo_pause_before_last_skips", automation_config.combo_pause_before_last_skips)
+    settings.setValue("enable_simple_farm", automation_config.enable_simple_farm)
+    settings.setValue("simple_farm_max_search_ahead", automation_config.simple_farm_max_search_ahead)
+    settings.setValue("simple_farm_poll_interval_seconds", automation_config.simple_farm_poll_interval_seconds)
+    settings.setValue("simple_farm_minimum_buff_seconds", automation_config.simple_farm_minimum_buff_seconds)
+    settings.setValue("simple_farm_cash_reserve_percent", automation_config.simple_farm_cash_reserve_percent)
+    settings.setValue("simple_farm_investment_percent", automation_config.simple_farm_investment_percent)
     settings.endGroup()
     settings.sync()
 

@@ -535,6 +535,1084 @@ class CookieClickerBridge:
             return {"cast": False, "reason": "invalid_response", "message": "Resposta inválida do Grimoire"}
         return payload
 
+    # === Modo Combo ===
+
+    def get_game_save(self) -> Optional[str]:
+        """Retorna o save exportável sem abrir o prompt do jogo."""
+        payload = self.execute_js("""(() => {
+            if (!globalThis.Game || typeof Game.WriteSave !== 'function') return null;
+            const save=Game.WriteSave(1);
+            return typeof save==='string' && save.length>0 ? save : null;
+        })()""")
+        return payload if isinstance(payload, str) and payload else None
+
+    def get_combo_snapshot(self) -> Dict[str, Any]:
+        """Lê em uma avaliação todo o estado usado pelo planejador de combo."""
+        payload = self.execute_js("""(() => {
+            const unavailable = message => ({available:false, message});
+            if (!globalThis.Game || !Game.Objects) return unavailable('Runtime do jogo indisponível');
+            const tower=Game.Objects['Wizard tower'];
+            const temple=Game.Objects['Temple'];
+            const bank=Game.Objects['Bank'];
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            const P=temple && temple.minigameLoaded ? temple.minigame : null;
+            const B=bank && bank.minigameLoaded ? bank.minigame : null;
+            if (!M || !P || !B) return unavailable('Grimoire, Pantheon ou Stock Market não está carregado');
+            const finite=(value,fallback=0)=>Number.isFinite(Number(value))?Number(value):fallback;
+            const fps=Math.max(1,finite(Game.fps,30));
+            const skip=M.spellsById && M.spellsById[4];
+            const achievement=Game.Achievements && Game.Achievements['And a little extra'];
+            const store=Array.from(Game.UpgradesInStore || []);
+            const lovesick=Game.Upgrades && Game.Upgrades['Lovesick biscuit'];
+            return {
+                available:true,
+                message:'Snapshot de combo disponível',
+                screen:Game.OnAscend?'ascend':((finite(Game.AscendTimer)>0||finite(Game.ReincarnateTimer)>0)?'transition':'game'),
+                version:String(Game.version), seed:String(Game.seed || ''), season:String(Game.season || ''),
+                seasonSwitchAvailable:!!(lovesick && lovesick.unlocked),
+                cookies:finite(Game.cookies), cookiesEarned:finite(Game.cookiesEarned),
+                cookiesPs:finite(Game.cookiesPs), mouseCps:finite(Game.computedMouseCps),
+                achievementWon:!!(achievement && achievement.won),
+                lumps:Math.max(0,Math.trunc(finite(Game.lumps))),
+                canRefillLump:typeof Game.canRefillLump==='function' && !!Game.canRefillLump(),
+                lumpRefillRemaining:typeof Game.getLumpRefillRemaining==='function'
+                    ? Math.max(0,finite(Game.getLumpRefillRemaining())/fps):0,
+                spellsCastTotal:Math.max(0,Math.trunc(finite(M.spellsCastTotal))),
+                magic:finite(M.magic), magicM:finite(M.magicM),
+                skipSpellCost:skip && typeof M.getSpellCost==='function' ? finite(M.getSpellCost(skip),Infinity):Infinity,
+                fthofCost:M.spellsById && M.spellsById[1] ? finite(M.getSpellCost(M.spellsById[1]),Infinity):Infinity,
+                wizardTowers:Math.max(0,Math.trunc(finite(tower.amount))),
+                wizardTowerLevel:Math.max(0,Math.trunc(finite(tower.level))),
+                auras:[Math.trunc(finite(Game.dragonAura)),Math.trunc(finite(Game.dragonAura2))],
+                pantheonSwaps:Math.max(0,Math.trunc(finite(P.swaps))),
+                pantheonSlots:Array.from(P.slot || []).map(value=>Math.trunc(finite(value,-1))),
+                officeLevel:Math.max(0,Math.trunc(finite(B.officeLevel))),
+                goldenSwitchOn:store.some(upgrade=>upgrade && upgrade.name==='Golden switch [on]'),
+                sugarFrenzyUsed:!!(Game.Upgrades && Game.Upgrades['Sugar frenzy'] && Game.Upgrades['Sugar frenzy'].bought),
+                buffs:Object.values(Game.buffs || {}).map(buff=>({
+                    id:Math.trunc(finite(buff.id,-1)), name:String(buff.name || ''),
+                    type:String(buff.type && buff.type.name || ''),
+                    timeSeconds:Math.max(0,finite(buff.time)/fps),
+                    maxTimeSeconds:Math.max(0,finite(buff.maxTime)/fps),
+                    multCpS:finite(buff.multCpS,1), multClick:finite(buff.multClick,1),
+                    buildingId:Number.isFinite(Number(buff.arg2))?Math.trunc(Number(buff.arg2)):null
+                })),
+                shimmers:(Game.shimmers || []).filter(shimmer=>shimmer && shimmer.type==='golden').map(shimmer=>({
+                    id:Math.trunc(finite(shimmer.id,-1)), force:String(shimmer.force || ''),
+                    wrath:!!shimmer.wrath, lifeSeconds:Math.max(0,finite(shimmer.life)/fps)
+                })),
+                buildings:Object.values(Game.ObjectsById || {}).filter(Boolean).map(object=>({
+                    id:Number(object.id), name:String(object.name || object.id),
+                    amount:Math.max(0,Math.trunc(finite(object.amount))), level:Math.max(0,Math.trunc(finite(object.level)))
+                }))
+            };
+        })()""")
+        return payload if isinstance(payload, dict) else {
+            "available": False, "message": "Resposta inválida do snapshot de combo"
+        }
+
+    def forecast_combo_window(self, max_ahead: int, required_total_bs: int) -> Dict[str, Any]:
+        """Procura a melhor janela de Quadcast sem alterar contador, mana ou save."""
+        if not isinstance(max_ahead, int) or not 4 <= max_ahead <= 100_000:
+            return {"ok": False, "message": "Alcance de forecast inválido"}
+        if not isinstance(required_total_bs, int) or not 1 <= required_total_bs <= 6:
+            return {"ok": False, "message": "Meta de Building Specials inválida"}
+        script = """(() => {
+            const maxAhead=__MAX_AHEAD__, requiredTotalBs=__REQUIRED_BS__;
+            const fail=message=>({ok:false,message});
+            const tower=globalThis.Game && Game.Objects ? Game.Objects['Wizard tower'] : null;
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            const spell=M && M.spellsById ? M.spellsById[1] : null;
+            if (!M || !spell || typeof Math.seedrandom!=='function') return fail('Grimoire ou seedrandom indisponível');
+            const current=Math.trunc(Number(M.spellsCastTotal));
+            if (!Number.isFinite(current)) return fail('Contador de spells inválido');
+            const onscreen=Number(Game.shimmerTypes && Game.shimmerTypes.golden && Game.shimmerTypes.golden.n)||0;
+            let failBase=Number(M.getFailChance(spell))-0.15*onscreen;
+            if (!Number.isFinite(failBase)) return fail('Chance de backfire inválida');
+            failBase=Math.max(0,Math.min(1,failBase));
+            const canSeason=!!(Game.Upgrades && Game.Upgrades['Lovesick biscuit'] && Game.Upgrades['Lovesick biscuit'].unlocked);
+            const currentSeason=String(Game.season || '');
+            const modes=[];
+            modes.push({season:currentSeason,seasonal:currentSeason==='valentines'||currentSeason==='easter'});
+            if (canSeason && !modes.some(mode=>mode.season==='valentines')) modes.push({season:'valentines',seasonal:true});
+
+            function outcome(cast,existing,seasonal) {
+                const oldRandom=Math.random;
+                try {
+                    Math.seedrandom(String(Game.seed)+'/'+cast);
+                    const successRoll=Math.random();
+                    const success=successRoll < 1-(failBase+0.15*existing);
+                    Math.random(); Math.random();
+                    if (seasonal) Math.random();
+                    let choices;
+                    if (success) {
+                        choices=['frenzy','multiply cookies','click frenzy'];
+                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
+                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
+                        if (Math.random()<0.15) choices=['cookie storm drop'];
+                        if (Math.random()<0.0001) choices.push('free sugar lump');
+                    } else {
+                        choices=['clot','ruin cookies'];
+                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
+                        if (Math.random()<0.003) choices.push('free sugar lump');
+                        if (Math.random()<0.1) choices=['blab'];
+                    }
+                    return choices[Math.floor(Math.random()*choices.length)];
+                } finally { Math.random=oldRandom; }
+            }
+
+            let best=null;
+            for (const mode of modes) {
+                for (let offset=0;offset<=maxAhead-4;offset++) {
+                    const start=current+offset;
+                    const results=[0,1,2,3].map(index=>outcome(start+index,index,mode.seasonal));
+                    const ef=results.filter(value=>value==='blood frenzy').length;
+                    const cf=results.filter(value=>value==='click frenzy').length;
+                    const bs=results.filter(value=>value==='building special').length;
+                    if (ef<1 || cf<1 || bs<1) continue;
+                    const natural=Math.max(0,requiredTotalBs-bs);
+                    if (natural>2) continue;
+                    const score=offset+natural*250-bs*25;
+                    const candidate={startCast:start,skipCount:offset,season:mode.season,results,
+                        spellBuildingSpecials:bs,naturalBuildingSpecials:natural,score};
+                    // Preserve a janela já alinhada na season atual: não gaste
+                    // centenas de skips apenas para buscar mais um BS de spell.
+                    if (offset===0 && mode.season===currentSeason)
+                        return Object.assign({ok:true,seed:String(Game.seed),version:String(Game.version),currentCast:current,failBase},candidate);
+                    if (!best || candidate.score<best.score ||
+                            (candidate.score===best.score && candidate.skipCount<best.skipCount)) best=candidate;
+                }
+            }
+            if (!best) return fail('Nenhuma janela EF + CF + BS encontrada');
+            return Object.assign({ok:true,seed:String(Game.seed),version:String(Game.version),currentCast:current,failBase},best);
+        })()""".replace("__MAX_AHEAD__", str(max_ahead)).replace("__REQUIRED_BS__", str(required_total_bs))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {
+            "ok": False, "message": "Resposta inválida do forecast"
+        }
+
+    def forecast_simple_farm_pair(self, max_ahead: int) -> Dict[str, Any]:
+        """Encontra o próximo Dualcast econômico com Click Frenzy na season atual."""
+        if isinstance(max_ahead, bool) or not isinstance(max_ahead, int) or not 2 <= max_ahead <= 10_000:
+            return {"ok": False, "message": "Alcance do Simple Farm inválido"}
+        script = """(() => {
+            const maxAhead=__MAX_AHEAD__;
+            const fail=message=>({ok:false,message});
+            const tower=globalThis.Game && Game.Objects ? Game.Objects['Wizard tower'] : null;
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            const spell=M && M.spellsById ? M.spellsById[1] : null;
+            if (!M || !spell || typeof Math.seedrandom!=='function')
+                return fail('Grimoire ou seedrandom indisponível');
+            const current=Math.trunc(Number(M.spellsCastTotal));
+            const level=Math.trunc(Number(tower.level));
+            const spots={1:[321,21],2:[314,14],3:[308,8],4:[303,3],5:[401,1],
+                6:[401,1],7:[401,1],8:[501,1],9:[501,1],10:[501,1]};
+            if (!spots[level]) return fail('Simple Farm suporta Wizard Towers entre os níveis 1 e 10');
+            const onscreen=Number(Game.shimmerTypes && Game.shimmerTypes.golden && Game.shimmerTypes.golden.n)||0;
+            let failBase=Number(M.getFailChance(spell))-0.15*onscreen;
+            if (!Number.isFinite(current) || !Number.isFinite(failBase))
+                return fail('Estado do Grimoire inválido');
+            failBase=Math.max(0,Math.min(1,failBase));
+            const seasonal=Game.season==='valentines'||Game.season==='easter';
+            function outcome(cast,existing) {
+                const oldRandom=Math.random;
+                try {
+                    Math.seedrandom(String(Game.seed)+'/'+cast);
+                    const success=Math.random()<1-(failBase+0.15*existing);
+                    Math.random(); Math.random(); if (seasonal) Math.random();
+                    let choices;
+                    if (success) {
+                        choices=['frenzy','multiply cookies','click frenzy'];
+                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
+                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
+                        if (Math.random()<0.15) choices=['cookie storm drop'];
+                        if (Math.random()<0.0001) choices.push('free sugar lump');
+                    } else {
+                        choices=['clot','ruin cookies'];
+                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
+                        if (Math.random()<0.003) choices.push('free sugar lump');
+                        if (Math.random()<0.1) choices=['blab'];
+                    }
+                    return choices[Math.floor(Math.random()*choices.length)];
+                } finally { Math.random=oldRandom; }
+            }
+            const useful=new Set(['frenzy','multiply cookies','click frenzy','building special','blood frenzy']);
+            for (let offset=0;offset<=maxAhead-2;offset++) {
+                const results=[outcome(current+offset,0),outcome(current+offset+1,1)];
+                const cf=results.filter(value=>value==='click frenzy').length;
+                if (cf<1 || !results.every(value=>useful.has(value))) continue;
+                const quality=cf===2?'Duplo Click Frenzy':
+                    (results.includes('blood frenzy')?'Click Frenzy + Elder Frenzy':
+                    (results.includes('building special')?'Click Frenzy + Building Special':
+                    (results.includes('frenzy')?'Click Frenzy + Frenzy':'Click Frenzy + Lucky')));
+                return {ok:true,seed:String(Game.seed),version:String(Game.version),
+                    currentCast:current,startCast:current+offset,skipCount:offset,results,quality,
+                    minimumTowers:spots[level][0],finalTowers:spots[level][1],towerLevel:level};
+            }
+            return fail('Nenhum par seguro com Click Frenzy foi encontrado');
+        })()""".replace("__MAX_AHEAD__", str(max_ahead))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {
+            "ok": False, "message": "Resposta inválida do forecast do Simple Farm"
+        }
+
+    def execute_simple_farm_dualcast(
+        self,
+        *,
+        expected_cast: int,
+        expected_results: List[str],
+        minimum_buff_seconds: float,
+        minimum_towers: int,
+        final_towers: int,
+    ) -> Dict[str, Any]:
+        """Executa dois FtHoF, restaura torres e prova que nenhum lump foi gasto."""
+        allowed = {"frenzy", "multiply cookies", "click frenzy", "building special", "blood frenzy"}
+        if isinstance(expected_cast, bool) or not isinstance(expected_cast, int) or expected_cast < 0:
+            return {"ok": False, "message": "Contador inicial inválido"}
+        if (
+            not isinstance(expected_results, list) or len(expected_results) != 2
+            or any(value not in allowed for value in expected_results)
+            or expected_results.count("click frenzy") < 1
+        ):
+            return {"ok": False, "message": "Resultados do Dualcast inválidos"}
+        if not 3 <= minimum_buff_seconds <= 60:
+            return {"ok": False, "message": "Duração mínima de buff inválida"}
+        if (
+            isinstance(minimum_towers, bool) or not isinstance(minimum_towers, int)
+            or isinstance(final_towers, bool) or not isinstance(final_towers, int)
+            or minimum_towers < 2 or not 1 <= final_towers < minimum_towers
+        ):
+            return {"ok": False, "message": "Ponto de Dualcast inválido"}
+        script = """(() => {
+            const expectedCast=__EXPECTED_CAST__, expectedResults=__EXPECTED_RESULTS__;
+            const minimum=__MINIMUM__, minimumTowers=__MIN_TOWERS__, finalTowers=__FINAL_TOWERS__;
+            const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
+            const tower=Game.Objects && Game.Objects['Wizard tower'];
+            const temple=Game.Objects && Game.Objects['Temple'];
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            const P=temple && temple.minigameLoaded ? temple.minigame : null;
+            const spell=M && M.spellsById ? M.spellsById[1] : null;
+            if (!M || !spell) return fail('Grimoire indisponível');
+            const fps=Math.max(1,Number(Game.fps)||30);
+            const castNow=Math.trunc(Number(M.spellsCastTotal)||0);
+            const original=Math.trunc(Number(tower.amount)||0);
+            const lumpsBefore=Math.trunc(Number(Game.lumps)||0);
+            const pantheonBefore=P && Array.isArray(P.slot)?Array.from(P.slot).map(Number):[];
+            if (castNow!==expectedCast) return fail('Contador de spells mudou antes do Dualcast');
+            if (original<minimumTowers)
+                return fail(`São necessárias ${minimumTowers} Wizard Towers`,{waiting:true,original,minimumTowers});
+            if (Number(M.magic)+1e-7<Number(M.magicM))
+                return fail('Mana ainda não está completamente cheia',{waiting:true});
+            if ((Game.shimmers||[]).some(item=>item && item.type==='golden'))
+                return fail('Há um Golden Cookie em tela antes do Dualcast');
+            if (Game.hasBuff && Game.hasBuff('Dragonflight'))
+                return fail('Dragonflight alteraria o resultado previsto',{waiting:true});
+            const trigger=Object.values(Game.buffs||{}).find(buff=>buff && buff.type &&
+                ['frenzy','dragon harvest','building buff','click frenzy','blood frenzy'].includes(String(buff.type.name)) &&
+                Number(buff.time)/fps>=minimum);
+            if (!trigger) return fail('O multiplicador natural terminou antes do Dualcast',{waiting:true});
+
+            const seasonal=Game.season==='valentines'||Game.season==='easter';
+            const failBase=Math.max(0,Math.min(1,Number(M.getFailChance(spell))));
+            function predict(cast,existing) {
+                const oldRandom=Math.random;
+                try {
+                    Math.seedrandom(String(Game.seed)+'/'+cast);
+                    const success=Math.random()<1-(failBase+0.15*existing);
+                    Math.random(); Math.random(); if (seasonal) Math.random();
+                    let choices;
+                    if (success) {
+                        choices=['frenzy','multiply cookies','click frenzy'];
+                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
+                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
+                        if (Math.random()<0.15) choices=['cookie storm drop'];
+                        if (Math.random()<0.0001) choices.push('free sugar lump');
+                    } else {
+                        choices=['clot','ruin cookies'];
+                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
+                        if (Math.random()<0.003) choices.push('free sugar lump');
+                        if (Math.random()<0.1) choices=['blab'];
+                    }
+                    return choices[Math.floor(Math.random()*choices.length)];
+                } finally { Math.random=oldRandom; }
+            }
+            const predicted=[predict(expectedCast,0),predict(expectedCast+1,1)];
+            if (predicted.some((value,index)=>value!==expectedResults[index]))
+                return fail('Forecast mudou antes do Dualcast',{predicted,expectedResults});
+
+            let rebuyPrice=0;
+            try {
+                for (let i=finalTowers;i<original;i++)
+                    rebuyPrice+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
+                rebuyPrice=Math.ceil(Number(Game.modifyBuildingPrice(tower,rebuyPrice)));
+            } catch (_) { rebuyPrice=Infinity; }
+            if (!Number.isFinite(rebuyPrice) || rebuyPrice>Number(Game.cookies))
+                return fail('Cookies insuficientes para garantir a recompra das Wizard Towers',
+                    {waiting:true,rebuyPrice,cookies:Number(Game.cookies)});
+
+            const created=[];
+            function castOne(index) {
+                const before=new Set((Game.shimmers||[]).map(item=>Number(item.id)));
+                const cost=Number(M.getSpellCost(spell));
+                if (!Number.isFinite(cost) || Number(M.magic)<cost)
+                    return {ok:false,message:`Mana insuficiente no FtHoF ${index+1}`,cost,magic:Number(M.magic)};
+                if (M.castSpell(spell)!==true) return {ok:false,message:`FtHoF ${index+1} foi recusado`};
+                const shimmer=(Game.shimmers||[]).find(item=>item && item.type==='golden' && !before.has(Number(item.id)));
+                if (!shimmer) return {ok:false,message:`Cookie do FtHoF ${index+1} não foi localizado`};
+                const force=String(shimmer.force||'');
+                if (force!==expectedResults[index])
+                    return {ok:false,message:`Resultado divergente no FtHoF ${index+1}`,force,expected:expectedResults[index]};
+                created.push({id:Number(shimmer.id),force,shimmer});
+                return {ok:true};
+            }
+            function restore() {
+                const missing=Math.max(0,original-Math.trunc(Number(tower.amount)||0));
+                if (!missing) return true;
+                const buyMode=Game.buyMode;
+                try { Game.buyMode=1; tower.buy(missing); }
+                finally { Game.buyMode=buyMode; }
+                if (typeof M.computeMagicM==='function') M.computeMagicM();
+                return Math.trunc(Number(tower.amount)||0)===original;
+            }
+
+            const first=castOne(0);
+            if (!first.ok) return fail(first.message,first);
+            tower.sell(original-finalTowers);
+            if (Math.trunc(Number(tower.amount)||0)!==finalTowers) {
+                restore();
+                return fail('A venda das Wizard Towers não foi confirmada',{casted:1});
+            }
+            if (typeof M.computeMagicM==='function') M.computeMagicM();
+            if (Number(M.magic)>Number(M.magicM)) M.magic=Number(M.magicM);
+            const second=castOne(1);
+            if (!second.ok) {
+                restore();
+                return fail(second.message,Object.assign({},second,{casted:1}));
+            }
+            if (!restore()) return fail('A recompra das Wizard Towers não foi confirmada',{casted:2});
+
+            const priority={'multiply cookies':0,'frenzy':1,'building special':2,'click frenzy':3,'blood frenzy':4};
+            created.sort((a,b)=>(priority[a.force]??9)-(priority[b.force]??9));
+            for (const item of created) item.shimmer.pop();
+            const pantheonAfter=P && Array.isArray(P.slot)?Array.from(P.slot).map(Number):[];
+            if (Math.trunc(Number(Game.lumps)||0)!==lumpsBefore)
+                return fail('Garantia violada: a quantidade de Sugar Lumps mudou',{lumpsBefore,lumpsAfter:Number(Game.lumps)});
+            if (JSON.stringify(pantheonAfter)!==JSON.stringify(pantheonBefore))
+                return fail('Garantia violada: o Pantheon mudou durante o Dualcast');
+            return {ok:true,message:'Dualcast concluído sem Sugar Lumps',results:created.map(item=>item.force),
+                originalTowers:original,finalTowers:Number(tower.amount),sold:original-finalTowers,
+                lumpsBefore,lumpsAfter:Number(Game.lumps),pantheonSlots:pantheonAfter,
+                godzamokDiamond:pantheonAfter[0]===2,trigger:String(trigger.name||trigger.type.name),rebuyPrice};
+        })()"""
+        replacements = {
+            "__EXPECTED_CAST__": str(expected_cast),
+            "__EXPECTED_RESULTS__": json.dumps(expected_results),
+            "__MINIMUM__": repr(float(minimum_buff_seconds)),
+            "__MIN_TOWERS__": str(minimum_towers),
+            "__FINAL_TOWERS__": str(final_towers),
+        }
+        for marker, value in replacements.items():
+            script = script.replace(marker, value)
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {
+            "ok": False, "message": "Resposta inválida do Dualcast do Simple Farm"
+        }
+
+    def reinvest_simple_farm(
+        self, cash_floor: float, max_spend_fraction: float, minimum_towers: int,
+    ) -> Dict[str, Any]:
+        """Compra um upgrade ou lote de construções sem cruzar o caixa protegido."""
+        if (
+            isinstance(cash_floor, bool) or not isinstance(cash_floor, (int, float))
+            or not 0 <= cash_floor < float("inf")
+            or isinstance(max_spend_fraction, bool)
+            or not isinstance(max_spend_fraction, (int, float))
+            or not 0.01 <= max_spend_fraction <= 0.50
+            or isinstance(minimum_towers, bool) or not isinstance(minimum_towers, int)
+            or not 2 <= minimum_towers <= 10_000
+        ):
+            return {"ok": False, "message": "Orçamento de reinvestimento inválido"}
+        script = """(() => {
+            const cashFloor=__CASH_FLOOR__, fraction=__FRACTION__, minimumTowers=__MIN_TOWERS__;
+            const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
+            if (!globalThis.Game || !Game.ObjectsById) return fail('Runtime do jogo indisponível');
+            const before=Number(Game.cookies);
+            const lumpsBefore=Math.trunc(Number(Game.lumps)||0);
+            if (!Number.isFinite(before) || before<=0) return fail('Caixa ainda está vazio',{waiting:true});
+            const tower=Game.Objects && Game.Objects['Wizard tower'];
+            const level=tower?Math.trunc(Number(tower.level)||0):0;
+            const spots={1:[321,21],2:[314,14],3:[308,8],4:[303,3],5:[401,1],
+                6:[401,1],7:[401,1],8:[501,1],9:[501,1],10:[501,1]};
+            let rebuyReserve=0;
+            if (tower && spots[level] && Number(tower.amount)>=spots[level][0]) {
+                const finalTowers=spots[level][1], original=Math.trunc(Number(tower.amount)||0);
+                try {
+                    for (let i=finalTowers;i<original;i++)
+                        rebuyReserve+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
+                    rebuyReserve=Math.ceil(Number(Game.modifyBuildingPrice(tower,rebuyReserve)));
+                } catch (_) { rebuyReserve=Infinity; }
+            }
+            if (!Number.isFinite(rebuyReserve))
+                return fail('Não foi possível reservar a recompra das Wizard Towers',{waiting:true});
+            const luckyReserve=Math.max(0,Number(Game.cookiesPs)||0)*6000;
+            const reserve=Math.max(cashFloor,luckyReserve,rebuyReserve);
+            const budget=Math.max(0,Math.min(before*fraction,before-reserve));
+            if (budget<1) return fail('Todo o caixa disponível está protegido',{waiting:true,
+                before,reserve,budget,luckyReserve,rebuyReserve});
+
+            function allowedUpgrade(upgrade) {
+                if (!upgrade || upgrade.bought || typeof upgrade.buy!=='function') return false;
+                const name=String(upgrade.name||'').toLowerCase();
+                if (name==='sugar frenzy' || name==='chocolate egg') return false;
+                if (Number(upgrade.priceLumps)>0) return false;
+                if (['toggle','tech','prestige'].includes(String(upgrade.pool||''))) return false;
+                if (upgrade.clickFunction || upgrade.choicesFunction) return false;
+                try { if (typeof upgrade.isVaulted==='function' && upgrade.isVaulted()) return false; }
+                catch (_) { return false; }
+                try { if (typeof upgrade.canBuy==='function' && !upgrade.canBuy()) return false; }
+                catch (_) { return false; }
+                return true;
+            }
+            function upgradePriority(upgrade) {
+                const name=String(upgrade.name||'').toLowerCase();
+                const description=String(upgrade.desc||'').toLowerCase();
+                if (name.includes('kitten')) return 0;
+                if (name.includes('mouse') || name.includes('finger') || description.includes('click')) return 1;
+                if (upgrade.buildingTie) return 2;
+                return 3;
+            }
+            const upgrades=Array.from(Game.UpgradesInStore||[]).filter(allowedUpgrade).map(upgrade=>{
+                let price=Infinity;
+                try { price=Number(upgrade.getPrice()); } catch (_) {}
+                return {upgrade,price,priority:upgradePriority(upgrade)};
+            }).filter(item=>Number.isFinite(item.price) && item.price>=0 && item.price<=budget &&
+                before-item.price>=reserve).sort((a,b)=>a.priority-b.priority || a.price-b.price ||
+                Number(a.upgrade.id)-Number(b.upgrade.id));
+            if (upgrades.length) {
+                const selected=upgrades[0], cookiesBefore=Number(Game.cookies);
+                let accepted=0;
+                try { accepted=selected.upgrade.buy(); } catch (_) {}
+                const after=Number(Game.cookies), spent=Math.max(0,cookiesBefore-after);
+                const ok=accepted===1 && !!selected.upgrade.bought && after+1e-7>=reserve &&
+                    spent<=budget+1 && Math.trunc(Number(Game.lumps)||0)===lumpsBefore;
+                return ok
+                    ? {ok:true,kind:'upgrade',message:`Upgrade ${selected.upgrade.name} comprado`,
+                        name:String(selected.upgrade.name),count:1,spent,before,after,reserve,budget,
+                        luckyReserve,rebuyReserve,lumpsBefore,lumpsAfter:Number(Game.lumps)}
+                    : fail('A compra do upgrade não respeitou as garantias de orçamento',
+                        {accepted,spent,before,after,reserve,budget});
+            }
+
+            const bought={};
+            const names={};
+            let spent=0, purchases=0;
+            const buyMode=Game.buyMode;
+            try {
+                Game.buyMode=1;
+                while (purchases<25) {
+                    const liveReserve=Math.max(reserve,Math.max(0,Number(Game.cookiesPs)||0)*6000);
+                    const remaining=Math.min(budget-spent,Number(Game.cookies)-liveReserve);
+                    if (remaining<1) break;
+                    const candidates=Object.values(Game.ObjectsById||{}).filter(object=>
+                        object && (Number(object.id)!==7 || Number(object.amount)<minimumTowers) &&
+                        object.unlocked!==0 && typeof object.buy==='function'
+                    ).map(object=>{
+                        let price=Infinity;
+                        try { price=Number(object.getPrice()); } catch (_) {}
+                        const amount=Math.max(0,Number(object.amount)||0);
+                        let gain=amount>0 ? Number(object.storedTotalCps)/amount : Number(object.storedCps);
+                        if (!Number.isFinite(gain) || gain<=0) gain=Math.max(1e-300,Number(object.baseCps)||0);
+                        const requiredTower=Number(object.id)===7 && amount<minimumTowers;
+                        return {object,price,gain,roi:gain/price,requiredTower};
+                    }).filter(item=>Number.isFinite(item.price) && item.price>0 && item.price<=remaining)
+                      .sort((a,b)=>Number(b.requiredTower)-Number(a.requiredTower) || b.roi-a.roi ||
+                        a.price-b.price || Number(b.object.id)-Number(a.object.id));
+                    if (!candidates.length) break;
+                    const selected=candidates[0], amountBefore=Number(selected.object.amount);
+                    const cookiesBefore=Number(Game.cookies);
+                    selected.object.buy(1);
+                    const amountAfter=Number(selected.object.amount), cookiesAfter=Number(Game.cookies);
+                    if (amountAfter!==amountBefore+1 || cookiesAfter>=cookiesBefore) break;
+                    const paid=cookiesBefore-cookiesAfter;
+                    if (spent+paid>budget+1 || cookiesAfter+1e-7<reserve) break;
+                    spent+=paid; purchases++;
+                    const id=String(selected.object.id);
+                    bought[id]=(bought[id]||0)+1;
+                    names[id]=String(selected.object.name||id);
+                }
+            } finally { Game.buyMode=buyMode; }
+            const after=Number(Game.cookies);
+            if (!purchases) return fail('Nenhum upgrade ou construção possui retorno dentro do orçamento',
+                {waiting:true,before,after,reserve,budget,luckyReserve,rebuyReserve});
+            const items=Object.keys(bought).map(id=>({id:Number(id),name:names[id],count:bought[id]}));
+            if (Math.trunc(Number(Game.lumps)||0)!==lumpsBefore)
+                return fail('Garantia violada: Sugar Lumps mudaram durante o reinvestimento',
+                    {lumpsBefore,lumpsAfter:Number(Game.lumps)});
+            return {ok:true,kind:'buildings',message:`${purchases} construção(ões) comprada(s) por ROI`,
+                count:purchases,items,spent,before,after,reserve,budget,luckyReserve,rebuyReserve};
+        })()""".replace("__CASH_FLOOR__", repr(float(cash_floor))).replace(
+            "__FRACTION__", repr(float(max_spend_fraction))
+        ).replace("__MIN_TOWERS__", str(minimum_towers))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {
+            "ok": False, "message": "Resposta inválida do reinvestimento do Simple Farm"
+        }
+
+    def pop_combo_natural_shimmer(self, shimmer_id: int) -> Dict[str, Any]:
+        """Coleta somente o shimmer natural esperado, nunca um FtHoF."""
+        if not isinstance(shimmer_id, int) or shimmer_id < 0:
+            return {"ok": False, "message": "Identificador de shimmer inválido"}
+        payload = self.execute_js("""(() => {
+            const id=__ID__;
+            const shimmer=(Game.shimmers||[]).find(item=>item && item.type==='golden' && Number(item.id)===id);
+            if (!shimmer) return {ok:false,gone:true,message:'Golden Cookie natural não está mais em tela'};
+            if (shimmer.force) return {ok:false,message:'Shimmer pertence a uma spell; clique recusado'};
+            const before=(Game.shimmers||[]).length;
+            shimmer.pop();
+            const removed=!(Game.shimmers||[]).some(item=>item && Number(item.id)===id);
+            return {ok:removed,message:removed?'Golden Cookie natural coletado':'O clique natural não foi confirmado',before,after:(Game.shimmers||[]).length};
+        })()""".replace("__ID__", str(shimmer_id)))
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao clicar shimmer"}
+
+    def pop_combo_cookie_storm_drops(self) -> Dict[str, Any]:
+        """Drena somente drops de Cookie Storm, sem tocar em outros shimmers."""
+        payload = self.execute_js("""(() => {
+            const drops=(Game.shimmers||[]).filter(item=>item && item.type==='golden' &&
+                String(item.force||'')==='cookie storm drop');
+            if (!drops.length) return {ok:true,gone:true,count:0,message:'Os drops do Cookie Storm já expiraram'};
+            const ids=drops.map(item=>Number(item.id));
+            let count=0;
+            for (const id of ids) {
+                const shimmer=(Game.shimmers||[]).find(item=>item && item.type==='golden' &&
+                    Number(item.id)===id && String(item.force||'')==='cookie storm drop');
+                if (!shimmer) continue;
+                shimmer.pop();
+                if (!(Game.shimmers||[]).some(item=>item && Number(item.id)===id)) count++;
+            }
+            const remaining=ids.filter(id=>(Game.shimmers||[]).some(item=>item && Number(item.id)===id));
+            return {ok:remaining.length===0,count,attempted:ids.length,remaining:remaining.length,
+                message:remaining.length===0?'Drops do Cookie Storm coletados':'Alguns drops do Cookie Storm ainda estão em tela'};
+        })()""")
+        return payload if isinstance(payload, dict) else {
+            "ok": False, "message": "Resposta inválida ao drenar Cookie Storm"
+        }
+
+    def set_combo_season(self, season: str) -> Dict[str, Any]:
+        """Troca para Valentine/Easter pela API nativa e confirma a season."""
+        triggers = {"valentines": "Lovesick biscuit", "easter": "Bunny biscuit"}
+        if season not in triggers:
+            return {"ok": False, "message": "Season não suportada pelo modo Combo"}
+        script = """(() => {
+            const season=__SEASON__,name=__NAME__;
+            if (String(Game.season||'')===season) return {ok:true,message:'Season já estava configurada'};
+            const upgrade=Game.Upgrades && Game.Upgrades[name];
+            if (!upgrade || !upgrade.unlocked || typeof upgrade.buy!=='function')
+                return {ok:false,message:'Season switcher não está disponível'};
+            const before=Number(Game.cookies);
+            const accepted=upgrade.buy()===1;
+            const ok=String(Game.season||'')===season;
+            return {ok,message:ok?'Season alterada e verificada':'O jogo não confirmou a troca de season',accepted,before,after:Number(Game.cookies)};
+        })()""".replace("__SEASON__", json.dumps(season)).replace("__NAME__", json.dumps(triggers[season]))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao trocar season"}
+
+    def set_combo_golden_switch(self, enabled: bool) -> Dict[str, Any]:
+        """Liga/desliga o Golden Switch somente se o estado atual divergir."""
+        if not isinstance(enabled, bool):
+            return {"ok": False, "message": "Estado do Golden Switch inválido"}
+        script = """(() => {
+            const desired=__DESIRED__;
+            const store=Array.from(Game.UpgradesInStore||[]);
+            const current=store.some(upgrade=>upgrade && upgrade.name==='Golden switch [on]');
+            if (current===desired) return {ok:true,message:'Golden Switch já estava no estado solicitado',enabled:current};
+            const name=desired?'Golden switch [off]':'Golden switch [on]';
+            const upgrade=Game.Upgrades && Game.Upgrades[name];
+            if (!upgrade || typeof upgrade.buy!=='function') return {ok:false,message:'Toggle do Golden Switch indisponível'};
+            const accepted=upgrade.buy()===1;
+            const after=Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]');
+            return {ok:after===desired,message:after===desired?'Golden Switch alterado e verificado':'O jogo recusou o Golden Switch',accepted,enabled:after};
+        })()""".replace("__DESIRED__", "true" if enabled else "false")
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Golden Switch"}
+
+    def upgrade_combo_office_once(self) -> Dict[str, Any]:
+        """Compra Cursors se necessário e avança exatamente um nível de escritório."""
+        payload = self.execute_js("""(() => {
+            const bank=Game.Objects && Game.Objects['Bank'];
+            const cursor=Game.Objects && Game.Objects['Cursor'];
+            const M=bank && bank.minigameLoaded ? bank.minigame : null;
+            if (!M || !cursor || !Array.isArray(M.offices)) return {ok:false,message:'Stock Market indisponível'};
+            const before=Math.trunc(Number(M.officeLevel)||0);
+            const office=M.offices[before];
+            if (!office || !office.cost) return {ok:true,message:'Escritório já está no nível máximo',before,after:before};
+            const amount=Math.max(0,Math.trunc(Number(office.cost[0])||0));
+            const level=Math.max(0,Math.trunc(Number(office.cost[1])||0));
+            if (Number(cursor.level)<level) return {ok:false,message:`Cursor precisa estar no nível ${level}`};
+            const missing=Math.max(0,amount-Number(cursor.amount));
+            if (missing>0) {
+                let price=Infinity;
+                try { price=Number(cursor.getSumPrice(missing)); } catch (_) {}
+                if (!Number.isFinite(price) || price>Number(Game.cookies))
+                    return {ok:false,message:`Cookies insuficientes para comprar ${missing} Cursors`};
+                const buyMode=Game.buyMode;
+                try { Game.buyMode=1; cursor.buy(missing); }
+                finally { Game.buyMode=buyMode; }
+            }
+            if (Number(cursor.amount)<amount) return {ok:false,message:'Compra de Cursors não foi confirmada'};
+            cursor.sacrifice(amount);
+            M.officeLevel=before+1;
+            if (M.officeLevel>=M.offices.length-1) Game.Win('Pyramid scheme');
+            const after=Math.trunc(Number(M.officeLevel)||0);
+            return {ok:after===before+1,message:after===before+1?'Escritório aprimorado e verificado':'Nível do escritório divergente',before,after,cursorsSpent:amount};
+        })()""")
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao aprimorar escritório"}
+
+    def configure_combo_pantheon(self, desired_slots: List[int]) -> Dict[str, Any]:
+        """Move no máximo um espírito por chamada e consome um worship swap real."""
+        if (
+            not isinstance(desired_slots, list) or len(desired_slots) != 3
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in desired_slots)
+            or len(set(desired_slots)) != 3
+        ):
+            return {"ok": False, "message": "Configuração do Pantheon inválida"}
+        script = """(() => {
+            const desired=__DESIRED__;
+            const temple=Game.Objects && Game.Objects['Temple'];
+            const M=temple && temple.minigameLoaded ? temple.minigame : null;
+            if (!M || !Array.isArray(M.slot) || typeof M.slotGod!=='function' || typeof M.useSwap!=='function')
+                return {ok:false,message:'Pantheon indisponível'};
+            if (desired.every((god,slot)=>Number(M.slot[slot])===god))
+                return {ok:true,message:'Pantheon já estava configurado',slots:Array.from(M.slot)};
+            if (Number(M.swaps)<1) return {ok:false,message:'Aguardando worship swap do Pantheon',waiting:true};
+            const slot=desired.findIndex((god,index)=>Number(M.slot[index])!==god);
+            const god=M.godsById && M.godsById[desired[slot]];
+            if (!god) return {ok:false,message:'Espírito desejado não existe no runtime'};
+            M.slotGod(god,slot);
+            M.useSwap(1);
+            const ok=Number(M.slot[slot])===Number(god.id);
+            return {ok,message:ok?'Espírito movido e verificado':'O Pantheon não confirmou o slot',slots:Array.from(M.slot),swaps:Number(M.swaps)};
+        })()""".replace("__DESIRED__", json.dumps(desired_slots))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Pantheon"}
+
+    def set_combo_auras(self, primary: int, secondary: int) -> Dict[str, Any]:
+        """Configura as duas auras e paga o sacrifício nativo de um prédio por troca."""
+        values = (primary, secondary)
+        if any(isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 21 for value in values):
+            return {"ok": False, "message": "Aura inválida"}
+        if primary == secondary:
+            return {"ok": False, "message": "As duas auras precisam ser diferentes"}
+        script = """(() => {
+            const desired=[__PRIMARY__,__SECONDARY__];
+            if (!Game.dragonAuras || Number(Game.dragonLevel)<Math.max(...desired)+4)
+                return {ok:false,message:'Aura ainda não foi desbloqueada'};
+            const before=[Number(Game.dragonAura),Number(Game.dragonAura2)];
+            let sacrifices=0;
+            function highest() {
+                let result=null;
+                for (const object of Object.values(Game.Objects||{})) if (Number(object.amount)>0) result=object;
+                return result;
+            }
+            for (let slot=0;slot<2;slot++) {
+                const current=slot===0?Number(Game.dragonAura):Number(Game.dragonAura2);
+                if (current===desired[slot]) continue;
+                const building=highest();
+                if (building) { building.sacrifice(1); sacrifices++; }
+                if (slot===0) Game.dragonAura=desired[slot]; else Game.dragonAura2=desired[slot];
+            }
+            Game.recalculateGains=1;
+            const after=[Number(Game.dragonAura),Number(Game.dragonAura2)];
+            const ok=after[0]===desired[0] && after[1]===desired[1];
+            return {ok,message:ok?'Auras configuradas e verificadas':'O jogo não confirmou as auras',before,after,sacrifices};
+        })()""".replace("__PRIMARY__", str(primary)).replace("__SECONDARY__", str(secondary))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao configurar auras"}
+
+    def set_combo_wizard_towers(self, target: int) -> Dict[str, Any]:
+        """Ajusta Wizard Towers para um alvo exato e confirma a quantidade."""
+        if isinstance(target, bool) or not isinstance(target, int) or not 1 <= target <= 100_000:
+            return {"ok": False, "message": "Alvo de Wizard Towers inválido"}
+        script = """(() => {
+            const target=__TARGET__;
+            const tower=Game.Objects && Game.Objects['Wizard tower'];
+            if (!tower) return {ok:false,message:'Wizard Towers indisponíveis'};
+            const before=Math.trunc(Number(tower.amount)||0);
+            if (before===target) return {ok:true,message:'Wizard Towers já estavam no alvo',before,after:before};
+            if (before>target) tower.sell(before-target);
+            else {
+                const quantity=target-before;
+                let price=Infinity;
+                try { price=Number(tower.getSumPrice(quantity)); } catch (_) {}
+                if (!Number.isFinite(price) || price>Number(Game.cookies))
+                    return {ok:false,message:'Cookies insuficientes para recomprar Wizard Towers',before,price};
+                const buyMode=Game.buyMode;
+                try { Game.buyMode=1; tower.buy(quantity); }
+                finally { Game.buyMode=buyMode; }
+            }
+            const after=Math.trunc(Number(tower.amount)||0);
+            return {ok:after===target,message:after===target?'Wizard Towers ajustadas e verificadas':'Quantidade final de Wizard Towers divergente',before,after};
+        })()""".replace("__TARGET__", str(target))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao ajustar Wizard Towers"}
+
+    def ensure_combo_building_minimum(self, building_id: int, minimum: int) -> Dict[str, Any]:
+        """Compra um prédio até o estoque mínimo usado pela venda final de Godzamok."""
+        if (
+            isinstance(building_id, bool) or not isinstance(building_id, int) or building_id < 0
+            or isinstance(minimum, bool) or not isinstance(minimum, int) or not 1 <= minimum <= 100_000
+        ):
+            return {"ok": False, "message": "Estoque mínimo de prédio inválido"}
+        script = """(() => {
+            const id=__ID__,minimum=__MINIMUM__;
+            const object=Game.ObjectsById && Game.ObjectsById[id];
+            if (!object || typeof object.buy!=='function' || typeof object.getSumPrice!=='function')
+                return {ok:false,message:'Prédio indisponível para recomposição',id};
+            const before=Math.max(0,Math.trunc(Number(object.amount)||0));
+            if (before>=minimum)
+                return {ok:true,message:'Estoque de Godzamok já estava preparado',id,before,after:before,bought:0};
+            const quantity=minimum-before;
+            let price=Infinity;
+            try { price=Number(object.getSumPrice(quantity)); } catch (_) {}
+            if (!Number.isFinite(price) || price>Number(Game.cookies))
+                return {ok:false,message:'Cookies insuficientes para recompor o estoque de Godzamok',id,before,price};
+            const buyMode=Game.buyMode;
+            try { Game.buyMode=1; object.buy(quantity); }
+            finally { Game.buyMode=buyMode; }
+            const after=Math.max(0,Math.trunc(Number(object.amount)||0));
+            return {ok:after>=minimum,
+                message:after>=minimum?'Estoque de Godzamok recomposto e verificado':'O jogo não confirmou a recomposição do prédio',
+                id,before,after,bought:Math.max(0,after-before),price};
+        })()""".replace("__ID__", str(building_id)).replace("__MINIMUM__", str(minimum))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {
+            "ok": False, "message": "Resposta inválida ao recompor prédio para Godzamok"
+        }
+
+    def cast_combo_skip(self, expected_cast: int, spell_id: int = 4) -> Dict[str, Any]:
+        """Avança exatamente um contador com uma spell não-FtHoF barata."""
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (expected_cast, spell_id)):
+            return {"ok": False, "message": "Parâmetros de alinhamento inválidos"}
+        script = """(() => {
+            const expected=__EXPECTED__,spellId=__SPELL_ID__;
+            const tower=Game.Objects && Game.Objects['Wizard tower'];
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            if (!M || !M.spellsById || typeof M.castSpell!=='function') return {ok:false,message:'Grimoire indisponível'};
+            const before=Math.trunc(Number(M.spellsCastTotal)||0);
+            if (before!==expected) return {ok:false,message:'Contador de spells mudou antes do alinhamento',before,expected};
+            const spell=M.spellsById[spellId];
+            if (!spell || spellId===1) return {ok:false,message:'Spell de alinhamento inválida'};
+            const cost=Number(M.getSpellCost(spell));
+            if (!Number.isFinite(cost) || Number(M.magic)<cost) return {ok:false,message:'Mana insuficiente para o próximo skip',waiting:true,cost,magic:Number(M.magic)};
+            const accepted=M.castSpell(spell)===true;
+            const after=Math.trunc(Number(M.spellsCastTotal)||0);
+            const ok=accepted && after===before+1;
+            return {ok,message:ok?'Spell de alinhamento confirmada':'O contador não avançou exatamente uma vez',before,after,cost,magic:Number(M.magic)};
+        })()""".replace("__EXPECTED__", str(expected_cast)).replace("__SPELL_ID__", str(spell_id))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida no alinhamento"}
+
+    def refill_combo_magic(self, expected_cast: int) -> Dict[str, Any]:
+        """Gasta um lump sem prompt, respeitando o cooldown nativo e verificando a mana."""
+        if isinstance(expected_cast, bool) or not isinstance(expected_cast, int) or expected_cast < 0:
+            return {"ok": False, "message": "Contador esperado inválido"}
+        script = """(() => {
+            const expected=__EXPECTED__;
+            const tower=Game.Objects && Game.Objects['Wizard tower'];
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            if (!M) return {ok:false,message:'Grimoire indisponível'};
+            if (Math.trunc(Number(M.spellsCastTotal)||0)!==expected)
+                return {ok:false,message:'Contador mudou antes da recarga'};
+            if (Number(M.magic)>=Number(M.magicM)) return {ok:false,message:'Mana já está cheia'};
+            if (Number(Game.lumps)<1) return {ok:false,message:'Sugar Lumps insuficientes'};
+            if (typeof Game.canRefillLump!=='function' || !Game.canRefillLump())
+                return {ok:false,message:'Recarga por lump ainda está em cooldown',waiting:true};
+            const before=Number(M.magic),lumpsBefore=Number(Game.lumps);
+            Game.lumps-=1;
+            Game.lumpRefill=typeof Game.getLumpRefillMax==='function'?Game.getLumpRefillMax():Game.fps*60*15;
+            M.magic=Math.min(Number(M.magicM),Number(M.magic)+100);
+            Game.recalculateGains=1;
+            const ok=Number(Game.lumps)===lumpsBefore-1 && Number(M.magic)>before;
+            return {ok,message:ok?'Mana recarregada com um Sugar Lump':'Recarga de mana não foi confirmada',before,after:Number(M.magic),lumpsSpent:ok?1:0};
+        })()""".replace("__EXPECTED__", str(expected_cast))
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida na recarga"}
+
+    def execute_combo_quadcast(
+        self,
+        *,
+        expected_cast: int,
+        expected_results: List[str],
+        minimum_buff_seconds: float,
+        required_natural_bs: int,
+        use_sugar_frenzy: bool,
+        use_loans: bool,
+    ) -> Dict[str, Any]:
+        """Executa e verifica a janela crítica em uma única avaliação síncrona."""
+        allowed = {
+            "frenzy", "multiply cookies", "click frenzy", "cookie storm",
+            "blab", "building special", "cookie storm drop", "free sugar lump",
+            "clot", "ruin cookies", "cursed finger", "blood frenzy",
+        }
+        if isinstance(expected_cast, bool) or not isinstance(expected_cast, int) or expected_cast < 0:
+            return {"ok": False, "message": "Contador inicial inválido"}
+        if (
+            not isinstance(expected_results, list) or len(expected_results) != 4
+            or any(value not in allowed for value in expected_results)
+            or not {"blood frenzy", "click frenzy", "building special"}.issubset(expected_results)
+        ):
+            return {"ok": False, "message": "Resultados esperados inválidos"}
+        if not 5 <= minimum_buff_seconds <= 120 or not 0 <= required_natural_bs <= 4:
+            return {"ok": False, "message": "Precondições de buff inválidas"}
+        script = """(() => {
+            const expectedCast=__EXPECTED_CAST__,expectedResults=__EXPECTED_RESULTS__;
+            const minimum=__MINIMUM__,requiredNaturalBs=__NATURAL_BS__;
+            const useSugar=__USE_SUGAR__,useLoans=__USE_LOANS__;
+            const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
+            const wait=message=>fail(message,{retryable:true,mutated:false,lumpsSpent:0});
+            const tower=Game.Objects && Game.Objects['Wizard tower'];
+            const temple=Game.Objects && Game.Objects['Temple'];
+            const bank=Game.Objects && Game.Objects['Bank'];
+            const M=tower && tower.minigameLoaded ? tower.minigame : null;
+            const P=temple && temple.minigameLoaded ? temple.minigame : null;
+            const B=bank && bank.minigameLoaded ? bank.minigame : null;
+            const spell=M && M.spellsById ? M.spellsById[1] : null;
+            if (!M || !P || !B || !spell) return fail('Minigames necessários não estão carregados');
+            const fps=Math.max(1,Number(Game.fps)||30);
+            const castNow=Math.trunc(Number(M.spellsCastTotal)||0);
+            if (castNow!==expectedCast) return wait('Contador de spells divergiu antes do Quadcast');
+            if (Number(tower.level)!==10 || Number(tower.amount)!==601)
+                return fail('Quadcast requer exatamente 601 Wizard Towers de nível 10',{amount:Number(tower.amount),level:Number(tower.level)});
+            if (Number(M.magic)+1e-7<Number(M.magicM)) return fail('Mana não está cheia no início do Quadcast');
+            if ((Game.shimmers||[]).some(item=>item && item.type==='golden'))
+                return wait('Há Golden/Wrath Cookie em tela antes do Quadcast');
+            if (Game.hasBuff && Game.hasBuff('Dragonflight')) return wait('Dragonflight está ativo e removeria Click Frenzy do FtHoF');
+            if (Number(Game.lumps)<1 || typeof Game.canRefillLump!=='function' || !Game.canRefillLump())
+                return fail('A recarga por Sugar Lump não está disponível');
+            const sugar=Game.Upgrades && Game.Upgrades['Sugar frenzy'];
+            if (useSugar && (!sugar || typeof sugar.buy!=='function'))
+                return fail('Sugar Frenzy configurada, mas indisponível');
+            if (useSugar && !sugar.bought && Number(Game.lumps)<2)
+                return wait('Faltam lumps para refill e Sugar Frenzy');
+            if (useLoans) {
+                if (Number(B.officeLevel)<5 || typeof B.takeLoan!=='function')
+                    return fail('Os três loans configurados não estão disponíveis');
+                for (const id of [1,2,3]) {
+                    if (Game.hasBuff('Loan '+id+' (interest)'))
+                        return wait('Loan '+id+' está no período de juros');
+                    const active=Game.hasBuff('Loan '+id);
+                    if (active && Number(active.time)/fps<minimum)
+                        return wait('Loan '+id+' está prestes a expirar');
+                }
+            }
+            if (Number(P.slot[0])!==2) return fail('Godzamok não está no slot Diamond');
+            if (!Game.ObjectsById[0] || Number(Game.ObjectsById[0].amount)<601)
+                return fail('São necessários pelo menos 601 Cursors para a venda final de Godzamok');
+
+            const buffs=Object.values(Game.buffs||{});
+            const timed=type=>buffs.find(buff=>buff.type && buff.type.name===type && Number(buff.time)/fps>=minimum);
+            if (buffs.some(buff=>buff.type && ['cursed finger','clot','building debuff'].includes(buff.type.name)))
+                return wait('Um efeito negativo incompatível está ativo');
+            const needsSpellFrenzy=!timed('frenzy');
+            if ((needsSpellFrenzy && !expectedResults.includes('frenzy')) || !timed('dragon harvest'))
+                return wait('Frenzy ou Dragon Harvest não possui duração mínima');
+            const naturalBs=buffs.filter(buff=>buff.type && buff.type.name==='building buff' &&
+                Number(buff.time)/fps>=minimum && Number(buff.arg2)!==7);
+            if (naturalBs.length<requiredNaturalBs)
+                return wait('Building Specials naturais insuficientes ou expirando');
+
+            // Reconfirma a previsão com o RNG carregado nesta versão antes de qualquer mutação.
+            const failBase=Math.max(0,Math.min(1,Number(M.getFailChance(spell))));
+            const seasonal=Game.season==='valentines'||Game.season==='easter';
+            function predict(cast,existing) {
+                const oldRandom=Math.random;
+                try {
+                    Math.seedrandom(String(Game.seed)+'/'+cast);
+                    const success=Math.random()<1-(failBase+0.15*existing);
+                    Math.random(); Math.random(); if (seasonal) Math.random();
+                    let choices;
+                    if (success) {
+                        choices=['frenzy','multiply cookies','click frenzy'];
+                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
+                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
+                        if (Math.random()<0.15) choices=['cookie storm drop'];
+                        if (Math.random()<0.0001) choices.push('free sugar lump');
+                    } else {
+                        choices=['clot','ruin cookies'];
+                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
+                        if (Math.random()<0.003) choices.push('free sugar lump');
+                        if (Math.random()<0.1) choices=['blab'];
+                    }
+                    return choices[Math.floor(Math.random()*choices.length)];
+                } finally { Math.random=oldRandom; }
+            }
+            const predicted=[0,1,2,3].map(index=>predict(expectedCast+index,index));
+            if (predicted.some((value,index)=>value!==expectedResults[index]))
+                return wait('Forecast mudou imediatamente antes da execução');
+
+            // getSumPrice usa a quantidade atual (601); calcule a recompra real
+            // que acontecerá depois da venda, partindo de exatamente 1 torre.
+            let price=0;
+            try {
+                for (let i=1;i<601;i++)
+                    price+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
+                price=Math.ceil(Number(Game.modifyBuildingPrice(tower,price)));
+            } catch (_) { price=Infinity; }
+            if (!Number.isFinite(price) || price>Number(Game.cookies))
+                return fail('Saldo insuficiente para a recompra conservadora das Wizard Towers',{price,cookies:Number(Game.cookies)});
+
+            const created=[];
+            function castOne(index) {
+                const before=new Set((Game.shimmers||[]).map(item=>Number(item.id)));
+                const cost=Number(M.getSpellCost(spell));
+                if (!Number.isFinite(cost) || Number(M.magic)<cost) return {ok:false,message:`Mana insuficiente no cast ${index+1}`,cost,magic:Number(M.magic)};
+                if (M.castSpell(spell)!==true) return {ok:false,message:`FtHoF ${index+1} foi recusado`};
+                const shimmer=(Game.shimmers||[]).find(item=>item && item.type==='golden' && !before.has(Number(item.id)));
+                if (!shimmer) return {ok:false,message:`Shimmer ${index+1} não foi identificado`};
+                const force=String(shimmer.force||'');
+                if (force!==expectedResults[index]) return {ok:false,message:`Resultado divergente no cast ${index+1}`,force,expected:expectedResults[index]};
+                created.push({id:Number(shimmer.id),force,shimmer});
+                return {ok:true};
+            }
+
+            const first=castOne(0); if (!first.ok) return fail(first.message,first);
+            tower.sell(600);
+            if (Number(tower.amount)!==1) return fail('Venda para 1 Wizard Tower não foi confirmada');
+            if (typeof M.computeMagicM==='function') M.computeMagicM();
+            if (Number(M.magic)>Number(M.magicM)) M.magic=Number(M.magicM);
+            const second=castOne(1); if (!second.ok) return fail(second.message,second);
+            const buyMode=Game.buyMode;
+            try { Game.buyMode=1; tower.buy(600); }
+            finally { Game.buyMode=buyMode; }
+            if (Number(tower.amount)!==601) return fail('Recompra de 600 Wizard Towers não foi confirmada');
+            if (typeof M.computeMagicM==='function') M.computeMagicM();
+            Game.lumps-=1;
+            Game.lumpRefill=typeof Game.getLumpRefillMax==='function'?Game.getLumpRefillMax():fps*60*15;
+            M.magic=Math.min(Number(M.magicM),Number(M.magic)+100);
+            const third=castOne(2); if (!third.ok) return fail(third.message,Object.assign({},third,{lumpsSpent:1}));
+            tower.sell(600);
+            if (Number(tower.amount)!==1) return fail('Segunda venda para 1 Wizard Tower não foi confirmada',{lumpsSpent:1});
+            if (typeof M.computeMagicM==='function') M.computeMagicM();
+            if (Number(M.magic)>Number(M.magicM)) M.magic=Number(M.magicM);
+            const fourth=castOne(3); if (!fourth.ok) return fail(fourth.message,Object.assign({},fourth,{lumpsSpent:1}));
+
+            // Descobre BS reais antes de gastar Sugar Frenzy/loans. Dois
+            // cookies do mesmo prédio só somam duração, não multiplicadores.
+            const spellBs=created.filter(item=>item.force==='building special');
+            for (const item of spellBs) item.shimmer.pop();
+            const finalBs=Object.values(Game.buffs||{}).filter(buff=>buff.type &&
+                buff.type.name==='building buff' && Number(buff.time)/fps>=minimum && Number(buff.arg2)!==7);
+            const requiredTotalBs=requiredNaturalBs+spellBs.length;
+            if (new Set(finalBs.map(buff=>Number(buff.arg2))).size<requiredTotalBs)
+                return fail('BS de spell repetiu um prédio; multiplicadores distintos insuficientes. Sugar Frenzy e loans preservados.',
+                    {lumpsSpent:1,mutated:true});
+
+            // Frenzy redundante fica em tela para Dragon's Fortune. Se falta
+            // Frenzy natural, ativá-lo rende x7, superior ao x2,23 preservado.
+            if (needsSpellFrenzy) {
+                const frenzy=created.find(item=>item.force==='frenzy');
+                if (frenzy) frenzy.shimmer.pop();
+            }
+
+            function setAuras(primary,secondary) {
+                const desired=[primary,secondary];
+                function highest() {
+                    let result=null;
+                    for (const object of Object.values(Game.Objects||{})) if (Number(object.amount)>0) result=object;
+                    return result;
+                }
+                for (let slot=0;slot<2;slot++) {
+                    const current=slot===0?Number(Game.dragonAura):Number(Game.dragonAura2);
+                    if (current===desired[slot]) continue;
+                    const building=highest(); if (building) building.sacrifice(1);
+                    if (slot===0) Game.dragonAura=desired[slot]; else Game.dragonAura2=desired[slot];
+                }
+                Game.recalculateGains=1;
+            }
+            setAuras(16,15); // Dragon's Fortune + Radiant Appetite
+
+            let goldenSwitch=false;
+            const switchUpgrade=Game.Upgrades && Game.Upgrades['Golden switch [off]'];
+            if (switchUpgrade && !Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]')) {
+                try { goldenSwitch=switchUpgrade.buy()===1; } catch (_) { goldenSwitch=false; }
+            }
+
+            let lumpsSpent=1,sugarFrenzy=false;
+            if (useSugar && sugar && !sugar.bought && Number(Game.lumps)>=1) {
+                // Em 2.053 o buff é criado pelo clickFunction, não por
+                // buyFunction. buy(1) pula esse caminho e perde o x3.
+                const before=Number(Game.lumps),askLumps=Game.prefs.askLumps;
+                let sugarError='';
+                try { Game.prefs.askLumps=0; sugar.buy(); }
+                catch (error) { sugarError=String(error); }
+                finally { Game.prefs.askLumps=askLumps; }
+                const spent=before-Number(Game.lumps);
+                lumpsSpent+=Math.max(0,spent);
+                sugarFrenzy=!!Game.hasBuff('Sugar frenzy');
+                if (sugarError || spent!==1 || !sugar.bought || !sugarFrenzy)
+                    return fail('Sugar Frenzy não confirmou buff e gasto de um lump',
+                        {lumpsSpent,mutated:true,sugarError});
+            }
+
+            const loans=[];
+            if (useLoans && typeof B.takeLoan==='function') {
+                for (const id of [1,3,2]) {
+                    const required=[0,2,4,5][id];
+                    if (Number(B.officeLevel)>=required && !Game.hasBuff('Loan '+id) && !Game.hasBuff('Loan '+id+' (interest)')) {
+                        if (B.takeLoan(id)===true && Game.hasBuff('Loan '+id)) loans.push(id);
+                        else return fail('Loan '+id+' não foi confirmado',{lumpsSpent,mutated:true});
+                    }
+                }
+            }
+
+            const protectedIds=new Set(Object.values(Game.buffs||{})
+                .filter(buff=>buff.type && buff.type.name==='building buff')
+                .map(buff=>Number(buff.arg2)));
+            const sold=[];
+            for (const id of [0,1,2,3,4,5,8,9]) {
+                if (protectedIds.has(id) || id===6 || id===7) continue;
+                const object=Game.ObjectsById[id];
+                if (!object) continue;
+                const quantity=Math.max(0,Math.min(600,Number(object.amount)-1));
+                if (quantity>0) { object.sell(quantity); sold.push([id,quantity]); }
+            }
+
+            const cf=created.find(item=>item.force==='click frenzy');
+            const ef=created.find(item=>item.force==='blood frenzy');
+            if (!cf || !ef) return fail('CF ou EF desapareceu antes do clique final',{lumpsSpent,created:created.map(item=>[item.id,item.force])});
+            cf.shimmer.pop();
+            ef.shimmer.pop();
+            const clickBuff=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='click frenzy');
+            const elderBuff=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='blood frenzy');
+            const devastation=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='devastation');
+            if (!clickBuff || !elderBuff || !devastation)
+                return fail('Buffs finais não foram confirmados',{lumpsSpent,hasCf:!!clickBuff,hasEf:!!elderBuff,hasDevastation:!!devastation});
+            const stack=Object.values(Game.buffs||{}).filter(buff=>buff.type &&
+                (['frenzy','dragon harvest','click frenzy','blood frenzy','devastation'].includes(buff.type.name)
+                 || finalBs.includes(buff)));
+            const preserved=(Game.shimmers||[]).filter(item=>item.type==='golden');
+            const limitingTimes=stack.map(buff=>Number(buff.time));
+            for (const shimmer of preserved) limitingTimes.push(Number(shimmer.life));
+            const clickSeconds=Math.min(...limitingTimes)/fps-1;
+            if (!Number.isFinite(clickSeconds) || clickSeconds<=0)
+                return fail('A janela útil expirou durante a execução',{lumpsSpent,mutated:true});
+            return {ok:true,message:'Quadcast e multiplicadores finais confirmados',
+                results:created.map(item=>item.force),lumpsSpent,clickSeconds,sold,protectedIds:Array.from(protectedIds),
+                goldenSwitch,sugarFrenzy,loans,preserved:(Game.shimmers||[]).filter(item=>item.type==='golden').map(item=>({id:Number(item.id),force:String(item.force||'')})),
+                buffs:Object.values(Game.buffs||{}).map(buff=>String(buff.name||'')),wizardTowers:Number(tower.amount)};
+        })()"""
+        replacements = {
+            "__EXPECTED_CAST__": str(expected_cast),
+            "__EXPECTED_RESULTS__": json.dumps(expected_results),
+            "__MINIMUM__": repr(float(minimum_buff_seconds)),
+            "__NATURAL_BS__": str(required_natural_bs),
+            "__USE_SUGAR__": "true" if use_sugar_frenzy else "false",
+            "__USE_LOANS__": "true" if use_loans else "false",
+        }
+        for marker, value in replacements.items():
+            script = script.replace(marker, value)
+        payload = self.execute_js(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Quadcast"}
+
     def get_stock_market_status(self) -> StockMarketStatus:
         """Verifica de forma defensiva se o Stock Market está desbloqueado e pronto."""
         payload = self.execute_js("""(() => {
@@ -1433,13 +2511,14 @@ class CookieClickerBridge:
         if not golden:
             return False
         
-        # Usar um script que verifica se o shimmer foi removido
+        # Confirma a remoção pelo id. Outros Golden Cookies podem continuar
+        # em tela durante um Cookie Storm sem transformar o clique em falha.
         result = self.execute_js("""(() => {
             const gc = Game.shimmers.find(s => s.type === 'golden');
             if (!gc) return false;
+            const id = Number(gc.id);
             gc.pop();
-            const gcAfter = Game.shimmers.find(s => s.type === 'golden');
-            return !gcAfter;  // True se foi removido
+            return !Game.shimmers.some(s => s.type === 'golden' && Number(s.id) === id);
         })()""")
         
         if result:
