@@ -90,9 +90,10 @@ class AutomationConfig:
     combo_target_cookies: float = 1e72
     combo_max_search_ahead: int = 5_000
     combo_max_skip_lumps: int = 64
-    combo_required_building_specials: int = 3
-    combo_poll_interval_seconds: float = 1.0
-    combo_minimum_buff_seconds: float = 15.0
+    combo_required_building_specials: int = 2
+    combo_poll_interval_seconds: float = 0.2
+    combo_minimum_buff_seconds: float = 12.0
+    combo_max_wait_minutes: int = 180
     combo_use_sugar_frenzy: bool = True
     combo_use_loans: bool = True
     combo_pause_before_last_skips: bool = False
@@ -312,6 +313,21 @@ def load_automation_settings() -> None:
     automation_config.combo_minimum_buff_seconds = min(120.0, max(5.0, settings.value(
         "combo_minimum_buff_seconds", automation_config.combo_minimum_buff_seconds, type=float,
     )))
+    automation_config.combo_max_wait_minutes = min(1440, max(1, settings.value(
+        "combo_max_wait_minutes", 180, type=int,
+    )))
+    # Migração única dos antigos padrões: o usuário pediu uma busca em horas.
+    # Valores diferentes dos padrões antigos continuam preservados.
+    if settings.value("combo_strategy_revision", 0, type=int) < 2:
+        for name, old, new in (
+            ("combo_required_building_specials", 3, 2),
+            ("combo_poll_interval_seconds", 1.0, 0.2),
+            ("combo_minimum_buff_seconds", 15.0, 12.0),
+        ):
+            if getattr(automation_config, name) == old:
+                setattr(automation_config, name, new)
+            settings.setValue(name, getattr(automation_config, name))
+        settings.setValue("combo_strategy_revision", 2)
     automation_config.combo_use_sugar_frenzy = settings.value(
         "combo_use_sugar_frenzy", True, type=bool,
     )
@@ -405,6 +421,8 @@ def save_automation_settings() -> None:
     )
     settings.setValue("combo_poll_interval_seconds", automation_config.combo_poll_interval_seconds)
     settings.setValue("combo_minimum_buff_seconds", automation_config.combo_minimum_buff_seconds)
+    settings.setValue("combo_max_wait_minutes", automation_config.combo_max_wait_minutes)
+    settings.setValue("combo_strategy_revision", 2)
     settings.setValue("combo_use_sugar_frenzy", automation_config.combo_use_sugar_frenzy)
     settings.setValue("combo_use_loans", automation_config.combo_use_loans)
     settings.setValue("combo_pause_before_last_skips", automation_config.combo_pause_before_last_skips)

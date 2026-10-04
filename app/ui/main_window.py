@@ -354,6 +354,16 @@ class MainWindow(QMainWindow):
         self.combo_min_buff_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Duração mínima dos buffs", self.combo_min_buff_input)
 
+        self.combo_wait_input = QSpinBox()
+        self.combo_wait_input.setRange(1, 1440)
+        self.combo_wait_input.setValue(automation_config.combo_max_wait_minutes)
+        self.combo_wait_input.setSuffix(" min")
+        self.combo_wait_input.setToolTip(
+            "Inclui preparação e busca. Ao vencer o prazo, para sem disparar o Quadcast."
+        )
+        self.combo_wait_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Limite de espera", self.combo_wait_input)
+
         # Em algumas escalas de DPI do Windows, o sizeHint nativo dos spinboxes
         # ignora o padding do tema e recorta todo o texto do valor.
         for field in (
@@ -362,6 +372,7 @@ class MainWindow(QMainWindow):
             self.combo_bs_input,
             self.combo_interval_input,
             self.combo_min_buff_input,
+            self.combo_wait_input,
         ):
             field.setMinimumHeight(32)
 
@@ -566,6 +577,7 @@ class MainWindow(QMainWindow):
         automation_config.combo_required_building_specials = self.combo_bs_input.value()
         automation_config.combo_poll_interval_seconds = self.combo_interval_input.value()
         automation_config.combo_minimum_buff_seconds = self.combo_min_buff_input.value()
+        automation_config.combo_max_wait_minutes = self.combo_wait_input.value()
         automation_config.combo_use_sugar_frenzy = self.combo_sugar_checkbox.isChecked()
         automation_config.combo_use_loans = self.combo_loans_checkbox.isChecked()
         automation_config.combo_pause_before_last_skips = self.combo_pause_checkbox.isChecked()
@@ -781,6 +793,7 @@ class MainWindow(QMainWindow):
             building_specials_totais=self.combo_bs_input.value(),
             intervalo_verificacao=self.combo_interval_input.value(),
             duracao_minima_buff=self.combo_min_buff_input.value(),
+            tempo_maximo_espera=self.combo_wait_input.value() * 60,
             usar_sugar_frenzy=self.combo_sugar_checkbox.isChecked(),
             usar_loans=self.combo_loans_checkbox.isChecked(),
             pausar_antes_ultimos_skips=self.combo_pause_checkbox.isChecked(),
@@ -966,7 +979,7 @@ class MainWindow(QMainWindow):
     def _set_combo_busy(self, busy: bool, preview: bool):
         for widget in (
             self.combo_search_input, self.combo_lumps_input, self.combo_bs_input,
-            self.combo_interval_input, self.combo_min_buff_input,
+            self.combo_interval_input, self.combo_min_buff_input, self.combo_wait_input,
             self.combo_sugar_checkbox, self.combo_loans_checkbox, self.combo_pause_checkbox,
             self.combo_enable_checkbox, self.combo_preview_button, self.combo_start_button,
             self.simple_farm_search_input, self.simple_farm_interval_input,
