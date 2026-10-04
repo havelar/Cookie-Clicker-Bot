@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def _simple_farm_panel(self):
-        """Cria o modo barato que explora naturais e Dualcast sem lumps."""
+        """Cria o farm paralelo com compras econômicas e magias oportunistas."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -463,11 +463,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         guarantee = QLabel(
-            "Modo econômico: autoclick somente em janelas fortes; coleta Golden Cookies e usa Dualcast por "
-            "venda/recompra de Wizard Towers. Reinveste parte do excedente em upgrades e "
-            "construções, preservando caixa. Nunca gasta Sugar Lumps, nunca usa loans e não "
-            "altera Garden, Pantheon, auras, season ou Golden Switch. Configure o Pantheon "
-            "manualmente como Godzamok / Mokalsium / Muridal para o melhor resultado."
+            "Farm de apoio: Garden e Banco continuam ativos. Preserva a maior parte do caixa, "
+            "prioriza upgrades de produção em % e compra construções por retorno de CpS. "
+            "Aproveita buffs com uma magia, sem vender torres, gastar Sugar Lumps, usar loans "
+            "ou alterar Garden e Pantheon. Passe o mouse nas opções para ver a explicação."
         )
         guarantee.setWordWrap(True)
         guarantee.setStyleSheet("color: #65d6a5; font-weight: 600;")
@@ -481,7 +480,7 @@ class MainWindow(QMainWindow):
         self.simple_farm_search_input.setValue(automation_config.simple_farm_max_search_ahead)
         self.simple_farm_search_input.setSuffix(" spells")
         self.simple_farm_search_input.valueChanged.connect(self._save_simple_farm_settings)
-        form.addRow("Alcance do forecast", self.simple_farm_search_input)
+        form.addRow("Magias futuras analisadas", self.simple_farm_search_input)
         self.simple_farm_interval_input = QDoubleSpinBox()
         self.simple_farm_interval_input.setRange(0.1, 10.0)
         self.simple_farm_interval_input.setDecimals(1)
@@ -489,28 +488,38 @@ class MainWindow(QMainWindow):
         self.simple_farm_interval_input.setValue(automation_config.simple_farm_poll_interval_seconds)
         self.simple_farm_interval_input.setSuffix(" s")
         self.simple_farm_interval_input.valueChanged.connect(self._save_simple_farm_settings)
-        form.addRow("Intervalo do looper", self.simple_farm_interval_input)
+        form.addRow("Intervalo de verificação", self.simple_farm_interval_input)
         self.simple_farm_min_buff_input = QDoubleSpinBox()
         self.simple_farm_min_buff_input.setRange(3.0, 60.0)
         self.simple_farm_min_buff_input.setDecimals(1)
         self.simple_farm_min_buff_input.setValue(automation_config.simple_farm_minimum_buff_seconds)
         self.simple_farm_min_buff_input.setSuffix(" s")
         self.simple_farm_min_buff_input.valueChanged.connect(self._save_simple_farm_settings)
-        form.addRow("Buff natural mínimo", self.simple_farm_min_buff_input)
+        form.addRow("Tempo mínimo restante do buff", self.simple_farm_min_buff_input)
         self.simple_farm_reserve_input = QDoubleSpinBox()
-        self.simple_farm_reserve_input.setRange(10.0, 90.0)
+        self.simple_farm_reserve_input.setRange(60.0, 99.0)
         self.simple_farm_reserve_input.setDecimals(0)
         self.simple_farm_reserve_input.setValue(automation_config.simple_farm_cash_reserve_percent)
         self.simple_farm_reserve_input.setSuffix(" %")
         self.simple_farm_reserve_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Reserva mínima de caixa", self.simple_farm_reserve_input)
         self.simple_farm_investment_input = QDoubleSpinBox()
-        self.simple_farm_investment_input.setRange(1.0, 50.0)
+        self.simple_farm_investment_input.setRange(1.0, 20.0)
         self.simple_farm_investment_input.setDecimals(0)
         self.simple_farm_investment_input.setValue(automation_config.simple_farm_investment_percent)
         self.simple_farm_investment_input.setSuffix(" %")
         self.simple_farm_investment_input.valueChanged.connect(self._save_simple_farm_settings)
-        form.addRow("Máximo investido por ciclo", self.simple_farm_investment_input)
+        form.addRow("Compra máxima a cada 15 s", self.simple_farm_investment_input)
+        tips = {
+            self.simple_farm_search_input: "Quantas magias futuras prever sem gastar recursos. Busca um Click Frenzy único. Para avançar até ele, usa Haggler's Charm só com mana cheia e fora dos buffs. Sem previsão, o farm segue coletando e comprando.",
+            self.simple_farm_interval_input: "Frequência de leitura do jogo, em segundos. 0,2 s reage rápido aos Golden Cookies. Compras têm intervalo separado de 15 s; esta opção não aumenta o orçamento.",
+            self.simple_farm_min_buff_input: "Tempo que um multiplicador de produção natural ainda precisa durar para receber um Click Frenzy de magia. Não lança outro se Click Frenzy ou Dragonflight já estiver ativo.",
+            self.simple_farm_reserve_input: "Parte do maior saldo observado nesta execução que o Simple Farm não gasta (padrão: 80%; mínimo: 60%). Garden e Banco podem usar essa reserva. Se gastarem, o farm espera o caixa se recuperar. Também preserva 6.000 vezes o CpS para Lucky.",
+            self.simple_farm_investment_input: "Limite total por compra a cada 15 segundos (padrão: 5% do saldo atual), sempre abaixo do excedente da reserva. Até metade vai para um upgrade; o restante pode comprar até 25 construções. Não é uma meta de gasto; durante buffs, as compras aguardam.",
+        }
+        for field, tip in tips.items():
+            field.setToolTip(tip)
+            form.labelForField(field).setToolTip(tip)
         for field in (
             self.simple_farm_search_input,
             self.simple_farm_interval_input,
@@ -527,7 +536,7 @@ class MainWindow(QMainWindow):
         self.simple_farm_plan_label = QLabel("Atualize a prévia para ler a seed atual.")
         self.simple_farm_resources_label = QLabel("Spells: — | Mana: — | Cookies: —")
         self.simple_farm_buffs_label = QLabel("Buffs: —")
-        self.simple_farm_counter_label = QLabel("GC naturais: 0 | Dualcasts: 0")
+        self.simple_farm_counter_label = QLabel("GC naturais: 0 | Magias: 0")
         self.simple_farm_pantheon_label = QLabel("Pantheon: será apenas lido")
         self.simple_farm_message_label = QLabel("Nenhuma ação executada.")
         self.simple_farm_error_label = QLabel("—")
@@ -539,7 +548,7 @@ class MainWindow(QMainWindow):
         ):
             label.setWordWrap(True)
         status_form.addRow("Estado", self.simple_farm_state_label)
-        status_form.addRow("Próximo Dualcast", self.simple_farm_plan_label)
+        status_form.addRow("Próxima oportunidade", self.simple_farm_plan_label)
         status_form.addRow("Recursos", self.simple_farm_resources_label)
         status_form.addRow("Buffs", self.simple_farm_buffs_label)
         status_form.addRow("Contadores", self.simple_farm_counter_label)
@@ -624,41 +633,12 @@ class MainWindow(QMainWindow):
             return
         if self._combo_worker and self._combo_worker.isRunning():
             return
-        answer = QMessageBox.question(
-            self,
-            "Iniciar Simple Farm",
-            "O Simple Farm pausará as outras automações, ativará o autoclick apenas durante "
-            "combos úteis e poderá "
-            "vender/recomprar Wizard Towers e reinvestir somente o excedente ao caixa protegido. "
-            "Ele não gastará Sugar Lumps, não "
-            "usará loans e não alterará Garden nem Pantheon. Continuar?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
-
         if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
-            self._auto_ascension_worker.stop()
-            self._auto_ascension_worker.wait((app_config.connection_timeout + 1) * 1000)
-            if self._auto_ascension_worker.isRunning():
-                self._simple_farm_failed("Auto Ascensão não parou a tempo.")
-                return
-        if not self.runner.acquire_exclusive("combo"):
-            self._simple_farm_failed(
-                f"Outra automação exclusiva está ativa: {self.runner.exclusive_owner or 'desconhecida'}."
-            )
+            self._simple_farm_failed("Aguarde a Auto Ascensão terminar antes de iniciar o farm.")
             return
-        self._combo_exclusive = True
-        self.stock_refresh_timer.stop()
-        self.garden_refresh_timer.stop()
-        timeout_ms = (app_config.connection_timeout + 1) * 1000
-        for name, worker in (("Stock Market", self._stock_worker), ("Garden", self._garden_worker)):
-            if worker and worker.isRunning():
-                worker.wait(timeout_ms)
-                if worker.isRunning():
-                    self._abort_simple_farm_start(f"{name} não encerrou a operação em andamento a tempo.")
-                    return
+        if not self.runner.acquire_simple_farm():
+            self._simple_farm_failed("Outra automação controla o Grimoire ou está em modo exclusivo.")
+            return
         try:
             save_data = self.bridge.get_game_save()
             if not save_data:
@@ -672,21 +652,16 @@ class MainWindow(QMainWindow):
         automation = SimpleFarmAutomation(
             self.bridge,
             self._simple_farm_configuration(),
-            habilitar_clicker=self.runner.ensure_clicker_running,
-            desabilitar_clicker=self.runner.ensure_clicker_stopped,
+            habilitar_clicker=lambda: self.runner.set_simple_farm_clicker(True),
+            desabilitar_clicker=lambda: self.runner.set_simple_farm_clicker(False),
         )
         self._set_combo_keep_awake(True)
         self._run_simple_farm_worker(automation, preview=False)
 
     def _abort_simple_farm_start(self, message: str):
-        if self._combo_exclusive and self.runner:
-            self.runner.release_exclusive("combo")
-        self._combo_exclusive = False
+        if self.runner:
+            self.runner.release_simple_farm()
         self._set_combo_keep_awake(False)
-        if self.bridge:
-            self.stock_refresh_timer.start(5_000)
-            QTimer.singleShot(0, self._on_stock_market_timer)
-            QTimer.singleShot(0, self.refresh_garden)
         self._simple_farm_failed(message)
 
     def stop_simple_farm(self, _checked: bool = False):
@@ -723,7 +698,7 @@ class MainWindow(QMainWindow):
             ", ".join(value.buffs_ativos) if value.buffs_ativos else "nenhum"
         )
         self.simple_farm_counter_label.setText(
-            f"GC naturais: {value.golden_cookies_coletados} | Dualcasts: {value.dualcasts_executados} | "
+            f"GC naturais: {value.golden_cookies_coletados} | Magias: {value.magias_executadas} | "
             f"Upgrades: {value.upgrades_comprados} | Construções: {value.construcoes_compradas}"
         )
         slots = value.pantheon_slots
@@ -746,12 +721,8 @@ class MainWindow(QMainWindow):
     def _simple_farm_finished(self, preview: bool):
         worker = self._combo_worker
         self._set_simple_farm_busy(False, preview)
-        if not preview and self._combo_exclusive and self.runner:
-            self.runner.release_exclusive("combo")
-            self._combo_exclusive = False
-            self.stock_refresh_timer.start(5_000)
-            QTimer.singleShot(0, self._on_stock_market_timer)
-            QTimer.singleShot(0, self.refresh_garden)
+        if not preview and self.runner:
+            self.runner.release_simple_farm()
         if not preview:
             self._set_combo_keep_awake(False)
         self._combo_worker = None
@@ -770,14 +741,8 @@ class MainWindow(QMainWindow):
             widget.setEnabled(not busy)
         self.simple_farm_stop_button.setEnabled(busy and not preview)
         if not preview:
-            for widget in (
-                self.clicker_button, self.golden_checkbox, self.fortune_checkbox,
-                self.reindeer_checkbox, self.wrinkler_checkbox,
-                self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox,
-                self.garden_auto_checkbox, self.garden_thumbcorn_checkbox,
-                self.auto_ascension_start_button, self.stock_auto_trade_checkbox,
-            ):
-                widget.setEnabled(not busy)
+            # A ascensão é incompatível com um farm paralelo.
+            self.auto_ascension_start_button.setEnabled(not busy)
 
     def _toggle_combo_enabled(self, state: int):
         automation_config.enable_combo_automation = bool(state)
@@ -1142,8 +1107,8 @@ class MainWindow(QMainWindow):
 
     def start_auto_ascension(self, _checked: bool = False):
         """Inicia uma simulação ou, após confirmação, a execução real."""
-        if self._combo_exclusive:
-            self._auto_ascension_failed("Modo Combo está ativo e detém exclusividade.")
+        if self._combo_exclusive or self._simple_farm_automation is not None:
+            self._auto_ascension_failed("Pare o farm/Combo antes de iniciar a Auto Ascensão.")
             return
         if self.auto_ascension_simulation_checkbox.isChecked():
             self.refresh_auto_ascension_preview()
@@ -2055,6 +2020,8 @@ class MainWindow(QMainWindow):
         if self._combo_worker and self._combo_worker.isRunning():
             self._combo_worker.stop()
             self._combo_worker.wait((app_config.connection_timeout + 2) * 1000)
+        if self.runner and self._simple_farm_automation is not None:
+            self.runner.release_simple_farm()
         if self._combo_exclusive and self.runner:
             self.runner.release_exclusive("combo")
             self._combo_exclusive = False

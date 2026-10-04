@@ -98,13 +98,13 @@ class AutomationConfig:
     combo_use_loans: bool = True
     combo_pause_before_last_skips: bool = False
 
-    # Simple Farm: Dualcast econômico, sem lumps, loans, Garden ou Pantheon.
+    # Simple Farm: farm paralelo com reserva majoritária, sem venda de torres.
     enable_simple_farm: bool = False
     simple_farm_max_search_ahead: int = 250
     simple_farm_poll_interval_seconds: float = 0.2
     simple_farm_minimum_buff_seconds: float = 8.0
-    simple_farm_cash_reserve_percent: float = 30.0
-    simple_farm_investment_percent: float = 10.0
+    simple_farm_cash_reserve_percent: float = 80.0
+    simple_farm_investment_percent: float = 5.0
 
 
 @dataclass
@@ -355,12 +355,12 @@ def load_automation_settings() -> None:
         automation_config.simple_farm_minimum_buff_seconds,
         type=float,
     )))
-    automation_config.simple_farm_cash_reserve_percent = min(90.0, max(10.0, settings.value(
+    automation_config.simple_farm_cash_reserve_percent = min(99.0, max(60.0, settings.value(
         "simple_farm_cash_reserve_percent",
         automation_config.simple_farm_cash_reserve_percent,
         type=float,
     )))
-    automation_config.simple_farm_investment_percent = min(50.0, max(1.0, settings.value(
+    automation_config.simple_farm_investment_percent = min(20.0, max(1.0, settings.value(
         "simple_farm_investment_percent",
         automation_config.simple_farm_investment_percent,
         type=float,

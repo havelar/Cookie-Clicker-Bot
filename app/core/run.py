@@ -63,6 +63,9 @@ class AutomationRunner:
         self._clicker_state_lock = threading.RLock()
         self._exclusive_lock = threading.RLock()
         self._exclusive_owner: Optional[str] = None
+        self._simple_farm_active = False
+        self._simple_farm_manual_clicker = False
+        self._simple_farm_clicker_requested = False
         self.on_clicker_state_change = state_change_callback
 
         self.cookie_position: Optional[Tuple[int, int]] = None
@@ -102,6 +105,10 @@ class AutomationRunner:
     def toggle_clicker(self) -> None:
         """Liga/desliga o clicker do cookie."""
         with self._exclusive_lock:
+            if self._simple_farm_active:
+                self._simple_farm_manual_clicker = not self._simple_farm_manual_clicker
+                self.set_simple_farm_clicker(self._simple_farm_clicker_requested)
+                return
             if self._exclusive_owner is not None:
                 logger.warning(
                     "Toggle manual do clicker bloqueado pelo modo exclusivo %s",
@@ -152,12 +159,36 @@ class AutomationRunner:
         if not owner:
             return False
         with self._exclusive_lock:
-            if self._exclusive_owner not in (None, owner):
+            if self._simple_farm_active or self._exclusive_owner not in (None, owner):
                 return False
             self._exclusive_owner = owner
         self.ensure_clicker_stopped()
         logger.info("Modo exclusivo adquirido por %s", owner)
         return True
+
+    def acquire_simple_farm(self) -> bool:
+        """Reserva apenas GC/Grimoire; detector, Garden e Banco continuam ativos."""
+        with self._exclusive_lock:
+            if self._exclusive_owner is not None or self._simple_farm_active:
+                return False
+            self._simple_farm_active = True
+            self._simple_farm_manual_clicker = self.is_running
+            self._simple_farm_clicker_requested = False
+            return True
+
+    def set_simple_farm_clicker(self, enabled: bool) -> bool:
+        with self._exclusive_lock:
+            if not self._simple_farm_active:
+                return False
+            self._simple_farm_clicker_requested = enabled
+            desired = enabled or self._simple_farm_manual_clicker
+            return self.ensure_clicker_running() if desired else self.ensure_clicker_stopped()
+
+    def release_simple_farm(self) -> None:
+        with self._exclusive_lock:
+            if self._simple_farm_active:
+                self.set_simple_farm_clicker(False)
+                self._simple_farm_active = False
 
     def release_exclusive(self, owner: str) -> bool:
         """Libera a reserva sem religar automaticamente nenhuma automação."""
@@ -193,10 +224,13 @@ class AutomationRunner:
                     # são seguras; o detector comum permanece totalmente passivo.
                     time.sleep(app_config.detect_interval)
                     continue
-                # Verificar golden cookie
-                if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
-                    self.golden_cookies_clicked += 1
-                    logger.info("Golden cookie coletado!")
+                # A mesma trava aguarda uma coleta/cast em andamento ao iniciar o farm.
+                with self._exclusive_lock:
+                    if not self._simple_farm_active and self._exclusive_owner is None:
+                        if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
+                            self.golden_cookies_clicked += 1
+                            logger.info("Golden cookie coletado!")
+                        self._run_grimoire_cycle()
 
                 # Verificar fortune cookie
                 if automation_config.enable_fortune_cookie and self.bridge.click_fortune():
@@ -206,10 +240,6 @@ class AutomationRunner:
                 if automation_config.enable_reindeer and self.bridge.pop_reindeer():
                     self.reindeer_popped += 1
                     logger.info("Rena coletada!")
-
-                # O Grimoire regenera mais rápido cheio; só tenta lançar quando
-                # o próprio runtime confirma que a mana segue no máximo.
-                self._run_grimoire_cycle()
 
                 # Verificar wrinklers normais com delay de popagem
                 if automation_config.enable_wrinkler_popper:
