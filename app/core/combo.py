@@ -41,6 +41,7 @@ class ComboAutomation:
         self._pause_plan: Optional[PlanoCombo] = None
         self._lumps_gastos = 0
         self._click_deadline: Optional[float] = None
+        self._inicio_espera: Optional[float] = None
         self._wizard_towers_originais: Optional[int] = None
         self._latest_snapshot: Optional[dict] = None
         self._garden_maduras = 0
@@ -120,7 +121,9 @@ class ComboAutomation:
                 return self._report_pausa(snapshot)
             self._pause_plan = None
 
-        if snapshot.get("achievementWon") or float(snapshot.get("cookiesEarned", 0)) >= self.configuracao.alvo_cookies:
+        if self._click_deadline is None and (
+            snapshot.get("achievementWon") or float(snapshot.get("cookiesEarned", 0)) >= self.configuracao.alvo_cookies
+        ):
             self.desabilitar_clicker()
             self._restore_wizard_towers(snapshot)
             return self._report(
@@ -133,6 +136,13 @@ class ComboAutomation:
 
         if self._click_deadline is not None:
             return self._monitorar_cliques(snapshot)
+
+        if self._inicio_espera is None:
+            self._inicio_espera = self.relogio()
+        if self.relogio() - self._inicio_espera >= self.configuracao.tempo_maximo_espera:
+            return self._interrompido(
+                "Limite de espera atingido sem uma pilha válida; nenhuma tentativa final foi disparada."
+            )
 
         plano = self._planejar(snapshot)
         if plano is None:
@@ -246,11 +256,17 @@ class ComboAutomation:
             return self._report(
                 EstadoCombo.AGUARDANDO_BUFFS,
                 reason,
-                "Aguardando F + DH e os Building Specials naturais simultâneos.",
+                "Aguardando DH + BS; Frenzy pode vir do Quadcast. "
+                f"Restam {max(0, self.configuracao.tempo_maximo_espera - (self.relogio() - self._inicio_espera)) / 60:.0f} min de busca.",
                 snapshot,
                 plano,
             )
 
+        # Inicia o clicker antes dos buffs curtos para não perder a latência
+        # da resposta CDP e da ativação da thread dentro dos 10 s de Godzamok.
+        if not self.habilitar_clicker():
+            return self._error("O clicker não pôde ser iniciado; Quadcast não foi lançado.")
+        started = self.relogio()
         result = self.bridge.execute_combo_quadcast(
             expected_cast=plano.cast_inicial,
             expected_results=list(plano.resultados),
@@ -260,15 +276,19 @@ class ComboAutomation:
             use_loans=self.configuracao.usar_loans,
         )
         if not result.get("ok"):
+            self.desabilitar_clicker()
             self._lumps_gastos += int(result.get("lumpsSpent", 0))
+            if result.get("retryable") and not result.get("mutated"):
+                return self._report(
+                    EstadoCombo.AGUARDANDO_BUFFS,
+                    result.get("message", "A pilha mudou antes do disparo."),
+                    "Revalidando sem consumir spells ou lumps.", snapshot, plano,
+                )
             self._recover_after_quadcast_failure()
             return self._error(result.get("message", "Quadcast não foi confirmado"))
         self._lumps_gastos += int(result.get("lumpsSpent", 0))
         click_seconds = max(1.0, float(result.get("clickSeconds", 8.0)))
-        if not self.habilitar_clicker():
-            self._recover_after_quadcast_failure()
-            return self._error("Quadcast executado, mas o clicker não pôde ser iniciado.")
-        self._click_deadline = self.relogio() + click_seconds
+        self._click_deadline = started + click_seconds
         return self._report(
             EstadoCombo.CLICANDO,
             "Quadcast confirmado; clicker executando na janela final.",
@@ -437,15 +457,22 @@ class ComboAutomation:
             if not result.success:
                 return optional_problem(result.message)
             return self._garden_action_report(result, snapshot, plano), False
-        if garden.soil_key != "clay":
-            result = self.bridge.change_garden_soil("clay")
+        # Clay prolonga a coleta, mas seus ticks de 15 min tornam a formação
+        # das Nursetulips muito lenta. Fertilizer cresce em ticks de 3 min;
+        # troca para Clay quando já há uma maioria útil, sem exigir perfeição.
+        tulips_total = sum(key == "nursetulip" for key in desired.values())
+        tulips_mature = sum(plant.key == "nursetulip" for plant in mature_plants)
+        harvest_ready = mature * 2 >= total and tulips_mature * 2 >= tulips_total
+        desired_soil = "clay" if harvest_ready else "fertilizer"
+        if garden.soil_key != desired_soil:
+            result = self.bridge.change_garden_soil(desired_soil)
             if result.success:
                 return self._garden_action_report(result, snapshot, plano), False
             # Cooldown de solo é uma espera legítima, não um erro fatal.
             return self._report(
                 EstadoCombo.AGUARDANDO_GARDEN,
                 result.message,
-                "A troca para Clay será tentada novamente.",
+                f"A troca para {desired_soil} será tentada novamente sem bloquear os buffs.",
                 snapshot,
                 plano,
             ), False
@@ -496,7 +523,10 @@ class ComboAutomation:
             and int(buff.get("buildingId", -1)) != 7
         ]
         missing = []
-        if not frenzy or float(frenzy.get("timeSeconds", 0)) < minimum:
+        if any(buff.get("type") in {"dragonflight", "cursed finger", "clot", "building debuff"}
+               for buff in buffs):
+            return False, "Aguardando expirar Dragonflight ou um efeito negativo incompatível."
+        if (not frenzy or float(frenzy.get("timeSeconds", 0)) < minimum) and "frenzy" not in plano.resultados:
             missing.append("Frenzy")
         if not harvest or float(harvest.get("timeSeconds", 0)) < minimum:
             missing.append("Dragon Harvest")
@@ -509,27 +539,24 @@ class ComboAutomation:
         return True, "Pilha natural confirmada com margem de duração."
 
     def _monitorar_cliques(self, snapshot: dict) -> RelatorioCombo:
-        if snapshot.get("achievementWon") or float(snapshot.get("cookiesEarned", 0)) >= self.configuracao.alvo_cookies:
-            self.desabilitar_clicker()
-            self._restore_wizard_towers(snapshot)
-            return self._report(
-                EstadoCombo.CONCLUIDO,
-                "Meta confirmada durante a janela de cliques.",
-                "And a little extra foi concluída.",
-                snapshot,
-                None,
-            )
+        achieved = snapshot.get("achievementWon") or float(snapshot.get("cookiesEarned", 0)) >= self.configuracao.alvo_cookies
         active = {str(buff.get("type")) for buff in snapshot.get("buffs", ())}
         if self.relogio() >= (self._click_deadline or 0) or not {"blood frenzy", "click frenzy"}.issubset(active):
             self.desabilitar_clicker()
             self._restore_wizard_towers(snapshot)
+            if achieved:
+                return self._report(
+                    EstadoCombo.CONCLUIDO,
+                    "Meta confirmada; janela de cliques aproveitada até o fim.",
+                    "Combo encerrado.", snapshot, None,
+                )
             return self._error(
                 "A janela final terminou antes de confirmar 1e72; o bot parou sem repetir gastos."
             )
         remaining = max(0.0, (self._click_deadline or 0) - self.relogio())
         return self._report(
             EstadoCombo.CLICANDO,
-            f"Clicker ativo; {remaining:.1f} s de margem planejada.",
+            ("Meta atingida; " if achieved else "Clicker ativo; ") + f"{remaining:.1f} s de margem planejada.",
             "Monitorando cookiesEarned e buffs a cada snapshot.",
             snapshot,
             None,
@@ -598,7 +625,10 @@ class ComboAutomation:
         garden_maduras: Optional[int] = None,
         garden_total: Optional[int] = None,
     ) -> RelatorioCombo:
-        buffs = tuple(str(buff.get("name") or buff.get("type")) for buff in snapshot.get("buffs", ()))
+        buffs = tuple(
+            f"{buff.get('name') or buff.get('type')} ({float(buff.get('timeSeconds', 0)):.1f} s)"
+            for buff in snapshot.get("buffs", ())
+        )
         return RelatorioCombo(
             estado=state,
             mensagem=message,

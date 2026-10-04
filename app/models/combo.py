@@ -29,9 +29,10 @@ class ConfiguracaoCombo:
     alvo_cookies: float = 1e72
     busca_maxima_spells: int = 5_000
     maximo_lumps_alinhamento: int = 64
-    building_specials_totais: int = 3
-    intervalo_verificacao: float = 1.0
-    duracao_minima_buff: float = 15.0
+    building_specials_totais: int = 2
+    intervalo_verificacao: float = 0.2
+    duracao_minima_buff: float = 12.0
+    tempo_maximo_espera: float = 10_800.0
     usar_sugar_frenzy: bool = True
     usar_loans: bool = True
     pausar_antes_ultimos_skips: bool = False
@@ -49,6 +50,8 @@ class ConfiguracaoCombo:
             raise ValueError("O intervalo de verificação é inválido")
         if not 5.0 <= self.duracao_minima_buff <= 120.0:
             raise ValueError("A duração mínima de buff é inválida")
+        if not 60 <= self.tempo_maximo_espera <= 86_400:
+            raise ValueError("O limite de espera deve ficar entre 1 minuto e 24 horas")
 
 
 @dataclass(frozen=True)

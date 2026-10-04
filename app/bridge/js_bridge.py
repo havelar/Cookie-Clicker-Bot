@@ -675,6 +675,10 @@ class CookieClickerBridge:
                     const score=offset+natural*250-bs*25;
                     const candidate={startCast:start,skipCount:offset,season:mode.season,results,
                         spellBuildingSpecials:bs,naturalBuildingSpecials:natural,score};
+                    // Preserve a janela já alinhada na season atual: não gaste
+                    // centenas de skips apenas para buscar mais um BS de spell.
+                    if (offset===0 && mode.season===currentSeason)
+                        return Object.assign({ok:true,seed:String(Game.seed),version:String(Game.version),currentCast:current,failBase},candidate);
                     if (!best || candidate.score<best.score ||
                             (candidate.score===best.score && candidate.skipCount<best.skipCount)) best=candidate;
                 }
@@ -1354,6 +1358,7 @@ class CookieClickerBridge:
         if (
             not isinstance(expected_results, list) or len(expected_results) != 4
             or any(value not in allowed for value in expected_results)
+            or not {"blood frenzy", "click frenzy", "building special"}.issubset(expected_results)
         ):
             return {"ok": False, "message": "Resultados esperados inválidos"}
         if not 5 <= minimum_buff_seconds <= 120 or not 0 <= required_natural_bs <= 4:
@@ -1363,6 +1368,7 @@ class CookieClickerBridge:
             const minimum=__MINIMUM__,requiredNaturalBs=__NATURAL_BS__;
             const useSugar=__USE_SUGAR__,useLoans=__USE_LOANS__;
             const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
+            const wait=message=>fail(message,{retryable:true,mutated:false,lumpsSpent:0});
             const tower=Game.Objects && Game.Objects['Wizard tower'];
             const temple=Game.Objects && Game.Objects['Temple'];
             const bank=Game.Objects && Game.Objects['Bank'];
@@ -1373,27 +1379,46 @@ class CookieClickerBridge:
             if (!M || !P || !B || !spell) return fail('Minigames necessários não estão carregados');
             const fps=Math.max(1,Number(Game.fps)||30);
             const castNow=Math.trunc(Number(M.spellsCastTotal)||0);
-            if (castNow!==expectedCast) return fail('Contador de spells divergiu antes do Quadcast',{castNow,expectedCast});
+            if (castNow!==expectedCast) return wait('Contador de spells divergiu antes do Quadcast');
             if (Number(tower.level)!==10 || Number(tower.amount)!==601)
                 return fail('Quadcast requer exatamente 601 Wizard Towers de nível 10',{amount:Number(tower.amount),level:Number(tower.level)});
             if (Number(M.magic)+1e-7<Number(M.magicM)) return fail('Mana não está cheia no início do Quadcast');
             if ((Game.shimmers||[]).some(item=>item && item.type==='golden'))
-                return fail('Há Golden/Wrath Cookie em tela antes do Quadcast');
-            if (Game.hasBuff && Game.hasBuff('Dragonflight')) return fail('Dragonflight está ativo e removeria Click Frenzy do FtHoF');
+                return wait('Há Golden/Wrath Cookie em tela antes do Quadcast');
+            if (Game.hasBuff && Game.hasBuff('Dragonflight')) return wait('Dragonflight está ativo e removeria Click Frenzy do FtHoF');
             if (Number(Game.lumps)<1 || typeof Game.canRefillLump!=='function' || !Game.canRefillLump())
                 return fail('A recarga por Sugar Lump não está disponível');
+            const sugar=Game.Upgrades && Game.Upgrades['Sugar frenzy'];
+            if (useSugar && (!sugar || typeof sugar.buy!=='function'))
+                return fail('Sugar Frenzy configurada, mas indisponível');
+            if (useSugar && !sugar.bought && Number(Game.lumps)<2)
+                return wait('Faltam lumps para refill e Sugar Frenzy');
+            if (useLoans) {
+                if (Number(B.officeLevel)<5 || typeof B.takeLoan!=='function')
+                    return fail('Os três loans configurados não estão disponíveis');
+                for (const id of [1,2,3]) {
+                    if (Game.hasBuff('Loan '+id+' (interest)'))
+                        return wait('Loan '+id+' está no período de juros');
+                    const active=Game.hasBuff('Loan '+id);
+                    if (active && Number(active.time)/fps<minimum)
+                        return wait('Loan '+id+' está prestes a expirar');
+                }
+            }
             if (Number(P.slot[0])!==2) return fail('Godzamok não está no slot Diamond');
             if (!Game.ObjectsById[0] || Number(Game.ObjectsById[0].amount)<601)
                 return fail('São necessários pelo menos 601 Cursors para a venda final de Godzamok');
 
             const buffs=Object.values(Game.buffs||{});
             const timed=type=>buffs.find(buff=>buff.type && buff.type.name===type && Number(buff.time)/fps>=minimum);
-            if (!timed('frenzy') || !timed('dragon harvest'))
-                return fail('Frenzy ou Dragon Harvest não possui duração mínima');
+            if (buffs.some(buff=>buff.type && ['cursed finger','clot','building debuff'].includes(buff.type.name)))
+                return wait('Um efeito negativo incompatível está ativo');
+            const needsSpellFrenzy=!timed('frenzy');
+            if ((needsSpellFrenzy && !expectedResults.includes('frenzy')) || !timed('dragon harvest'))
+                return wait('Frenzy ou Dragon Harvest não possui duração mínima');
             const naturalBs=buffs.filter(buff=>buff.type && buff.type.name==='building buff' &&
                 Number(buff.time)/fps>=minimum && Number(buff.arg2)!==7);
             if (naturalBs.length<requiredNaturalBs)
-                return fail('Building Specials naturais insuficientes',{found:naturalBs.length,requiredNaturalBs});
+                return wait('Building Specials naturais insuficientes ou expirando');
 
             // Reconfirma a previsão com o RNG carregado nesta versão antes de qualquer mutação.
             const failBase=Math.max(0,Math.min(1,Number(M.getFailChance(spell))));
@@ -1422,7 +1447,7 @@ class CookieClickerBridge:
             }
             const predicted=[0,1,2,3].map(index=>predict(expectedCast+index,index));
             if (predicted.some((value,index)=>value!==expectedResults[index]))
-                return fail('Forecast mudou imediatamente antes da execução',{predicted,expectedResults});
+                return wait('Forecast mudou imediatamente antes da execução');
 
             // getSumPrice usa a quantidade atual (601); calcule a recompra real
             // que acontecerá depois da venda, partindo de exatamente 1 torre.
@@ -1470,6 +1495,24 @@ class CookieClickerBridge:
             if (Number(M.magic)>Number(M.magicM)) M.magic=Number(M.magicM);
             const fourth=castOne(3); if (!fourth.ok) return fail(fourth.message,Object.assign({},fourth,{lumpsSpent:1}));
 
+            // Descobre BS reais antes de gastar Sugar Frenzy/loans. Dois
+            // cookies do mesmo prédio só somam duração, não multiplicadores.
+            const spellBs=created.filter(item=>item.force==='building special');
+            for (const item of spellBs) item.shimmer.pop();
+            const finalBs=Object.values(Game.buffs||{}).filter(buff=>buff.type &&
+                buff.type.name==='building buff' && Number(buff.time)/fps>=minimum && Number(buff.arg2)!==7);
+            const requiredTotalBs=requiredNaturalBs+spellBs.length;
+            if (new Set(finalBs.map(buff=>Number(buff.arg2))).size<requiredTotalBs)
+                return fail('BS de spell repetiu um prédio; multiplicadores distintos insuficientes. Sugar Frenzy e loans preservados.',
+                    {lumpsSpent:1,mutated:true});
+
+            // Frenzy redundante fica em tela para Dragon's Fortune. Se falta
+            // Frenzy natural, ativá-lo rende x7, superior ao x2,23 preservado.
+            if (needsSpellFrenzy) {
+                const frenzy=created.find(item=>item.force==='frenzy');
+                if (frenzy) frenzy.shimmer.pop();
+            }
+
             function setAuras(primary,secondary) {
                 const desired=[primary,secondary];
                 function highest() {
@@ -1494,12 +1537,20 @@ class CookieClickerBridge:
             }
 
             let lumpsSpent=1,sugarFrenzy=false;
-            const sugar=Game.Upgrades && Game.Upgrades['Sugar frenzy'];
             if (useSugar && sugar && !sugar.bought && Number(Game.lumps)>=1) {
-                Game.lumps-=1;
-                const accepted=sugar.buy(1)===1;
-                if (accepted) { lumpsSpent++; sugarFrenzy=!!Game.hasBuff('Sugar frenzy'); }
-                else Game.lumps+=1;
+                // Em 2.053 o buff é criado pelo clickFunction, não por
+                // buyFunction. buy(1) pula esse caminho e perde o x3.
+                const before=Number(Game.lumps),askLumps=Game.prefs.askLumps;
+                let sugarError='';
+                try { Game.prefs.askLumps=0; sugar.buy(); }
+                catch (error) { sugarError=String(error); }
+                finally { Game.prefs.askLumps=askLumps; }
+                const spent=before-Number(Game.lumps);
+                lumpsSpent+=Math.max(0,spent);
+                sugarFrenzy=!!Game.hasBuff('Sugar frenzy');
+                if (sugarError || spent!==1 || !sugar.bought || !sugarFrenzy)
+                    return fail('Sugar Frenzy não confirmou buff e gasto de um lump',
+                        {lumpsSpent,mutated:true,sugarError});
             }
 
             const loans=[];
@@ -1507,14 +1558,12 @@ class CookieClickerBridge:
                 for (const id of [1,3,2]) {
                     const required=[0,2,4,5][id];
                     if (Number(B.officeLevel)>=required && !Game.hasBuff('Loan '+id) && !Game.hasBuff('Loan '+id+' (interest)')) {
-                        if (B.takeLoan(id)===true) loans.push(id);
+                        if (B.takeLoan(id)===true && Game.hasBuff('Loan '+id)) loans.push(id);
+                        else return fail('Loan '+id+' não foi confirmado',{lumpsSpent,mutated:true});
                     }
                 }
             }
 
-            // Ativa BS de spell antes das vendas para descobrir e proteger o prédio escolhido.
-            const spellBs=created.filter(item=>item.force==='building special');
-            for (const item of spellBs) item.shimmer.pop();
             const protectedIds=new Set(Object.values(Game.buffs||{})
                 .filter(buff=>buff.type && buff.type.name==='building buff')
                 .map(buff=>Number(buff.arg2)));
@@ -1537,7 +1586,15 @@ class CookieClickerBridge:
             const devastation=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='devastation');
             if (!clickBuff || !elderBuff || !devastation)
                 return fail('Buffs finais não foram confirmados',{lumpsSpent,hasCf:!!clickBuff,hasEf:!!elderBuff,hasDevastation:!!devastation});
-            const clickSeconds=Math.max(1,Math.min(Number(clickBuff.time),Number(elderBuff.time),Number(devastation.time))/fps-1);
+            const stack=Object.values(Game.buffs||{}).filter(buff=>buff.type &&
+                (['frenzy','dragon harvest','click frenzy','blood frenzy','devastation'].includes(buff.type.name)
+                 || finalBs.includes(buff)));
+            const preserved=(Game.shimmers||[]).filter(item=>item.type==='golden');
+            const limitingTimes=stack.map(buff=>Number(buff.time));
+            for (const shimmer of preserved) limitingTimes.push(Number(shimmer.life));
+            const clickSeconds=Math.min(...limitingTimes)/fps-1;
+            if (!Number.isFinite(clickSeconds) || clickSeconds<=0)
+                return fail('A janela útil expirou durante a execução',{lumpsSpent,mutated:true});
             return {ok:true,message:'Quadcast e multiplicadores finais confirmados',
                 results:created.map(item=>item.force),lumpsSpent,clickSeconds,sold,protectedIds:Array.from(protectedIds),
                 goldenSwitch,sugarFrenzy,loans,preserved:(Game.shimmers||[]).filter(item=>item.type==='golden').map(item=>({id:Number(item.id),force:String(item.force||'')})),
