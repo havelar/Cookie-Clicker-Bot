@@ -13,6 +13,7 @@ except ImportError:
 
 from app.config.settings import app_config
 from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
+from app.bridge.visual_sync import GAME_VISUAL_SYNC
 from app.models.garden import (
     GardenAction,
     GardenActionResult,
@@ -157,6 +158,34 @@ class CookieClickerBridge:
                 self.connected = False  # Marcar como desconectado para tentar reconectar
                 return None
 
+    def _execute_game_action(self, code: str) -> Optional[Any]:
+        """Executa uma ação uma vez e sincroniza a UI, inclusive após falha parcial."""
+        script = """(() => {
+            %s
+            const before=typeof Game==='undefined'?null:[Game.dragonAura,Game.dragonAura2];
+            let result;
+            try { result=(%s); }
+            finally {
+                const warnings=syncGameVisuals(before);
+                if (warnings.length && result && typeof result==='object') {
+                    const items=Array.isArray(result)?result:[result];
+                    for (const item of items) {
+                        if (!item || typeof item!=='object') continue;
+                        item.uiWarnings=warnings;
+                        if (item.message) item.message+='; aviso: atualização visual pendente';
+                    }
+                }
+            }
+            return result;
+        })()""" % (GAME_VISUAL_SYNC, code)
+        result = self.execute_js(script)
+        items = result if isinstance(result, list) else [result]
+        for item in items:
+            if isinstance(item, dict) and item.get("uiWarnings"):
+                logger.warning("Atualização visual pendente após ação: %s", "; ".join(item["uiWarnings"]))
+                break
+        return result
+
     # === Helpers específicos do Cookie Clicker ===
 
     def get_ascension_snapshot(self) -> SnapshotAscensao:
@@ -275,7 +304,7 @@ class CookieClickerBridge:
         """Compra um Heavenly Upgrade simples, elegível e confirma a mudança."""
         if isinstance(upgrade_id, bool) or not isinstance(upgrade_id, int) or upgrade_id < 0:
             return self._invalid_ascension_action("comprar_heavenly", "Identificador inválido")
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const id=%d, fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message,id},extra);
             if (!globalThis.Game || !Game.OnAscend)
@@ -308,7 +337,7 @@ class CookieClickerBridge:
 
     def reincarnate(self) -> ResultadoAcaoAscensao:
         """Reencarna somente a partir da tela de ascensão e verifica a saída dela."""
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const fail=(reason,message)=>({ok:false,reason,message});
             if (!globalThis.Game || typeof Game.Reincarnate!=='function')
                 return fail('unavailable','API de reencarnação indisponível');
@@ -330,7 +359,7 @@ class CookieClickerBridge:
 
     def buy_all_normal_upgrades(self) -> ResultadoAcaoAscensao:
         """Aciona uma vez o botão nativo de comprar todos e verifica as compras."""
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message,quantity:0},extra);
             if (!globalThis.Game || Game.OnAscend || Number(Game.AscendTimer)>0
@@ -387,7 +416,7 @@ class CookieClickerBridge:
                 "comprar_lote_construcoes", "Parâmetros do lote de construções inválidos"
             )
         ordered_ids = sorted(set(building_ids), reverse=True)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const ids=%s, limit=%d, fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message,quantity:0},extra);
             if (!globalThis.Game || Game.OnAscend || Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
@@ -439,7 +468,7 @@ class CookieClickerBridge:
         minimum = self._optional_float(minimum_prestige_gain)
         if minimum is None or minimum < 0:
             return self._invalid_ascension_action("ascender", "Ganho mínimo de prestígio inválido")
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const minimum=%s, fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message},extra);
             if (!globalThis.Game || typeof Game.Ascend!=='function' || typeof Game.HowMuchPrestige!=='function')
@@ -495,7 +524,7 @@ class CookieClickerBridge:
         """Lança uma magia somente se a mana continuar cheia no runtime."""
         if isinstance(spell_id, bool) or not isinstance(spell_id, int) or spell_id < 0:
             return {"cast": False, "reason": "invalid_spell", "message": "Skill inválida"}
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const spellId = %d;
             const fail = (reason, message, extra = {}) =>
                 Object.assign({cast:false, reason, message}, extra);
@@ -834,7 +863,7 @@ class CookieClickerBridge:
                   .replace("__FRACTION__", repr(float(max_spend_fraction)))
                   .replace("__RESERVE__", repr(float(reserve_fraction)))
                   .replace("__SPENT__", repr(float(spent_in_window))))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida da magia"}
 
     @staticmethod
@@ -843,7 +872,6 @@ class CookieClickerBridge:
         return (all(not isinstance(v, bool) and isinstance(v, (int, float)) for v in values)
                 and 0 <= cash_floor < float("inf") and 0 <= spent < float("inf")
                 and 0.01 <= fraction <= 0.20 and 0.15 <= reserve <= 0.99)
-
 
     def reinvest_simple_farm(
         self, cash_floor: float, max_spend_fraction: float, reserve_fraction: float = 0.80,
@@ -944,7 +972,7 @@ class CookieClickerBridge:
         })()""".replace("__FLOOR__", repr(float(cash_floor))).replace(
             "__FRACTION__", repr(float(max_spend_fraction))
         ).replace("__RESERVE__", repr(float(reserve_fraction)))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do reinvestimento"}
 
     def pop_combo_natural_shimmer(self, shimmer_id: int) -> Dict[str, Any]:
@@ -1002,7 +1030,7 @@ class CookieClickerBridge:
             const ok=String(Game.season||'')===season;
             return {ok,message:ok?'Season alterada e verificada':'O jogo não confirmou a troca de season',accepted,before,after:Number(Game.cookies)};
         })()""".replace("__SEASON__", json.dumps(season)).replace("__NAME__", json.dumps(triggers[season]))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao trocar season"}
 
     def set_combo_golden_switch(self, enabled: bool) -> Dict[str, Any]:
@@ -1021,12 +1049,12 @@ class CookieClickerBridge:
             const after=Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]');
             return {ok:after===desired,message:after===desired?'Golden Switch alterado e verificado':'O jogo recusou o Golden Switch',accepted,enabled:after};
         })()""".replace("__DESIRED__", "true" if enabled else "false")
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Golden Switch"}
 
     def upgrade_combo_office_once(self) -> Dict[str, Any]:
         """Compra Cursors se necessário e avança exatamente um nível de escritório."""
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const bank=Game.Objects && Game.Objects['Bank'];
             const cursor=Game.Objects && Game.Objects['Cursor'];
             const M=bank && bank.minigameLoaded ? bank.minigame : null;
@@ -1081,7 +1109,7 @@ class CookieClickerBridge:
             const ok=Number(M.slot[slot])===Number(god.id);
             return {ok,message:ok?'Espírito movido e verificado':'O Pantheon não confirmou o slot',slots:Array.from(M.slot),swaps:Number(M.swaps)};
         })()""".replace("__DESIRED__", json.dumps(desired_slots))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Pantheon"}
 
     def set_combo_auras(self, primary: int, secondary: int) -> Dict[str, Any]:
@@ -1114,7 +1142,7 @@ class CookieClickerBridge:
             const ok=after[0]===desired[0] && after[1]===desired[1];
             return {ok,message:ok?'Auras configuradas e verificadas':'O jogo não confirmou as auras',before,after,sacrifices};
         })()""".replace("__PRIMARY__", str(primary)).replace("__SECONDARY__", str(secondary))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao configurar auras"}
 
     def set_combo_wizard_towers(self, target: int) -> Dict[str, Any]:
@@ -1141,7 +1169,7 @@ class CookieClickerBridge:
             const after=Math.trunc(Number(tower.amount)||0);
             return {ok:after===target,message:after===target?'Wizard Towers ajustadas e verificadas':'Quantidade final de Wizard Towers divergente',before,after};
         })()""".replace("__TARGET__", str(target))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao ajustar Wizard Towers"}
 
     def ensure_combo_building_minimum(self, building_id: int, minimum: int) -> Dict[str, Any]:
@@ -1172,7 +1200,7 @@ class CookieClickerBridge:
                 message:after>=minimum?'Estoque de Godzamok recomposto e verificado':'O jogo não confirmou a recomposição do prédio',
                 id,before,after,bought:Math.max(0,after-before),price};
         })()""".replace("__ID__", str(building_id)).replace("__MINIMUM__", str(minimum))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {
             "ok": False, "message": "Resposta inválida ao recompor prédio para Godzamok"
         }
@@ -1197,7 +1225,7 @@ class CookieClickerBridge:
             const ok=accepted && after===before+1;
             return {ok,message:ok?'Spell de alinhamento confirmada':'O contador não avançou exatamente uma vez',before,after,cost,magic:Number(M.magic)};
         })()""".replace("__EXPECTED__", str(expected_cast)).replace("__SPELL_ID__", str(spell_id))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida no alinhamento"}
 
     def refill_combo_magic(self, expected_cast: int) -> Dict[str, Any]:
@@ -1223,7 +1251,7 @@ class CookieClickerBridge:
             const ok=Number(Game.lumps)===lumpsBefore-1 && Number(M.magic)>before;
             return {ok,message:ok?'Mana recarregada com um Sugar Lump':'Recarga de mana não foi confirmada',before,after:Number(M.magic),lumpsSpent:ok?1:0};
         })()""".replace("__EXPECTED__", str(expected_cast))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida na recarga"}
 
     def execute_combo_quadcast(
@@ -1499,7 +1527,7 @@ class CookieClickerBridge:
         }
         for marker, value in replacements.items():
             script = script.replace(marker, value)
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Quadcast"}
 
     def get_stock_market_status(self) -> StockMarketStatus:
@@ -1626,7 +1654,7 @@ class CookieClickerBridge:
         """Planta uma semente desbloqueada somente em um canteiro vazio."""
         if not self._valid_garden_key(seed_key) or not self._valid_garden_position(x, y):
             return GardenActionResult(False, "plant", "Parâmetros de plantio inválidos.", x=x, y=y)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const key=%s, x=%d, y=%d;
             const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:key},extra);
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
@@ -1745,7 +1773,7 @@ class CookieClickerBridge:
             }
             return results;
         })()""".replace("__ACTIONS__", json.dumps(payload_actions))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         if not isinstance(payload, list) or not payload or any(not isinstance(item, dict) for item in payload):
             return (GardenActionResult(False, "layout", "Resposta inválida do lote de Garden."),)
         return tuple(self._parse_garden_action(
@@ -1762,7 +1790,7 @@ class CookieClickerBridge:
             return GardenActionResult(False, "harvest", "Semente esperada inválida.", x=x, y=y)
         if not self._valid_garden_position(x, y) or not isinstance(require_mature, bool):
             return GardenActionResult(False, "harvest", "Parâmetros de colheita inválidos.", x=x, y=y)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const x=%d,y=%d,expected=%s,requireMature=%s;
             const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:expected},extra);
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
@@ -1797,7 +1825,7 @@ class CookieClickerBridge:
         """Troca o solo somente quando o requisito e o cooldown permitem."""
         if not self._valid_garden_key(soil_key):
             return GardenActionResult(False, "change_soil", "Solo inválido.", soil_key=soil_key)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const key=%s;
             const fail=message=>({ok:false,message,soilKey:key});
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
@@ -1821,7 +1849,7 @@ class CookieClickerBridge:
         """Congela ou descongela o Garden e verifica o estado resultante."""
         if not isinstance(frozen, bool):
             return GardenActionResult(False, "set_freeze", "Estado de congelamento inválido.")
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const desired=%s;
             const fail=message=>({ok:false,message});
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
@@ -1998,7 +2026,7 @@ class CookieClickerBridge:
             const executedTotal = price * executed * (side === 'buy' ? overhead : 1);
             return {ok:true,message:isMaximum ? `${action} máxima executada` : `${action} executada`,before,after,executed,price,total:executedTotal};
         })()""" % (side, asset_id, quantity, str(is_maximum_order).lower(), json.dumps(guards, allow_nan=False))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         if not isinstance(payload, dict):
             message = "Bridge desconectado ou resposta inválida do CDP"
             logger.error(f"Stock Market: {message}")
@@ -2366,7 +2394,7 @@ class CookieClickerBridge:
             }
             return true;
         })()""" % str(bool(enabled)).lower()
-        result = self.execute_js(script)
+        result = self._execute_game_action(script)
         if result is not True:
             logger.warning("Stock Market: não foi possível atualizar a visualização dos ativos")
             return False
