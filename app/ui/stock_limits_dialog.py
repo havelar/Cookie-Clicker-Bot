@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QHeaderView,
     QLabel,
     QMessageBox,
@@ -21,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.models.stock_market import StockAsset, StockMarketSnapshot
+from app.ui.number_inputs import ScrollSafeDoubleSpinBox
 
 
 class StockLimitsDialog(QDialog):
@@ -42,7 +42,7 @@ class StockLimitsDialog(QDialog):
         self._draft_overrides = deepcopy(overrides)
         self._assets = {str(asset.asset_id): asset for asset in snapshot.assets}
         self._fallback_limits = (float(buy_limit), float(sell_limit))
-        self._inputs: Dict[str, Tuple[QDoubleSpinBox, QDoubleSpinBox]] = {}
+        self._inputs: Dict[str, Tuple[ScrollSafeDoubleSpinBox, ScrollSafeDoubleSpinBox]] = {}
 
         self.setWindowTitle("Limites por ativo")
         self.resize(660, 620)
@@ -115,8 +115,8 @@ class StockLimitsDialog(QDialog):
         self._refresh_inputs()
 
     @staticmethod
-    def _price_input() -> QDoubleSpinBox:
-        control = QDoubleSpinBox()
+    def _price_input() -> ScrollSafeDoubleSpinBox:
+        control = ScrollSafeDoubleSpinBox()
         control.setDecimals(2)
         control.setRange(0.0, 1_000_000_000.0)
         control.setButtonSymbols(QAbstractSpinBox.NoButtons)

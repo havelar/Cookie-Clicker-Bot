@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QDoubleSpinBox, QSpinBox, QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
 
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
@@ -26,6 +26,7 @@ from app.models.combo import ConfiguracaoCombo, EstadoCombo, RelatorioCombo
 from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
 from app.ui.automation_control import AutomationControl
+from app.ui.number_inputs import ScrollSafeDoubleSpinBox, ScrollSafeSpinBox
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
 from app.utils.logger import logger
@@ -329,27 +330,27 @@ class MainWindow(QMainWindow):
         config_group = QGroupBox("Planejamento on-the-go")
         form = QFormLayout(config_group)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.combo_search_input = QSpinBox()
+        self.combo_search_input = ScrollSafeSpinBox()
         self.combo_search_input.setRange(4, 100_000)
         self.combo_search_input.setValue(automation_config.combo_max_search_ahead)
         self.combo_search_input.setSuffix(" spells")
         self.combo_search_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Alcance do forecast", self.combo_search_input)
 
-        self.combo_lumps_input = QSpinBox()
+        self.combo_lumps_input = ScrollSafeSpinBox()
         self.combo_lumps_input.setRange(0, 10_000)
         self.combo_lumps_input.setValue(automation_config.combo_max_skip_lumps)
         self.combo_lumps_input.setSuffix(" lumps")
         self.combo_lumps_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Orçamento para alinhamento", self.combo_lumps_input)
 
-        self.combo_bs_input = QSpinBox()
+        self.combo_bs_input = ScrollSafeSpinBox()
         self.combo_bs_input.setRange(1, 6)
         self.combo_bs_input.setValue(automation_config.combo_required_building_specials)
         self.combo_bs_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Building Specials totais", self.combo_bs_input)
 
-        self.combo_interval_input = QDoubleSpinBox()
+        self.combo_interval_input = ScrollSafeDoubleSpinBox()
         self.combo_interval_input.setRange(0.1, 60.0)
         self.combo_interval_input.setDecimals(1)
         self.combo_interval_input.setValue(automation_config.combo_poll_interval_seconds)
@@ -357,7 +358,7 @@ class MainWindow(QMainWindow):
         self.combo_interval_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Intervalo do looper", self.combo_interval_input)
 
-        self.combo_min_buff_input = QDoubleSpinBox()
+        self.combo_min_buff_input = ScrollSafeDoubleSpinBox()
         self.combo_min_buff_input.setRange(5.0, 120.0)
         self.combo_min_buff_input.setDecimals(1)
         self.combo_min_buff_input.setValue(automation_config.combo_minimum_buff_seconds)
@@ -365,7 +366,7 @@ class MainWindow(QMainWindow):
         self.combo_min_buff_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Duração mínima dos buffs", self.combo_min_buff_input)
 
-        self.combo_wait_input = QSpinBox()
+        self.combo_wait_input = ScrollSafeSpinBox()
         self.combo_wait_input.setRange(1, 1440)
         self.combo_wait_input.setValue(automation_config.combo_max_wait_minutes)
         self.combo_wait_input.setSuffix(" min")
@@ -476,13 +477,13 @@ class MainWindow(QMainWindow):
         config_group = QGroupBox("Estratégia automática")
         form = QFormLayout(config_group)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.simple_farm_search_input = QSpinBox()
+        self.simple_farm_search_input = ScrollSafeSpinBox()
         self.simple_farm_search_input.setRange(2, 10_000)
         self.simple_farm_search_input.setValue(automation_config.simple_farm_max_search_ahead)
         self.simple_farm_search_input.setSuffix(" spells")
         self.simple_farm_search_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Magias futuras analisadas", self.simple_farm_search_input)
-        self.simple_farm_interval_input = QDoubleSpinBox()
+        self.simple_farm_interval_input = ScrollSafeDoubleSpinBox()
         self.simple_farm_interval_input.setRange(0.1, 10.0)
         self.simple_farm_interval_input.setDecimals(1)
         self.simple_farm_interval_input.setSingleStep(0.1)
@@ -490,21 +491,21 @@ class MainWindow(QMainWindow):
         self.simple_farm_interval_input.setSuffix(" s")
         self.simple_farm_interval_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Intervalo de verificação", self.simple_farm_interval_input)
-        self.simple_farm_min_buff_input = QDoubleSpinBox()
+        self.simple_farm_min_buff_input = ScrollSafeDoubleSpinBox()
         self.simple_farm_min_buff_input.setRange(3.0, 60.0)
         self.simple_farm_min_buff_input.setDecimals(1)
         self.simple_farm_min_buff_input.setValue(automation_config.simple_farm_minimum_buff_seconds)
         self.simple_farm_min_buff_input.setSuffix(" s")
         self.simple_farm_min_buff_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Tempo mínimo restante do buff", self.simple_farm_min_buff_input)
-        self.simple_farm_reserve_input = QDoubleSpinBox()
+        self.simple_farm_reserve_input = ScrollSafeDoubleSpinBox()
         self.simple_farm_reserve_input.setRange(15.0, 99.0)
         self.simple_farm_reserve_input.setDecimals(0)
         self.simple_farm_reserve_input.setValue(automation_config.simple_farm_cash_reserve_percent)
         self.simple_farm_reserve_input.setSuffix(" %")
         self.simple_farm_reserve_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Reserva mínima de caixa", self.simple_farm_reserve_input)
-        self.simple_farm_investment_input = QDoubleSpinBox()
+        self.simple_farm_investment_input = ScrollSafeDoubleSpinBox()
         self.simple_farm_investment_input.setRange(1.0, 20.0)
         self.simple_farm_investment_input.setDecimals(0)
         self.simple_farm_investment_input.setValue(automation_config.simple_farm_investment_percent)
@@ -967,13 +968,13 @@ class MainWindow(QMainWindow):
         config_group = QGroupBox("Configuração do ciclo")
         form = QFormLayout(config_group)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.auto_ascension_cycles_input = QSpinBox()
+        self.auto_ascension_cycles_input = ScrollSafeSpinBox()
         self.auto_ascension_cycles_input.setRange(1, 10_000)
         self.auto_ascension_cycles_input.setValue(automation_config.auto_ascension_target_cycles)
         self.auto_ascension_cycles_input.valueChanged.connect(self._save_auto_ascension_settings)
         form.addRow("Quantidade alvo de ciclos", self.auto_ascension_cycles_input)
 
-        self.auto_ascension_prestige_input = QDoubleSpinBox()
+        self.auto_ascension_prestige_input = ScrollSafeDoubleSpinBox()
         self.auto_ascension_prestige_input.setRange(0.0, 1e300)
         self.auto_ascension_prestige_input.setDecimals(0)
         self.auto_ascension_prestige_input.setValue(
@@ -982,7 +983,7 @@ class MainWindow(QMainWindow):
         self.auto_ascension_prestige_input.valueChanged.connect(self._save_auto_ascension_settings)
         form.addRow("Ganho mínimo de prestígio", self.auto_ascension_prestige_input)
 
-        self.auto_ascension_interval_input = QDoubleSpinBox()
+        self.auto_ascension_interval_input = ScrollSafeDoubleSpinBox()
         self.auto_ascension_interval_input.setRange(0.1, 3600.0)
         self.auto_ascension_interval_input.setDecimals(1)
         self.auto_ascension_interval_input.setSingleStep(0.1)
@@ -993,7 +994,7 @@ class MainWindow(QMainWindow):
         self.auto_ascension_interval_input.valueChanged.connect(self._save_auto_ascension_settings)
         form.addRow("Intervalo de verificação", self.auto_ascension_interval_input)
 
-        self.auto_ascension_timeout_input = QSpinBox()
+        self.auto_ascension_timeout_input = ScrollSafeSpinBox()
         self.auto_ascension_timeout_input.setRange(1, 31_536_000)
         self.auto_ascension_timeout_input.setSuffix(" s")
         self.auto_ascension_timeout_input.setValue(
@@ -1169,7 +1170,7 @@ class MainWindow(QMainWindow):
 
         automation_group = QGroupBox("Automações"); automation_form = QFormLayout(automation_group)
         automation_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.wrinkler_delay_input = QDoubleSpinBox(); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setSuffix(" s"); self.wrinkler_delay_input.setMaximumWidth(140); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
+        self.wrinkler_delay_input = ScrollSafeDoubleSpinBox(); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setSuffix(" s"); self.wrinkler_delay_input.setMaximumWidth(140); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
         automation_form.addRow("Intervalo entre Wrinklers", self.wrinkler_delay_input)
         self.grimoire_spell_combo = QComboBox(); self.grimoire_spell_combo.setMinimumWidth(230)
         self._load_grimoire_spells()
@@ -1188,13 +1189,13 @@ class MainWindow(QMainWindow):
 
         stock_group = QGroupBox("Stock Market"); stock_form = QFormLayout(stock_group)
         stock_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.stock_buy_limit_input = QDoubleSpinBox(); self.stock_buy_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_buy_limit_input.setDecimals(2); self.stock_buy_limit_input.setPrefix("$ "); self.stock_buy_limit_input.setMaximumWidth(150); self.stock_buy_limit_input.setValue(automation_config.stock_market_buy_price_limit); self.stock_buy_limit_input.valueChanged.connect(self._update_stock_buy_limit)
+        self.stock_buy_limit_input = ScrollSafeDoubleSpinBox(); self.stock_buy_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_buy_limit_input.setDecimals(2); self.stock_buy_limit_input.setPrefix("$ "); self.stock_buy_limit_input.setMaximumWidth(150); self.stock_buy_limit_input.setValue(automation_config.stock_market_buy_price_limit); self.stock_buy_limit_input.valueChanged.connect(self._update_stock_buy_limit)
         stock_form.addRow("Limite geral de compra", self.stock_buy_limit_input)
-        self.stock_sell_limit_input = QDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setPrefix("$ "); self.stock_sell_limit_input.setMaximumWidth(150); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
+        self.stock_sell_limit_input = ScrollSafeDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setPrefix("$ "); self.stock_sell_limit_input.setMaximumWidth(150); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
         stock_form.addRow("Limite geral de venda", self.stock_sell_limit_input)
-        self.stock_trend_ticks_input = QSpinBox(); self.stock_trend_ticks_input.setRange(2, 64); self.stock_trend_ticks_input.setSuffix(" ticks"); self.stock_trend_ticks_input.setMaximumWidth(120); self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks); self.stock_trend_ticks_input.setToolTip("Quantidade de ticks usada para validar a tendência"); self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
+        self.stock_trend_ticks_input = ScrollSafeSpinBox(); self.stock_trend_ticks_input.setRange(2, 64); self.stock_trend_ticks_input.setSuffix(" ticks"); self.stock_trend_ticks_input.setMaximumWidth(120); self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks); self.stock_trend_ticks_input.setToolTip("Quantidade de ticks usada para validar a tendência"); self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
         stock_form.addRow("Janela de análise", self.stock_trend_ticks_input)
-        self.stock_reversal_percent_input = QDoubleSpinBox(); self.stock_reversal_percent_input.setRange(0.01, 100.0); self.stock_reversal_percent_input.setDecimals(2); self.stock_reversal_percent_input.setSuffix(" %"); self.stock_reversal_percent_input.setMaximumWidth(120); self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent); self.stock_reversal_percent_input.setToolTip("Alta mínima em um tick para confirmar que uma queda terminou"); self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
+        self.stock_reversal_percent_input = ScrollSafeDoubleSpinBox(); self.stock_reversal_percent_input.setRange(0.01, 100.0); self.stock_reversal_percent_input.setDecimals(2); self.stock_reversal_percent_input.setSuffix(" %"); self.stock_reversal_percent_input.setMaximumWidth(120); self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent); self.stock_reversal_percent_input.setToolTip("Alta mínima em um tick para confirmar que uma queda terminou"); self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
         stock_form.addRow("Confirmação de reversão", self.stock_reversal_percent_input)
         self.stock_owned_only_checkbox = QCheckBox("Mostrar no jogo apenas ativos em estoque")
         self.stock_owned_only_checkbox.setChecked(automation_config.enable_stock_market_owned_only_view)
@@ -1211,7 +1212,7 @@ class MainWindow(QMainWindow):
 
         garden_group = QGroupBox("Garden"); garden_form = QFormLayout(garden_group)
         garden_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.garden_interval_input = QSpinBox(); self.garden_interval_input.setRange(30, 3600); self.garden_interval_input.setSuffix(" s"); self.garden_interval_input.setMaximumWidth(140)
+        self.garden_interval_input = ScrollSafeSpinBox(); self.garden_interval_input.setRange(30, 3600); self.garden_interval_input.setSuffix(" s"); self.garden_interval_input.setMaximumWidth(140)
         self.garden_interval_input.setValue(automation_config.garden_poll_interval_seconds)
         self.garden_interval_input.setToolTip("Intervalo de fallback quando o próximo tick não puder ser lido do jogo")
         self.garden_interval_input.valueChanged.connect(self._update_garden_interval)
@@ -1222,7 +1223,7 @@ class MainWindow(QMainWindow):
 
         interface_group = QGroupBox("Interface"); interface_layout = QHBoxLayout(interface_group)
         interface_layout.addWidget(QLabel("Máximo de linhas no registro")); interface_layout.addStretch()
-        self.log_limit_input = QSpinBox(); self.log_limit_input.setRange(1, 100000); self.log_limit_input.setValue(app_config.max_log_lines); self.log_limit_input.setToolTip("Limita apenas o histórico exibido na aba Atividade"); self.log_limit_input.valueChanged.connect(self.update_log_limit)
+        self.log_limit_input = ScrollSafeSpinBox(); self.log_limit_input.setRange(1, 100000); self.log_limit_input.setValue(app_config.max_log_lines); self.log_limit_input.setToolTip("Limita apenas o histórico exibido na aba Atividade"); self.log_limit_input.valueChanged.connect(self.update_log_limit)
         interface_layout.addWidget(self.log_limit_input)
         layout.addWidget(interface_group); layout.addStretch()
         scroll.setWidget(content); outer_layout.addWidget(scroll); return tab
@@ -1277,7 +1278,7 @@ class MainWindow(QMainWindow):
         self.stock_selected_asset_label.setStyleSheet("color: #9aa7ba;")
         order_layout.addWidget(self.stock_selected_asset_label); order_layout.addStretch()
         order_layout.addWidget(QLabel("Qtd."))
-        self.stock_quantity_input = QSpinBox(); self.stock_quantity_input.setRange(1, 9_999); self.stock_quantity_input.setValue(1)
+        self.stock_quantity_input = ScrollSafeSpinBox(); self.stock_quantity_input.setRange(1, 9_999); self.stock_quantity_input.setValue(1)
         self.stock_use_max_checkbox = QCheckBox("Usar máximo")
         self.stock_use_max_checkbox.stateChanged.connect(self._toggle_stock_maximum)
         self.stock_buy_button = QPushButton("Comprar"); self.stock_buy_button.setObjectName("primaryButton")
