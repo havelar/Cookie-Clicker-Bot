@@ -1,11 +1,10 @@
 """Estratégia única baseada em preço absoluto e tendência do Stock Market."""
 import math
-from dataclasses import replace
 from typing import Callable, List, Optional, Sequence
 
 from app.bridge.js_bridge import CookieClickerBridge
 from app.core.market_history import MarketHistoryStore
-from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
+from app.core.stock_policy import asset_limits
 from app.models.stock_market import (
     StockAsset,
     StockMarketAutomationResult,
@@ -95,23 +94,6 @@ class StockMarketAutomation:
             )
             for asset in snapshot.assets
         )
-        # O achievement considera o saldo do jogo, não o valor de posições abertas.
-        # Se a liquidação lucrativa alcança a meta, não espera novos picos.
-        safe_assets = {
-            asset.asset_id: asset for asset, signal in zip(snapshot.assets, signals)
-            if asset.owned > 0 and signal.exit_target is not None and asset.price > signal.exit_target
-        }
-        goal_reachable = (
-            not snapshot.gaseous_assets_won and snapshot.profit is not None
-            and snapshot.profit < GASEOUS_ASSETS_TARGET
-            and snapshot.profit + sum(asset.price * asset.owned for asset in safe_assets.values())
-            >= GASEOUS_ASSETS_TARGET
-        )
-        if goal_reachable:
-            signals = tuple(
-                replace(signal, is_exit_candidate=True, decision_reason="realizar lucro para Gaseous assets")
-                if signal.asset_id in safe_assets else signal for signal in signals
-            )
         entries = [signal for signal in signals if signal.is_entry_candidate]
         exits = [signal for signal in signals if signal.is_exit_candidate]
         blocked = [
@@ -133,23 +115,17 @@ class StockMarketAutomation:
                 if order.success and order.stock_after == 0:
                     self.history_store.clear_position_peak(signal.asset_id)
                     self.history_store.clear_position_cost(signal.asset_id)
-            if orders and goal_reachable:
-                snapshot = self.bridge.get_stock_market_snapshot()
-            goal_complete = snapshot.gaseous_assets_won or (
-                snapshot.profit is not None and snapshot.profit >= GASEOUS_ASSETS_TARGET
-            )
-            if not goal_complete and not goal_reachable:
-                for signal in sorted(entries, key=lambda item: item.price):
-                    if should_stop():
-                        break
-                    order = self.bridge.buy_stock_max(
-                        signal.asset_id, price_limit=limits[signal.asset_id][0], require_empty=True,
-                    )
-                    orders.append(order)
-                    self.history_store.record_purchase(order)
-                    self._log_trade("compra", signal, order)
+            for signal in sorted(entries, key=lambda item: item.price):
+                if should_stop():
+                    break
+                order = self.bridge.buy_stock_max(
+                    signal.asset_id, price_limit=limits[signal.asset_id][0], require_empty=True,
+                )
+                orders.append(order)
+                self.history_store.record_purchase(order)
+                self._log_trade("compra", signal, order)
             self._log_newly_blocked_sales(blocked)
-            if orders and not goal_reachable:
+            if orders:
                 snapshot = self.bridge.get_stock_market_snapshot()
         else:
             self._logged_blocked_sales.clear()

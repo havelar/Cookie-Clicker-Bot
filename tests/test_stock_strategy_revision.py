@@ -1,4 +1,4 @@
-"""Regressões da estratégia de desconto, custos reais e meta do achievement."""
+"""Regressões da estratégia contínua de desconto e custos reais."""
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -6,7 +6,7 @@ import unittest
 
 from app.core.market_history import MarketHistoryStore
 from app.core.stock_market import StockMarketAutomation
-from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
+from app.core.stock_policy import asset_limits
 from app.models.stock_market import StockAsset, StockMarketSnapshot, StockMarketStatus, StockTradeResult
 
 
@@ -99,7 +99,6 @@ class StockStrategyRevisionTests(unittest.TestCase):
         self.assertEqual(len(result.orders), 1)
         self.assertEqual(len(bridge.calls), 1)
 
-
     def test_discount_buys_max_after_a_falling_asset_recovers_enough(self):
         recovered = StockAsset(
             1, "Chocolate", "CHC", 3.30, 0, 100,
@@ -191,41 +190,59 @@ class StockStrategyRevisionTests(unittest.TestCase):
             ("sell", 0, {"minimum_price": 24, "expected_purchase_price": 20}),
         ])
 
-    def test_goal_liquidates_profitable_stock_without_trend_and_does_not_rebuy(self):
+    def test_near_achievement_does_not_force_sale_or_block_buy(self):
         held = StockAsset(0, "Cereals", "CRL", 15, 10, 10, last_bought_price=5)
         cheap = StockAsset(
             1, "Chocolate", "CHC", 10, 0, 10,
             price_history=(10, 10, 10, 10, 10, 10),
         )
-        before = snapshot(held, cheap, profit=GASEOUS_ASSETS_TARGET - 150)
-        after = snapshot(replace(held, owned=0), cheap, profit=GASEOUS_ASSETS_TARGET, won=True)
+        before = snapshot(held, cheap, profit=31_536_000 - 150)
+        after = snapshot(held, replace(cheap, owned=10), profit=31_536_000 - 250)
         bridge = RevisionBridge([before, after])
 
         result = self.automation(bridge).run_cycle(20, 80)
 
-        self.assertEqual([call[0:2] for call in bridge.calls], [("sell", 0)])
-        self.assertIn("Gaseous assets", result.signals[0].decision_reason)
-        self.assertEqual(result.snapshot.profit, 31_536_000)
+        self.assertEqual([call[0:2] for call in bridge.calls], [("buy", 1)])
+        self.assertFalse(result.signals[0].is_exit_candidate)
+        self.assertTrue(result.signals[1].is_entry_candidate)
 
-    def test_completed_goal_does_not_open_new_positions(self):
-        cheap = StockAsset(0, "Cereals", "CRL", 10, 0, 10)
-        for profit, won in ((GASEOUS_ASSETS_TARGET, False), (10, True)):
+    def test_completed_achievement_and_high_profit_keep_opening_positions(self):
+        cheap = StockAsset(0, "Cereals", "CRL", 10, 0, 10,
+                           price_history=(10, 10, 10, 10, 10, 10))
+        for profit, won in ((31_536_000, False), (100_000_000, False), (10, True), (None, True)):
             with self.subTest(profit=profit, won=won):
-                bridge = RevisionBridge([snapshot(cheap, profit=profit, won=won)])
-                self.automation(bridge).run_cycle(20, 80)
-                self.assertEqual(bridge.calls, [])
+                before = snapshot(cheap, profit=profit, won=won)
+                bridge = RevisionBridge([before, before, replace(before, tick=101), replace(before, tick=101)])
+                automation = self.automation(bridge)
+                automation.run_cycle(20, 80)
+                automation.run_cycle(20, 80)
+                self.assertEqual([call[:2] for call in bridge.calls], [("buy", 0), ("buy", 0)])
 
-    def test_auto_off_only_analyzes_even_when_goal_can_be_reached(self):
+    def test_completed_achievement_still_sells_on_profitable_trailing_stop(self):
+        held = StockAsset(0, "Cereals", "CRL", 100, 10, 10, last_bought_price=10)
+        fallen = replace(held, price=90)
+        bridge = RevisionBridge([
+            snapshot(held, profit=100_000_000, won=True),
+            snapshot(fallen, tick=101, profit=100_000_000, won=True),
+            snapshot(replace(fallen, owned=0), tick=101, profit=100_000_900, won=True),
+        ])
+        automation = self.automation(bridge)
+        self.assertEqual(automation.run_cycle(20, 80).orders, ())
+        result = automation.run_cycle(20, 80)
+        self.assertTrue(result.signals[0].is_exit_candidate)
+        self.assertEqual([call[:2] for call in bridge.calls], [("sell", 0)])
+
+    def test_auto_off_only_analyzes_even_after_achievement(self):
         held = StockAsset(0, "Cereals", "CRL", 15, 10, 10, last_bought_price=5)
         cheap = StockAsset(
             1, "Chocolate", "CHC", 10, 0, 10,
             price_history=(10, 10, 10, 10, 10, 10),
         )
-        bridge = RevisionBridge([snapshot(held, cheap, profit=GASEOUS_ASSETS_TARGET - 150)])
+        bridge = RevisionBridge([snapshot(held, cheap, profit=100_000_000, won=True)])
 
         result = self.automation(bridge).run_cycle(20, 80, execute_orders=False)
 
-        self.assertTrue(result.signals[0].is_exit_candidate)
+        self.assertFalse(result.signals[0].is_exit_candidate)
         self.assertTrue(result.signals[1].is_entry_candidate)
         self.assertEqual(bridge.calls, [])
 

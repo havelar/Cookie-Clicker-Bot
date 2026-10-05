@@ -18,7 +18,7 @@ from app.core.combo import ComboAutomation
 from app.core.simple_farm import SimpleFarmAutomation
 from app.core.fazendeira import Fazendeira
 from app.core.stock_market import StockMarketAutomation
-from app.core.stock_policy import GASEOUS_ASSETS_TARGET, asset_limits
+from app.core.stock_policy import asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
 from app.models.garden import GardenCycleResult
 from app.models.auto_ascensao import RelatorioAutoAscensao
@@ -1237,7 +1237,6 @@ class MainWindow(QMainWindow):
         self.stock_total_profit_label = QLabel("Lucro total: —")
         self.stock_total_profit_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
         self.stock_total_profit_label.setToolTip("Valor atual menos o valor no início desta sessão")
-        self.stock_goal_label = QLabel("Meta: —")
         self.stock_toggle = AutomationControl("Stock Market")
         self.stock_toggle.setToolTip("Ligar negocia automaticamente. Desligar impede novas ordens; a leitura do mercado continua.")
         self.stock_toggle.requested.connect(self._toggle_stock_auto_trade)
@@ -1249,7 +1248,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(toolbar)
         totals = QHBoxLayout()
         totals.addWidget(self.stock_total_profit_label)
-        totals.addWidget(self.stock_goal_label)
         totals.addStretch()
         layout.addLayout(totals)
 
@@ -1489,7 +1487,6 @@ class MainWindow(QMainWindow):
         self.stock_table.setRowCount(0)
         if not snapshot.status.available:
             self.stock_total_profit_label.setText("Lucro total: —")
-            self.stock_goal_label.setText("Meta: —")
             self.stock_candidates_label.setText("")
             self._show_stock_feedback(False, snapshot.status.message)
             self.stock_table.setSortingEnabled(True)
@@ -1497,16 +1494,6 @@ class MainWindow(QMainWindow):
             return
         total_profit = self.stock_automation.total_profit(snapshot) if self.stock_automation else None
         self.stock_total_profit_label.setText(self._format_stock_total_profit(total_profit))
-        if snapshot.gaseous_assets_won:
-            self.stock_goal_label.setText("Meta: concluída")
-        elif snapshot.profit is not None:
-            self.stock_goal_label.setText(f"Meta: {max(0, snapshot.profit) / GASEOUS_ASSETS_TARGET:.1%}")
-        else:
-            self.stock_goal_label.setText("Meta: —")
-        self.stock_goal_label.setToolTip(
-            f"Saldo do jogo: {self._format_stock_amount(snapshot.profit)} / $31,536,000.00\n"
-            "O achievement considera este saldo, que já desconta compras; ações abertas não contam."
-        )
         assets_by_price = sorted(snapshot.assets, key=lambda asset: asset.price)
         self.stock_table.setRowCount(len(assets_by_price))
         trend_ticks = int(self.stock_trend_ticks_input.value())

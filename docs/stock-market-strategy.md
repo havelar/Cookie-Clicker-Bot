@@ -1,4 +1,4 @@
-# Stock Market: limites por ativo e meta de lucro
+# Stock Market: negociação contínua e limites por ativo
 
 Referência consultada em 26/09/2026: [código oficial do minigame](https://orteil.dashnet.org/cookieclicker/minigameMarket.js), especialmente `getRestingVal`, `tick`, `buyGood` e `sellGood`.
 
@@ -31,6 +31,6 @@ Posições antigas não contêm a taxa histórica no save; para lotes únicos id
 
 O histórico nativo tem prioridade nas decisões. Períodos separados por reinício de ticks recebem identificadores distintos, evitando preços antigos no lugar dos novos. Custos e picos ficam no JSON existente. O pico é zerado depois de uma liquidação confirmada.
 
-**Meta** mostra o saldo nativo em relação a $31.536.000; **Lucro total** continua sendo a variação patrimonial da sessão, que é outra métrica. Se a venda das posições lucrativas já permite alcançar o achievement, o bot tenta liquidá-las sem esperar outra reversão. Compras automáticas param ao atingir a meta ou detectar o achievement. Tudo depende do toggle **Automação**; os ajustes menos frequentes ficam na aba **Configurações**.
+**Lucro total** mostra a variação patrimonial da sessão. A automação continua comprando e vendendo enquanto estiver ligada, independentemente do saldo acumulado ou de achievements já conquistados. Não há meta de encerramento nem liquidação antecipada para alcançar uma conquista: todas as ordens seguem os sinais e limites da estratégia. O toggle **Ligar/Desligar** controla as negociações; os ajustes menos frequentes ficam na aba **Configurações**.
 
 Nenhuma regra assegura lucro futuro, execução em 100% dos casos ou prazo mínimo num mercado aleatório. As proteções limitam o preço aceito nas vendas automáticas; uma posição pode ficar imobilizada à espera de recuperação. Capacidade de estoque, caixa disponível, brokers e tempo de jogo aberto também limitam o ritmo; esta alteração não compra prédios, brokers nem executa ascensão.
