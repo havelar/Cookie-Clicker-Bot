@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 from app.core.garden_catalog import GARDEN_CATALOG, TARGET_SEED_KEYS, GardenRecipe
 from app.models.garden import (
@@ -301,8 +301,10 @@ class Fazendeira:
         dry_run: bool = True,
         automation_enabled: bool = False,
         green_aching_thumb_enabled: bool = False,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> GardenCycleResult:
         """Simula ou executa um ciclo; sem autorização, jamais muta o jogo."""
+        should_stop = should_stop or (lambda: False)
         snapshot = self.capture_snapshot()
         plan = self.build_plan(
             snapshot, green_aching_thumb_enabled=green_aching_thumb_enabled,
@@ -316,7 +318,7 @@ class Fazendeira:
                 if required > snapshot.cookies:
                     detail += " A troca do layout aguardará dinheiro; colheitas maduras continuam."
                 plan = replace(plan, explanation=plan.explanation + detail, waiting=plan.waiting or required > snapshot.cookies)
-        if dry_run or not automation_enabled or not snapshot.status.available:
+        if dry_run or not automation_enabled or not snapshot.status.available or should_stop():
             return GardenCycleResult(snapshot, plan, True, ())
 
         # ``M.nextStep`` muda somente quando o Garden processa um tick. Ele é
@@ -330,12 +332,14 @@ class Fazendeira:
         results = []
         layout = []
         for action in plan.actions:
+            if should_stop():
+                break
             if action.kind == "plant" or (action.kind == "harvest" and not action.require_mature):
                 layout.append(action)
             else:
                 # Descobertas e colheitas maduras não dependem de pagar o próximo layout.
                 results.append(self._execute_action(action))
-        if layout:
+        if layout and not should_stop():
             results.extend(self.bridge.execute_garden_layout(tuple(layout)))
         budget_wait = any(result.waiting and result.reason == "insufficient_funds" for result in results)
         for result in results:

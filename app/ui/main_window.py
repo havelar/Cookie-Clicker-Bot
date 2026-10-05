@@ -2,12 +2,13 @@
 import sys
 import time
 import ctypes
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QDoubleSpinBox, QSpinBox, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
+from PyQt5.QtWidgets import (QDoubleSpinBox, QSpinBox, QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
 
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
@@ -24,6 +25,7 @@ from app.models.auto_ascensao import RelatorioAutoAscensao
 from app.models.combo import ConfiguracaoCombo, EstadoCombo, RelatorioCombo
 from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
+from app.ui.automation_control import AutomationControl
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
 from app.utils.logger import logger
@@ -128,10 +130,14 @@ class MainWindow(QMainWindow):
         self.log_emitter, self.runner = LogSignalEmitter(), None
         self.backup_manager, self.backup_dialog = BackupManager(), None
         self._stock_worker: Optional[StockMarketWorker] = None
+        self._stock_stop = threading.Event()
+        self._stock_stop.set()
         self._stock_available = False
         self._refresh_after_order = False
         self._stock_snapshot: Optional[StockMarketSnapshot] = None
         self._garden_worker: Optional[StockMarketWorker] = None
+        self._garden_stop = threading.Event()
+        self._garden_stop.set()
         self._garden_available = False
         self._garden_run_when_idle = False
         self._auto_ascension_worker: Optional[AutoAscensaoWorker] = None
@@ -247,7 +253,7 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit(); self.log_text.setReadOnly(True); self.log_text.setMinimumHeight(230); group_layout.addWidget(self.log_text); layout.addWidget(group); return tab
 
     def _garden_tab(self):
-        """Cria a visão de progresso, planejamento e autorização do Garden."""
+        """Cria a visão de progresso, planejamento e execução do Garden."""
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 14, 14, 14); layout.setSpacing(10)
         toolbar = QHBoxLayout()
         self.garden_status_label = QLabel("Garden: carregando")
@@ -258,22 +264,27 @@ class MainWindow(QMainWindow):
         self.garden_simulate_button = QPushButton("Simular próximo tick")
         self.garden_simulate_button.setObjectName("primaryButton")
         self.garden_simulate_button.clicked.connect(self.simulate_garden)
-        self.garden_auto_checkbox = QCheckBox("Automação real")
-        self.garden_auto_checkbox.setToolTip(
-            "Uma vez por tick, preserva o que está correto, remove plantas divergentes e monta todo o layout da meta."
-        )
-        self.garden_auto_checkbox.setChecked(automation_config.enable_garden_automation)
-        self.garden_auto_checkbox.stateChanged.connect(self._toggle_garden_automation)
+        self.garden_toggle = AutomationControl("Garden")
+        self.garden_toggle.setToolTip("Ligar inicia o Garden. Desligar encerra após a ação em andamento. A prévia não executa ações.")
+        self.garden_toggle.requested.connect(self._toggle_garden_automation)
         self.garden_thumbcorn_checkbox = QCheckBox("Green, aching thumb")
         self.garden_thumbcorn_checkbox.setToolTip(
             "Prioriza Thumbcorn até obter a conquista de colher 1.000 plantas maduras. "
-            "Ações reais exigem que ‘Automação real’ esteja habilitada."
+            "Use Ligar para executar esta estratégia; desligada, ela aparece apenas na prévia."
         )
         self.garden_thumbcorn_checkbox.setChecked(automation_config.enable_green_aching_thumb)
         self.garden_thumbcorn_checkbox.stateChanged.connect(self._toggle_green_aching_thumb)
-        toolbar.addWidget(self.garden_status_label); toolbar.addWidget(self.garden_progress_label); toolbar.addStretch()
-        toolbar.addWidget(self.garden_refresh_button); toolbar.addWidget(self.garden_simulate_button); toolbar.addWidget(self.garden_thumbcorn_checkbox); toolbar.addWidget(self.garden_auto_checkbox)
+        toolbar.addWidget(self.garden_status_label)
+        toolbar.addWidget(self.garden_progress_label)
+        toolbar.addStretch()
+        toolbar.addWidget(self.garden_toggle)
         layout.addLayout(toolbar)
+        actions = QHBoxLayout()
+        actions.addWidget(self.garden_refresh_button)
+        actions.addWidget(self.garden_simulate_button)
+        actions.addWidget(self.garden_thumbcorn_checkbox)
+        actions.addStretch()
+        layout.addLayout(actions)
 
         goal_group = QGroupBox("Próxima meta prioritária"); goal_layout = QVBoxLayout(goal_group)
         self.garden_goal_label = QLabel("Aguardando snapshot do Garden.")
@@ -421,27 +432,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(status_group, 1)
 
         controls = QHBoxLayout()
-        self.combo_enable_checkbox = QCheckBox("Habilitar execução real")
-        self.combo_enable_checkbox.setChecked(automation_config.enable_combo_automation)
-        self.combo_enable_checkbox.stateChanged.connect(self._toggle_combo_enabled)
+        self.combo_toggle = AutomationControl("Combo Endgame")
+        self.combo_toggle.requested.connect(lambda enabled: self.start_combo() if enabled else self.stop_combo())
         self.combo_preview_button = QPushButton("Atualizar prévia")
         self.combo_preview_button.clicked.connect(self.refresh_combo_preview)
-        self.combo_start_button = QPushButton("Iniciar e deixar rodando")
-        self.combo_start_button.setObjectName("primaryButton")
-        self.combo_start_button.clicked.connect(self.start_combo)
         self.combo_resume_button = QPushButton("Retomar combo")
         self.combo_resume_button.setEnabled(False)
         self.combo_resume_button.clicked.connect(self.resume_combo)
-        self.combo_stop_button = QPushButton("Parar imediatamente")
-        self.combo_stop_button.setObjectName("dangerButton")
-        self.combo_stop_button.setEnabled(False)
-        self.combo_stop_button.clicked.connect(self.stop_combo)
-        controls.addWidget(self.combo_enable_checkbox)
         controls.addStretch()
         controls.addWidget(self.combo_preview_button)
-        controls.addWidget(self.combo_start_button)
+        controls.addWidget(self.combo_toggle)
         controls.addWidget(self.combo_resume_button)
-        controls.addWidget(self.combo_stop_button)
         layout.addLayout(controls)
         scroll.setWidget(content)
         self.combo_scroll_area = scroll
@@ -465,7 +466,7 @@ class MainWindow(QMainWindow):
         guarantee = QLabel(
             "Farm de apoio: Garden e Banco continuam ativos. Preserva a maior parte do caixa, "
             "prioriza upgrades de produção em % e compra construções por retorno de CpS. "
-            "Aproveita buffs com uma magia, sem vender torres, gastar Sugar Lumps, usar loans "
+            "Usa Dual Cast quando a recompra das torres cabe no orçamento, sem gastar Sugar Lumps, usar loans "
             "ou alterar Garden e Pantheon. Passe o mouse nas opções para ver a explicação."
         )
         guarantee.setWordWrap(True)
@@ -497,7 +498,7 @@ class MainWindow(QMainWindow):
         self.simple_farm_min_buff_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Tempo mínimo restante do buff", self.simple_farm_min_buff_input)
         self.simple_farm_reserve_input = QDoubleSpinBox()
-        self.simple_farm_reserve_input.setRange(60.0, 99.0)
+        self.simple_farm_reserve_input.setRange(15.0, 99.0)
         self.simple_farm_reserve_input.setDecimals(0)
         self.simple_farm_reserve_input.setValue(automation_config.simple_farm_cash_reserve_percent)
         self.simple_farm_reserve_input.setSuffix(" %")
@@ -511,11 +512,11 @@ class MainWindow(QMainWindow):
         self.simple_farm_investment_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Compra máxima a cada 15 s", self.simple_farm_investment_input)
         tips = {
-            self.simple_farm_search_input: "Quantas magias futuras prever sem gastar recursos. Busca um Click Frenzy único. Para avançar até ele, usa Haggler's Charm só com mana cheia e fora dos buffs. Sem previsão, o farm segue coletando e comprando.",
+            self.simple_farm_search_input: "Quantas magias futuras prever sem gastar recursos. Prioriza Click Frenzy junto de outro multiplicador e só usa Click Frenzy isolado quando não encontra um par viável. Dual Cast vende só as torres necessárias e recompra todas antes de abrir os cookies; não repete Click Frenzy. Para avançar até o par, usa Haggler's Charm só com mana cheia e fora dos buffs. Sem previsão, o farm segue coletando e comprando.",
             self.simple_farm_interval_input: "Frequência de leitura do jogo, em segundos. 0,2 s reage rápido aos Golden Cookies. Compras têm intervalo separado de 15 s; esta opção não aumenta o orçamento.",
             self.simple_farm_min_buff_input: "Tempo que um multiplicador de produção natural ainda precisa durar para receber um Click Frenzy de magia. Não lança outro se Click Frenzy ou Dragonflight já estiver ativo.",
-            self.simple_farm_reserve_input: "Parte do maior saldo observado nesta execução que o Simple Farm não gasta (padrão: 80%; mínimo: 60%). Garden e Banco podem usar essa reserva. Se gastarem, o farm espera o caixa se recuperar. Também preserva 6.000 vezes o CpS para Lucky.",
-            self.simple_farm_investment_input: "Limite total por compra a cada 15 segundos (padrão: 5% do saldo atual), sempre abaixo do excedente da reserva. Até metade vai para um upgrade; o restante pode comprar até 25 construções. Não é uma meta de gasto; durante buffs, as compras aguardam.",
+            self.simple_farm_reserve_input: "Parte do maior saldo observado nesta execução que o Simple Farm não gasta (padrão: 80%; mínimo: 15%). Garden e Banco podem usar essa reserva. Se gastarem, o farm espera o caixa se recuperar. Também preserva 6.000 vezes o CpS para Lucky. O valor escolhido é salvo automaticamente.",
+            self.simple_farm_investment_input: "Limite de gasto a cada 15 segundos para upgrades e construções (padrão: 5% do saldo atual), sempre abaixo do excedente da reserva. Até metade vai para um upgrade; o restante pode comprar até 25 construções. Não é uma meta de gasto; durante buffs, compras de produção aguardam. A recompra de torres do Dual Cast tem regra própria: pode usar o excedente inteiro, mas precisa manter toda a reserva de caixa e o valor de Lucky.",
         }
         for field, tip in tips.items():
             field.setToolTip(tip)
@@ -558,23 +559,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(status_group, 1)
 
         controls = QHBoxLayout()
-        self.simple_farm_enable_checkbox = QCheckBox("Habilitar execução real")
-        self.simple_farm_enable_checkbox.setChecked(automation_config.enable_simple_farm)
-        self.simple_farm_enable_checkbox.stateChanged.connect(self._toggle_simple_farm_enabled)
+        self.simple_farm_toggle = AutomationControl("Simple Farm")
+        self.simple_farm_toggle.requested.connect(lambda enabled: self.start_simple_farm() if enabled else self.stop_simple_farm())
         self.simple_farm_preview_button = QPushButton("Atualizar prévia")
         self.simple_farm_preview_button.clicked.connect(self.refresh_simple_farm_preview)
-        self.simple_farm_start_button = QPushButton("Iniciar Simple Farm")
-        self.simple_farm_start_button.setObjectName("primaryButton")
-        self.simple_farm_start_button.clicked.connect(self.start_simple_farm)
-        self.simple_farm_stop_button = QPushButton("Parar")
-        self.simple_farm_stop_button.setObjectName("dangerButton")
-        self.simple_farm_stop_button.setEnabled(False)
-        self.simple_farm_stop_button.clicked.connect(self.stop_simple_farm)
-        controls.addWidget(self.simple_farm_enable_checkbox)
         controls.addStretch()
         controls.addWidget(self.simple_farm_preview_button)
-        controls.addWidget(self.simple_farm_start_button)
-        controls.addWidget(self.simple_farm_stop_button)
+        controls.addWidget(self.simple_farm_toggle)
         layout.addLayout(controls)
         scroll.setWidget(content)
         self.simple_farm_scroll_area = scroll
@@ -600,11 +591,6 @@ class MainWindow(QMainWindow):
         automation_config.simple_farm_investment_percent = self.simple_farm_investment_input.value()
         save_automation_settings()
 
-    def _toggle_simple_farm_enabled(self, state: int):
-        automation_config.enable_simple_farm = bool(state)
-        save_automation_settings()
-        logger.info("Simple Farm: execução real %s", "habilitada" if state else "desabilitada")
-
     def _simple_farm_configuration(self) -> ConfiguracaoSimpleFarm:
         self._save_simple_farm_settings()
         return ConfiguracaoSimpleFarm(
@@ -627,9 +613,6 @@ class MainWindow(QMainWindow):
     def start_simple_farm(self, _checked: bool = False):
         if not self.bridge or not self.runner:
             self._simple_farm_failed("Bridge ou runner não está disponível.")
-            return
-        if not self.simple_farm_enable_checkbox.isChecked():
-            self._simple_farm_failed("Marque “Habilitar execução real” antes de iniciar.")
             return
         if self._combo_worker and self._combo_worker.isRunning():
             return
@@ -666,7 +649,7 @@ class MainWindow(QMainWindow):
 
     def stop_simple_farm(self, _checked: bool = False):
         if self._combo_worker and self._combo_worker.isRunning():
-            self.simple_farm_stop_button.setEnabled(False)
+            self.simple_farm_toggle.set_stopping()
             self._combo_worker.stop()
             self.simple_farm_message_label.setText(
                 "Parada solicitada; aguardando a ação atômica atual terminar."
@@ -687,7 +670,11 @@ class MainWindow(QMainWindow):
         if not isinstance(value, RelatorioSimpleFarm):
             return
         self.simple_farm_state_label.setText(value.estado.value)
-        self.simple_farm_plan_label.setText(value.plano.resumo if value.plano else "—")
+        opportunity = value.plano.resumo if value.plano else "—"
+        if value.plano and value.plano.decisao:
+            opportunity += f" — {value.plano.decisao}"
+        self.simple_farm_plan_label.setText(opportunity)
+        self.simple_farm_plan_label.setToolTip(value.plano.decisao if value.plano else "")
         mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
         self.simple_farm_resources_label.setText(
             f"Spells: {value.cast_atual if value.cast_atual is not None else '—'} | "
@@ -734,20 +721,16 @@ class MainWindow(QMainWindow):
         for widget in (
             self.simple_farm_search_input, self.simple_farm_interval_input,
             self.simple_farm_min_buff_input, self.simple_farm_reserve_input,
-            self.simple_farm_investment_input, self.simple_farm_enable_checkbox,
-            self.simple_farm_preview_button, self.simple_farm_start_button,
-            self.combo_enable_checkbox, self.combo_preview_button, self.combo_start_button,
+            self.simple_farm_investment_input,
+            self.simple_farm_preview_button, self.simple_farm_toggle,
+            self.combo_preview_button, self.combo_toggle,
         ):
             widget.setEnabled(not busy)
-        self.simple_farm_stop_button.setEnabled(busy and not preview)
+        self.simple_farm_toggle.set_running(busy and not preview)
+        self.simple_farm_toggle.setEnabled(not (busy and preview))
         if not preview:
             # A ascensão é incompatível com um farm paralelo.
-            self.auto_ascension_start_button.setEnabled(not busy)
-
-    def _toggle_combo_enabled(self, state: int):
-        automation_config.enable_combo_automation = bool(state)
-        save_automation_settings()
-        logger.info("Combo: execução real %s", "habilitada" if state else "desabilitada")
+            self.auto_ascension_toggle.setEnabled(not busy)
 
     def _combo_configuration(self) -> ConfiguracaoCombo:
         self._save_combo_settings()
@@ -776,9 +759,6 @@ class MainWindow(QMainWindow):
     def start_combo(self, _checked: bool = False):
         if not self.bridge or not self.runner:
             self._combo_failed("Bridge ou runner não está disponível.")
-            return
-        if not self.combo_enable_checkbox.isChecked():
-            self._combo_failed("Marque “Habilitar execução real” antes de iniciar.")
             return
         if self._combo_worker and self._combo_worker.isRunning():
             return
@@ -864,7 +844,7 @@ class MainWindow(QMainWindow):
 
     def stop_combo(self, _checked: bool = False):
         if self._combo_worker and self._combo_worker.isRunning():
-            self.combo_stop_button.setEnabled(False)
+            self.combo_toggle.set_stopping()
             self.combo_resume_button.setEnabled(False)
             self._combo_worker.stop()
             self.combo_message_label.setText("Parada solicitada; aguardando a ação atômica atual terminar.")
@@ -946,22 +926,26 @@ class MainWindow(QMainWindow):
             self.combo_search_input, self.combo_lumps_input, self.combo_bs_input,
             self.combo_interval_input, self.combo_min_buff_input, self.combo_wait_input,
             self.combo_sugar_checkbox, self.combo_loans_checkbox, self.combo_pause_checkbox,
-            self.combo_enable_checkbox, self.combo_preview_button, self.combo_start_button,
+            self.combo_preview_button, self.combo_toggle,
             self.simple_farm_search_input, self.simple_farm_interval_input,
             self.simple_farm_min_buff_input, self.simple_farm_reserve_input,
-            self.simple_farm_investment_input, self.simple_farm_enable_checkbox,
-            self.simple_farm_preview_button, self.simple_farm_start_button,
+            self.simple_farm_investment_input,
+            self.simple_farm_preview_button, self.simple_farm_toggle,
         ):
             widget.setEnabled(not busy)
-        self.combo_stop_button.setEnabled(busy and not preview)
+        self.combo_toggle.set_running(busy and not preview)
+        self.combo_toggle.setEnabled(not (busy and preview))
+        if not preview:
+            self.stock_toggle.set_paused(busy)
+            self.garden_toggle.set_paused(busy)
         self.combo_resume_button.setEnabled(False)
         if not preview:
             for widget in (
                 self.clicker_button, self.golden_checkbox, self.fortune_checkbox,
                 self.reindeer_checkbox, self.wrinkler_checkbox,
                 self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox,
-                self.garden_auto_checkbox, self.garden_thumbcorn_checkbox,
-                self.auto_ascension_start_button, self.stock_auto_trade_checkbox,
+                self.garden_thumbcorn_checkbox,
+                self.auto_ascension_toggle,
             ):
                 widget.setEnabled(not busy)
 
@@ -974,7 +958,7 @@ class MainWindow(QMainWindow):
 
         warning = QLabel(
             "A ascensão altera permanentemente o save. A execução real só começa "
-            "na tela de ascensão, exige habilitação e pede confirmação a cada início."
+            "na tela de ascensão. Use Ligar para começar e Desligar para encerrar."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #e8b766; font-weight: 600;")
@@ -1040,26 +1024,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(status_group, 1)
 
         controls = QHBoxLayout()
-        self.auto_ascension_enable_checkbox = QCheckBox("Habilitar automação real")
-        self.auto_ascension_enable_checkbox.setChecked(automation_config.enable_auto_ascension)
-        self.auto_ascension_enable_checkbox.stateChanged.connect(self._toggle_auto_ascension_enabled)
-        self.auto_ascension_simulation_checkbox = QCheckBox("Modo simulação")
-        self.auto_ascension_simulation_checkbox.setChecked(True)
+        self.auto_ascension_toggle = AutomationControl("Auto Ascensão")
+        self.auto_ascension_toggle.requested.connect(lambda enabled: self.start_auto_ascension() if enabled else self.stop_auto_ascension())
         self.auto_ascension_preview_button = QPushButton("Atualizar prévia")
         self.auto_ascension_preview_button.clicked.connect(self.refresh_auto_ascension_preview)
-        self.auto_ascension_start_button = QPushButton("Iniciar")
-        self.auto_ascension_start_button.setObjectName("primaryButton")
-        self.auto_ascension_start_button.clicked.connect(self.start_auto_ascension)
-        self.auto_ascension_stop_button = QPushButton("Parar imediatamente")
-        self.auto_ascension_stop_button.setObjectName("dangerButton")
-        self.auto_ascension_stop_button.setEnabled(False)
-        self.auto_ascension_stop_button.clicked.connect(self.stop_auto_ascension)
-        controls.addWidget(self.auto_ascension_enable_checkbox)
-        controls.addWidget(self.auto_ascension_simulation_checkbox)
         controls.addStretch()
         controls.addWidget(self.auto_ascension_preview_button)
-        controls.addWidget(self.auto_ascension_start_button)
-        controls.addWidget(self.auto_ascension_stop_button)
+        controls.addWidget(self.auto_ascension_toggle)
         layout.addLayout(controls)
         return tab
 
@@ -1075,13 +1046,6 @@ class MainWindow(QMainWindow):
             self.auto_ascension_timeout_input.value()
         )
         save_automation_settings()
-
-    def _toggle_auto_ascension_enabled(self, state: int):
-        automation_config.enable_auto_ascension = bool(state)
-        save_automation_settings()
-        logger.info(
-            f"Auto Ascensão: execução real {'habilitada' if state else 'desabilitada'}"
-        )
 
     def _auto_ascension_configuration(self, simulation: bool) -> ConfiguracaoAutoAscensao:
         self._save_auto_ascension_settings()
@@ -1106,20 +1070,12 @@ class MainWindow(QMainWindow):
         self._run_auto_ascension_worker(automation, preview=True)
 
     def start_auto_ascension(self, _checked: bool = False):
-        """Inicia uma simulação ou, após confirmação, a execução real."""
+        """Liga a automação; a prévia tem um botão independente."""
         if self._combo_exclusive or self._simple_farm_automation is not None:
             self._auto_ascension_failed("Pare o farm/Combo antes de iniciar a Auto Ascensão.")
             return
-        if self.auto_ascension_simulation_checkbox.isChecked():
-            self.refresh_auto_ascension_preview()
-            return
         if not self.bridge:
             self._auto_ascension_failed("Bridge não está disponível.")
-            return
-        if not self.auto_ascension_enable_checkbox.isChecked():
-            self._auto_ascension_failed(
-                "Marque “Habilitar automação real” antes de iniciar."
-            )
             return
         if not self.runner:
             self._auto_ascension_failed("Runner do clicker não está disponível.")
@@ -1161,7 +1117,7 @@ class MainWindow(QMainWindow):
         """Solicita parada cooperativa e bloqueia o início de novas mutações."""
         if self._auto_ascension_worker and self._auto_ascension_worker.isRunning():
             self._auto_ascension_worker.stop()
-            self.auto_ascension_stop_button.setEnabled(False)
+            self.auto_ascension_toggle.set_stopping()
             self.auto_ascension_next_step_label.setText(
                 "Parada solicitada; nenhuma nova ação mutável será iniciada."
             )
@@ -1199,13 +1155,12 @@ class MainWindow(QMainWindow):
             self.auto_ascension_prestige_input,
             self.auto_ascension_interval_input,
             self.auto_ascension_timeout_input,
-            self.auto_ascension_enable_checkbox,
-            self.auto_ascension_simulation_checkbox,
             self.auto_ascension_preview_button,
-            self.auto_ascension_start_button,
+            self.auto_ascension_toggle,
         ):
             control.setEnabled(not busy)
-        self.auto_ascension_stop_button.setEnabled(busy and not preview)
+        self.auto_ascension_toggle.set_running(busy and not preview)
+        self.auto_ascension_toggle.setEnabled(not (busy and preview))
 
     def _settings_tab(self):
         tab = QWidget(); outer_layout = QVBoxLayout(tab); outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -1282,20 +1237,20 @@ class MainWindow(QMainWindow):
         self.stock_total_profit_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
         self.stock_total_profit_label.setToolTip("Valor atual menos o valor no início desta sessão")
         self.stock_goal_label = QLabel("Meta: —")
-        self.stock_auto_trade_checkbox = QCheckBox("Automação")
-        self.stock_auto_trade_checkbox.setToolTip(
-            "Liga ou desliga compras e vendas automáticas em ordens MAX"
-        )
-        self.stock_auto_trade_checkbox.setChecked(automation_config.enable_stock_market_auto_trade)
-        self.stock_auto_trade_checkbox.stateChanged.connect(self._toggle_stock_auto_trade)
+        self.stock_toggle = AutomationControl("Stock Market")
+        self.stock_toggle.setToolTip("Ligar negocia automaticamente. Desligar impede novas ordens; a leitura do mercado continua.")
+        self.stock_toggle.requested.connect(self._toggle_stock_auto_trade)
         toolbar_layout.addWidget(self.stock_status_label)
-        toolbar_layout.addWidget(self.stock_total_profit_label)
-        toolbar_layout.addWidget(self.stock_goal_label)
         toolbar_layout.addStretch()
-        toolbar_layout.addWidget(self.stock_auto_trade_checkbox)
+        toolbar_layout.addWidget(self.stock_toggle)
         self.stock_candidates_label = QLabel()
         self.stock_candidates_label.setStyleSheet("color: #e8b766;")
         layout.addWidget(toolbar)
+        totals = QHBoxLayout()
+        totals.addWidget(self.stock_total_profit_label)
+        totals.addWidget(self.stock_goal_label)
+        totals.addStretch()
+        layout.addLayout(totals)
 
         self.stock_table = QTableWidget(0, 7)
         self.stock_table.setHorizontalHeaderLabels(
@@ -1363,7 +1318,8 @@ class MainWindow(QMainWindow):
         sell_limit = float(self.stock_sell_limit_input.value())
         trend_ticks = int(self.stock_trend_ticks_input.value())
         reversal_percent = float(self.stock_reversal_percent_input.value())
-        execute_orders = self.stock_auto_trade_checkbox.isChecked()
+        stop_event = self._stock_stop
+        execute_orders = self.stock_toggle.running and not stop_event.is_set()
         owned_only_view = self.stock_owned_only_checkbox.isChecked()
         per_asset_limits = {key: dict(value) for key, value in automation_config.stock_market_asset_limits.items()}
         use_reference_prices = automation_config.stock_market_use_reference_prices
@@ -1377,6 +1333,7 @@ class MainWindow(QMainWindow):
                 owned_only_view,
                 per_asset_limits=per_asset_limits,
                 use_reference_prices=use_reference_prices,
+                should_stop=stop_event.is_set,
             ),
             self._display_stock_automation_result,
         )
@@ -1403,12 +1360,22 @@ class MainWindow(QMainWindow):
             automation_config.stock_market_asset_limits, automation_config.stock_market_use_reference_prices,
         )
 
-    def _toggle_stock_auto_trade(self, state: int):
-        automation_config.enable_stock_market_auto_trade = bool(state)
-        save_automation_settings()
-        status = "ativado" if state else "desativado"
-        logger.info(f"Stock Market: automação {status}")
-        self._show_stock_feedback(bool(state), f"Automação {status}.")
+    def _toggle_stock_auto_trade(self, enabled: bool):
+        if enabled:
+            if self._combo_exclusive or not self.bridge or not self.stock_automation:
+                self._show_stock_feedback(False, "Não foi possível ligar: conecte a bridge e aguarde o Combo terminar.")
+                return
+            self._stock_stop = threading.Event()
+            self.stock_toggle.set_running(True)
+            QTimer.singleShot(0, self._on_stock_market_timer)
+        else:
+            self._stock_stop.set()
+            if self._stock_worker and self._stock_worker.isRunning():
+                self.stock_toggle.set_stopping()
+            else:
+                self.stock_toggle.set_running(False)
+        logger.info("Stock Market: %s", "ligada" if enabled else "desligamento solicitado")
+        self._show_stock_feedback(True, "Automação ligada." if enabled else "Novas ordens automáticas interrompidas.")
 
     def _toggle_stock_owned_only_view(self, state: int):
         enabled = bool(state)
@@ -1486,11 +1453,15 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _stock_task_failed(self, message: str):
+        if self.stock_toggle.running:
+            self._toggle_stock_auto_trade(False)
         logger.error(f"Stock Market: falha inesperada no worker: {message}")
         self._show_stock_feedback(False, f"Falha inesperada: {message}")
 
     def _stock_task_finished(self):
         self._stock_worker = None
+        if self.stock_toggle.stopping:
+            self.stock_toggle.set_running(False)
         self._set_stock_busy(False)
         if self._refresh_after_order:
             self._refresh_after_order = False
@@ -1621,12 +1592,14 @@ class MainWindow(QMainWindow):
         if not self.fazendeira or (self._garden_worker and self._garden_worker.isRunning()):
             return
         self._garden_run_when_idle = False
-        enabled = self.garden_auto_checkbox.isChecked()
+        stop_event = self._garden_stop
+        enabled = self.garden_toggle.running and not stop_event.is_set()
         green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
         self._run_garden_task(
             lambda: self.fazendeira.run_cycle(
                 dry_run=not enabled, automation_enabled=enabled,
                 green_aching_thumb_enabled=green_aching_thumb_enabled,
+                should_stop=stop_event.is_set,
             ),
             self._display_garden_result,
         )
@@ -1645,14 +1618,18 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _garden_task_failed(self, message: str):
+        if self.garden_toggle.running:
+            self._toggle_garden_automation(False)
         logger.error(f"Garden: falha inesperada no worker: {message}")
         self._show_garden_feedback(False, f"Falha inesperada: {message}")
         self._schedule_next_garden_tick(None)
 
     def _garden_task_finished(self):
         self._garden_worker = None
+        if self.garden_toggle.stopping:
+            self.garden_toggle.set_running(False)
         self._set_garden_busy(False)
-        if self._garden_run_when_idle and self.garden_auto_checkbox.isChecked():
+        if self._garden_run_when_idle and self.garden_toggle.running:
             QTimer.singleShot(0, self._on_garden_timer)
 
     def _display_garden_result(self, value: object):
@@ -1673,7 +1650,7 @@ class MainWindow(QMainWindow):
             # também a mostra imediatamente, sem nova chamada à bridge.
             if self.fazendeira:
                 plan = self.fazendeira.build_plan(snapshot)
-            if self.garden_auto_checkbox.isChecked():
+            if self.garden_toggle.running:
                 self._garden_run_when_idle = True
         self._schedule_next_garden_tick(snapshot)
         self._garden_available = snapshot.status.available
@@ -1775,27 +1752,32 @@ class MainWindow(QMainWindow):
     def _set_garden_busy(self, busy: bool):
         self.garden_refresh_button.setEnabled(not busy)
         self.garden_simulate_button.setEnabled(not busy)
-        self.garden_auto_checkbox.setEnabled(not busy)
         self.garden_thumbcorn_checkbox.setEnabled(not busy)
         if busy:
             self.garden_feedback_label.setText("Consultando o runtime do Garden em segundo plano...")
             self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
 
-    def _toggle_garden_automation(self, state: int):
-        enabled = bool(state)
-        automation_config.enable_garden_automation = enabled
-        save_automation_settings()
-        status = "habilitada explicitamente" if enabled else "desativada"
-        logger.info(f"Garden: automação real {status}")
-        self._show_garden_feedback(
-            enabled, f"Automação real {status}." if enabled else "Automação real desativada; somente leitura e simulação.",
-        )
+    def _toggle_garden_automation(self, enabled: bool):
         if enabled:
+            if self._combo_exclusive or not self.bridge or not self.fazendeira:
+                self._show_garden_feedback(False, "Não foi possível ligar: conecte a bridge e aguarde o Combo terminar.")
+                return
+            self._garden_stop = threading.Event()
+            self.garden_toggle.set_running(True)
             self.garden_refresh_timer.stop()
             if self._garden_worker and self._garden_worker.isRunning():
                 self._garden_run_when_idle = True
             else:
                 QTimer.singleShot(0, self._on_garden_timer)
+        else:
+            self._garden_stop.set()
+            self._garden_run_when_idle = False
+            if self._garden_worker and self._garden_worker.isRunning():
+                self.garden_toggle.set_stopping()
+            else:
+                self.garden_toggle.set_running(False)
+        logger.info("Garden: %s", "ligada" if enabled else "desligamento solicitado")
+        self._show_garden_feedback(True, "Automação ligada." if enabled else "Novas ações interrompidas; aguardando o lote em andamento terminar.")
 
     def _toggle_green_aching_thumb(self, state: int):
         enabled = bool(state)
@@ -1804,8 +1786,8 @@ class MainWindow(QMainWindow):
         logger.info(
             f"Garden: modo Green, aching thumb {'habilitado' if enabled else 'desativado'}"
         )
-        if enabled and not self.garden_auto_checkbox.isChecked():
-            message = "Modo Green, aching thumb habilitado para prévia; Automação real continua desativada."
+        if enabled and not self.garden_toggle.running:
+            message = "Estratégia Thumbcorn selecionada; use Ligar para executar."
         else:
             message = (
                 "Modo Green, aching thumb habilitado."
@@ -1825,7 +1807,7 @@ class MainWindow(QMainWindow):
             remaining_ms = int((snapshot.next_tick_at - time.time()) * 1000)
             if remaining_ms >= -500:
                 delay_ms = max(250, remaining_ms + 250)
-            elif self.garden_auto_checkbox.isChecked():
+            elif self.garden_toggle.running:
                 # O jogo pode estar suspenso em segundo plano; confira sem
                 # executar novamente até ``M.nextStep`` realmente avançar.
                 delay_ms = 1_000
@@ -1835,7 +1817,7 @@ class MainWindow(QMainWindow):
         interval = min(3600, max(30, int(value)))
         automation_config.garden_poll_interval_seconds = interval
         save_automation_settings()
-        if not self.garden_auto_checkbox.isChecked():
+        if not self.garden_toggle.running:
             self.garden_refresh_timer.start(interval * 1000)
 
     @staticmethod
@@ -2034,6 +2016,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Evita destruir uma thread de consulta ainda em execução."""
+        self._stock_stop.set()
+        self._garden_stop.set()
         if self._combo_worker and self._combo_worker.isRunning():
             self._combo_worker.stop()
             self._combo_worker.wait((app_config.connection_timeout + 2) * 1000)

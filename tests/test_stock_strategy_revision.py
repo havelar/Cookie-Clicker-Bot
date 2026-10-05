@@ -82,6 +82,24 @@ class StockStrategyRevisionTests(unittest.TestCase):
             "queda ainda em andamento; aguardando estabilização antes de comprar",
         )
 
+    def test_switching_off_after_first_order_prevents_next_order(self):
+        first = StockAsset(0, "Cereals", "CRL", 10.10, 0, 100,
+                           price_history=(10.10, 10., 10., 10., 10., 10.))
+        second = replace(first, asset_id=1, name="Chocolate")
+        before = snapshot(first, second)
+        bridge = RevisionBridge([before, before])
+        original = bridge.buy_stock_max
+        stopped = [False]
+        def buy(*args, **kwargs):
+            result = original(*args, **kwargs)
+            stopped[0] = True
+            return result
+        bridge.buy_stock_max = buy
+        result = self.automation(bridge).run_cycle(20, 80, should_stop=lambda: stopped[0])
+        self.assertEqual(len(result.orders), 1)
+        self.assertEqual(len(bridge.calls), 1)
+
+
     def test_discount_buys_max_after_a_falling_asset_recovers_enough(self):
         recovered = StockAsset(
             1, "Chocolate", "CHC", 3.30, 0, 100,

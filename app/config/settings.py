@@ -64,7 +64,6 @@ class AutomationConfig:
     enable_reindeer: bool = False  # Para Natal
 
     # Stock Market
-    enable_stock_market_auto_trade: bool = False
     stock_market_buy_price_limit: float = 20.0
     stock_market_sell_price_limit: float = 80.0
     stock_market_trend_ticks: int = 5
@@ -74,19 +73,16 @@ class AutomationConfig:
     stock_market_asset_limits: dict = field(default_factory=dict)
 
     # Garden: seguro por padrão; intervalo usado somente se M.nextStep faltar.
-    enable_garden_automation: bool = False
     enable_green_aching_thumb: bool = False
     garden_poll_interval_seconds: int = 60
 
     # Auto Ascensão: sempre desativada por padrão e confirmada a cada execução real.
-    enable_auto_ascension: bool = False
     auto_ascension_target_cycles: int = 1
     auto_ascension_minimum_prestige_gain: float = 1.0
     auto_ascension_poll_interval_seconds: float = 0.1
     auto_ascension_max_cycle_seconds: int = 86_400
 
     # Combo endgame: execução real sempre parte desligada.
-    enable_combo_automation: bool = False
     combo_target_cookies: float = 1e72
     combo_max_search_ahead: int = 5_000
     combo_max_skip_lumps: int = 64
@@ -98,8 +94,7 @@ class AutomationConfig:
     combo_use_loans: bool = True
     combo_pause_before_last_skips: bool = False
 
-    # Simple Farm: farm paralelo com reserva majoritária, sem venda de torres.
-    enable_simple_farm: bool = False
+    # Simple Farm: reserva configurável, compras econômicas e Dual Cast opcional.
     simple_farm_max_search_ahead: int = 250
     simple_farm_poll_interval_seconds: float = 0.2
     simple_farm_minimum_buff_seconds: float = 8.0
@@ -215,11 +210,6 @@ def load_automation_settings() -> None:
         automation_config.preserve_sugar_lump_type_4,
         type=bool,
     )
-    automation_config.enable_stock_market_auto_trade = settings.value(
-        "enable_stock_market_auto_trade",
-        automation_config.enable_stock_market_auto_trade,
-        type=bool,
-    )
     automation_config.stock_market_buy_price_limit = settings.value(
         "stock_market_buy_price_limit",
         automation_config.stock_market_buy_price_limit,
@@ -256,9 +246,6 @@ def load_automation_settings() -> None:
         } if isinstance(limits, dict) else {}
     except (ValueError, TypeError):
         automation_config.stock_market_asset_limits = {}
-    automation_config.enable_garden_automation = settings.value(
-        "enable_garden_automation", False, type=bool,
-    )
     automation_config.enable_green_aching_thumb = settings.value(
         "enable_green_aching_thumb", False, type=bool,
     )
@@ -267,9 +254,6 @@ def load_automation_settings() -> None:
         automation_config.garden_poll_interval_seconds,
         type=int,
     )))
-    automation_config.enable_auto_ascension = settings.value(
-        "enable_auto_ascension", False, type=bool,
-    )
     automation_config.auto_ascension_target_cycles = min(10_000, max(1, settings.value(
         "auto_ascension_target_cycles",
         automation_config.auto_ascension_target_cycles,
@@ -290,9 +274,6 @@ def load_automation_settings() -> None:
         automation_config.auto_ascension_max_cycle_seconds,
         type=int,
     )))
-    automation_config.enable_combo_automation = settings.value(
-        "enable_combo_automation", False, type=bool,
-    )
     automation_config.combo_target_cookies = max(1.0, settings.value(
         "combo_target_cookies", automation_config.combo_target_cookies, type=float,
     ))
@@ -336,9 +317,6 @@ def load_automation_settings() -> None:
     )
     automation_config.combo_pause_before_last_skips = settings.value(
         "combo_pause_before_last_skips", False, type=bool,
-    )
-    automation_config.enable_simple_farm = settings.value(
-        "enable_simple_farm", False, type=bool,
     )
     automation_config.simple_farm_max_search_ahead = min(10_000, max(2, settings.value(
         "simple_farm_max_search_ahead",
@@ -386,7 +364,6 @@ def save_automation_settings() -> None:
     settings.setValue("preserve_sugar_lump_type_2", automation_config.preserve_sugar_lump_type_2)
     settings.setValue("preserve_sugar_lump_type_3", automation_config.preserve_sugar_lump_type_3)
     settings.setValue("preserve_sugar_lump_type_4", automation_config.preserve_sugar_lump_type_4)
-    settings.setValue("enable_stock_market_auto_trade", automation_config.enable_stock_market_auto_trade)
     settings.setValue("stock_market_buy_price_limit", automation_config.stock_market_buy_price_limit)
     settings.setValue("stock_market_sell_price_limit", automation_config.stock_market_sell_price_limit)
     settings.setValue("stock_market_trend_ticks", automation_config.stock_market_trend_ticks)
@@ -394,10 +371,8 @@ def save_automation_settings() -> None:
     settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
     settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
     settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
-    settings.setValue("enable_garden_automation", automation_config.enable_garden_automation)
     settings.setValue("enable_green_aching_thumb", automation_config.enable_green_aching_thumb)
     settings.setValue("garden_poll_interval_seconds", automation_config.garden_poll_interval_seconds)
-    settings.setValue("enable_auto_ascension", automation_config.enable_auto_ascension)
     settings.setValue("auto_ascension_target_cycles", automation_config.auto_ascension_target_cycles)
     settings.setValue(
         "auto_ascension_minimum_prestige_gain",
@@ -411,7 +386,6 @@ def save_automation_settings() -> None:
         "auto_ascension_max_cycle_seconds",
         automation_config.auto_ascension_max_cycle_seconds,
     )
-    settings.setValue("enable_combo_automation", automation_config.enable_combo_automation)
     settings.setValue("combo_target_cookies", automation_config.combo_target_cookies)
     settings.setValue("combo_max_search_ahead", automation_config.combo_max_search_ahead)
     settings.setValue("combo_max_skip_lumps", automation_config.combo_max_skip_lumps)
@@ -426,7 +400,6 @@ def save_automation_settings() -> None:
     settings.setValue("combo_use_sugar_frenzy", automation_config.combo_use_sugar_frenzy)
     settings.setValue("combo_use_loans", automation_config.combo_use_loans)
     settings.setValue("combo_pause_before_last_skips", automation_config.combo_pause_before_last_skips)
-    settings.setValue("enable_simple_farm", automation_config.enable_simple_farm)
     settings.setValue("simple_farm_max_search_ahead", automation_config.simple_farm_max_search_ahead)
     settings.setValue("simple_farm_poll_interval_seconds", automation_config.simple_farm_poll_interval_seconds)
     settings.setValue("simple_farm_minimum_buff_seconds", automation_config.simple_farm_minimum_buff_seconds)

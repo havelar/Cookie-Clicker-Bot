@@ -303,15 +303,14 @@ class AutoAscensaoUiTests(unittest.TestCase):
         tab_names = [window.tabs.tabText(index) for index in range(window.tabs.count())]
 
         self.assertIn("Auto Ascensão", tab_names)
-        self.assertTrue(window.auto_ascension_simulation_checkbox.isChecked())
+        self.assertFalse(window.auto_ascension_toggle.running)
         self.assertEqual(window.auto_ascension_preview_button.text(), "Atualizar prévia")
-        self.assertEqual(window.auto_ascension_stop_button.text(), "Parar imediatamente")
-        self.assertFalse(window.auto_ascension_stop_button.isEnabled())
+        self.assertEqual(window.auto_ascension_toggle.button.text(), "Ligar")
+        self.assertFalse(window.auto_ascension_toggle.running)
         window.close()
 
     def test_automation_configuration_default_is_disabled(self):
         config = AutomationConfig()
-        self.assertFalse(config.enable_auto_ascension)
         self.assertEqual(config.auto_ascension_poll_interval_seconds, 0.1)
 
 

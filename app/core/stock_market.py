@@ -1,7 +1,7 @@
 """Estratégia única baseada em preço absoluto e tendência do Stock Market."""
 import math
 from dataclasses import replace
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from app.bridge.js_bridge import CookieClickerBridge
 from app.core.market_history import MarketHistoryStore
@@ -52,8 +52,10 @@ class StockMarketAutomation:
         *,
         per_asset_limits: Optional[dict] = None,
         use_reference_prices: bool = True,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> StockMarketAutomationResult:
-        """Analisa uma vez por tick e, quando autorizado, envia ordens MAX."""
+        """Analisa uma vez por tick; Desligar impede a próxima ordem do ciclo."""
+        should_stop = should_stop or (lambda: False)
         snapshot = self.capture_snapshot()
         if not snapshot.status.available:
             return StockMarketAutomationResult(snapshot=snapshot)
@@ -118,8 +120,10 @@ class StockMarketAutomation:
         ]
 
         orders: List[StockTradeResult] = []
-        if execute_orders:
+        if execute_orders and not should_stop():
             for signal in exits:
+                if should_stop():
+                    break
                 order = self.bridge.sell_stock_max(
                     signal.asset_id, minimum_price=signal.exit_target,
                     expected_purchase_price=signal.purchase_price,
@@ -136,6 +140,8 @@ class StockMarketAutomation:
             )
             if not goal_complete and not goal_reachable:
                 for signal in sorted(entries, key=lambda item: item.price):
+                    if should_stop():
+                        break
                     order = self.bridge.buy_stock_max(
                         signal.asset_id, price_limit=limits[signal.asset_id][0], require_empty=True,
                     )

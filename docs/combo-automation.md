@@ -1,12 +1,12 @@
 # Automação do combo endgame
 
-A aba **Combo** prepara e tenta um Quadcast para a conquista **And a little extra**. O objetivo padrão é `1e72` cookies assados na ascensão atual. A execução real começa desabilitada e sempre pede confirmação.
+A aba **Combo** prepara e tenta um Quadcast para a conquista **And a little extra**. O objetivo padrão é `1e72` cookies assados na ascensão atual. O controle começa em **Desligada**. **Ligar** inicia a execução após a confirmação.
 
 ## Como iniciar
 
 1. Abra a aba **Combo** e clique em **Atualizar prévia**. A prévia apenas lê o runtime.
 2. Confira o plano vivo, principalmente o cast inicial e os quatro resultados previstos.
-3. Mantenha o Cookie Clicker e o bot abertos, marque **Habilitar execução real** e clique em **Iniciar e deixar rodando**.
+3. Mantenha o Cookie Clicker e o bot abertos, clique em **Ligar**.
 4. Confirme o aviso. O bot cria um backup automático chamado `antes-do-combo`, pausa as demais automações e solicita ao Windows que não suspenda o computador enquanto o modo estiver ativo. A tela pode apagar normalmente.
 
 O plano não é fixado no momento do clique. A seed, a season, o contador de spells, a mana, os buffs e os shimmers são relidos antes de cada ação; se o estado mudar, a janela é calculada novamente.
@@ -22,7 +22,7 @@ a mana regenera, as plantas envelhecem e os buffs podem expirar.
 Quando estiver pronto para acompanhar, clique em **Retomar combo**. O bot relê
 o jogo, recalcula a janela, termina o alinhamento e volta a buscar os buffs
 naturais necessários; retomar não dispara o Quadcast imediatamente. Essa pausa
-acontece uma vez por execução. **Parar imediatamente** continua encerrando o
+acontece uma vez por execução. **Desligar** continua encerrando o
 modo, inclusive enquanto está pausado. A opção é salva e vem desmarcada por
 padrão.
 
@@ -52,7 +52,7 @@ Um Building Special de Wizard Towers não é aceito, pois deixaria de existir du
 
 Enquanto o modo está ativo, o detector comum, o spam do Grimoire, Stock Market, Garden normal, Auto Ascensão, coleta de lumps e atalhos manuais do clicker ficam pausados ou bloqueados. Ao terminar, os timers comuns voltam a funcionar; o clicker fica parado.
 
-Se um buff expirar, aparecer um cookie ou a previsão mudar antes dos gastos, o bot desarma o clicker e revalida no próximo ciclo. Dragonflight e efeitos negativos incompatíveis também aguardam expirar. Inconsistências estruturais e falhas parciais entram em **erro seguro**. Numa falha parcial, o bot registra os lumps já gastos, não repete a tentativa automaticamente e tenta restaurar as Wizard Towers. Use **Parar imediatamente** para pedir uma parada cooperativa; uma operação atômica que já começou termina antes da thread encerrar.
+Se um buff expirar, aparecer um cookie ou a previsão mudar antes dos gastos, o bot desarma o clicker e revalida no próximo ciclo. Dragonflight e efeitos negativos incompatíveis também aguardam expirar. Inconsistências estruturais e falhas parciais entram em **erro seguro**. Numa falha parcial, o bot registra os lumps já gastos, não repete a tentativa automaticamente e tenta restaurar as Wizard Towers. Use **Desligar** para pedir uma parada cooperativa; uma operação atômica que já começou termina antes da thread encerrar.
 
 ## Limitações
 

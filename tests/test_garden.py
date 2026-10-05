@@ -102,7 +102,6 @@ class GardenCatalogTests(unittest.TestCase):
 
     def test_automation_default_is_disabled_and_interval_is_conservative(self):
         config = AutomationConfig()
-        self.assertFalse(config.enable_garden_automation)
         self.assertGreaterEqual(config.garden_poll_interval_seconds, 30)
 
 
@@ -563,6 +562,24 @@ class GardenBudgetDecisionTests(unittest.TestCase):
         self.assertIn(("plant", "thumbcorn", 3, 3), bridge.mutable_calls)
         self.assertFalse(farmer._last_budget_wait)
 
+    def test_switching_off_after_harvest_prevents_layout_execution(self):
+        bridge = FakeGardenBridge(snapshot({"bakerWheat", "thumbcorn"}))
+        farmer = Fazendeira(bridge)
+        actions = (
+            GardenAction("harvest", "discovery", x=2, y=2, seed_key="thumbcorn"),
+            GardenAction("plant", "new layout", x=3, y=3, seed_key="bakerWheat"),
+        )
+        farmer.build_plan = Mock(return_value=GardenPlan(None, actions))
+        stopped = [False]
+        def harvest(*args, **kwargs):
+            stopped[0] = True
+            return GardenActionResult(True, "harvest", "Colhida")
+        bridge.harvest_garden_tile = harvest
+        bridge.execute_garden_layout = Mock()
+        result = farmer.run_cycle(dry_run=False, automation_enabled=True, should_stop=lambda: stopped[0])
+        self.assertEqual(len(result.action_results), 1)
+        bridge.execute_garden_layout.assert_not_called()
+
     def test_preview_explains_shortage_without_mutation(self):
         current = snapshot({"bakerWheat"})
         current = replace(current, cookies=1, seeds=tuple(replace(s, cost=100) for s in current.seeds))
@@ -644,24 +661,21 @@ class GardenUiTests(unittest.TestCase):
 
     def test_tab_exposes_simulation_progress_and_explicit_real_toggle(self):
         from app.ui.main_window import MainWindow
-        previous = automation_config.enable_garden_automation
         previous_thumbcorn = automation_config.enable_green_aching_thumb
-        automation_config.enable_garden_automation = False
         automation_config.enable_green_aching_thumb = False
         try:
             window = MainWindow()
             tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
             self.assertIn("Garden", tabs)
             self.assertEqual(window.garden_simulate_button.text(), "Simular próximo tick")
-            self.assertEqual(window.garden_auto_checkbox.text(), "Automação real")
+            self.assertEqual(window.garden_toggle.button.text(), "Ligar")
             self.assertEqual(window.garden_thumbcorn_checkbox.text(), "Green, aching thumb")
             self.assertIn("Prioriza Thumbcorn", window.garden_thumbcorn_checkbox.toolTip())
-            self.assertFalse(window.garden_auto_checkbox.isChecked())
+            self.assertFalse(window.garden_toggle.running)
             self.assertGreaterEqual(window.garden_interval_input.minimum(), 30)
             self.assertTrue(window.garden_refresh_timer.isSingleShot())
             window.close()
         finally:
-            automation_config.enable_garden_automation = previous
             automation_config.enable_green_aching_thumb = previous_thumbcorn
 
     def test_valid_result_displays_one_explainable_goal(self):

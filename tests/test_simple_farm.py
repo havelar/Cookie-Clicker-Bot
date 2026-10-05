@@ -388,13 +388,13 @@ class SimpleFarmUiTests(unittest.TestCase):
 
         names = [window.combo_mode_tabs.tabText(i) for i in range(window.combo_mode_tabs.count())]
         self.assertEqual(names, ["Simple Farm", "Endgame 1e72"])
-        self.assertEqual(window.simple_farm_start_button.text(), "Iniciar Simple Farm")
-        self.assertFalse(window.simple_farm_stop_button.isEnabled())
+        self.assertEqual(window.simple_farm_toggle.button.text(), "Ligar")
+        self.assertFalse(window.simple_farm_toggle.running)
         window._set_simple_farm_busy(True, preview=False)
-        self.assertTrue(window.garden_auto_checkbox.isEnabled())
-        self.assertTrue(window.stock_auto_trade_checkbox.isEnabled())
+        self.assertTrue(window.garden_toggle.isEnabled())
+        self.assertTrue(window.stock_toggle.isEnabled())
         self.assertTrue(window.clicker_button.isEnabled())
-        self.assertFalse(window.auto_ascension_start_button.isEnabled())
+        self.assertFalse(window.auto_ascension_toggle.isEnabled())
         for field in (window.simple_farm_search_input, window.simple_farm_interval_input,
                       window.simple_farm_min_buff_input, window.simple_farm_reserve_input,
                       window.simple_farm_investment_input):
@@ -403,7 +403,6 @@ class SimpleFarmUiTests(unittest.TestCase):
 
     def test_defaults_are_fast_and_disabled(self):
         config = AutomationConfig()
-        self.assertFalse(config.enable_simple_farm)
         self.assertEqual(config.simple_farm_poll_interval_seconds, 0.2)
         self.assertEqual(config.simple_farm_minimum_buff_seconds, 8.0)
         self.assertEqual(config.simple_farm_cash_reserve_percent, 80.0)
@@ -418,8 +417,6 @@ class SimpleFarmUiTests(unittest.TestCase):
         window._stock_worker = Mock()
         window.garden_refresh_timer.start(5000)
         window.stock_refresh_timer.start(5000)
-        window.simple_farm_enable_checkbox.blockSignals(True)
-        window.simple_farm_enable_checkbox.setChecked(True)
         with patch.object(window, '_run_simple_farm_worker') as run:
             with patch.object(window, '_simple_farm_configuration', return_value=ConfiguracaoSimpleFarm()):
                 with patch.object(window, '_set_combo_keep_awake'):

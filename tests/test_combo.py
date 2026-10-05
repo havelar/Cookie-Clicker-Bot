@@ -830,8 +830,8 @@ class ComboUiTests(unittest.TestCase):
 
         self.assertIn("Combo", tab_names)
         self.assertEqual(window.combo_preview_button.text(), "Atualizar prévia")
-        self.assertEqual(window.combo_stop_button.text(), "Parar imediatamente")
-        self.assertFalse(window.combo_stop_button.isEnabled())
+        self.assertEqual(window.combo_toggle.button.text(), "Ligar")
+        self.assertFalse(window.combo_toggle.running)
         self.assertTrue(window.combo_scroll_area.widgetResizable())
         self.assertTrue(all(field.minimumHeight() >= 32 for field in (
             window.combo_search_input,
@@ -844,7 +844,6 @@ class ComboUiTests(unittest.TestCase):
 
     def test_automation_configuration_defaults_to_disabled(self):
         config = AutomationConfig()
-        self.assertFalse(config.enable_combo_automation)
         self.assertEqual(config.combo_target_cookies, 1e72)
         self.assertEqual(config.combo_required_building_specials, 2)
         self.assertFalse(config.combo_pause_before_last_skips)

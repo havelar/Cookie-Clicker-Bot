@@ -239,8 +239,8 @@ class StockMarketUiTests(unittest.TestCase):
         )
         settings_tab = window.tabs.widget(settings_index)
 
-        self.assertEqual(window.stock_auto_trade_checkbox.text(), "Automação")
-        self.assertTrue(stock_tab.isAncestorOf(window.stock_auto_trade_checkbox))
+        self.assertEqual(window.stock_toggle.button.text(), "Ligar")
+        self.assertTrue(stock_tab.isAncestorOf(window.stock_toggle))
         for control in (
             window.stock_buy_limit_input,
             window.stock_sell_limit_input,

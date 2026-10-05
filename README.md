@@ -210,3 +210,17 @@ Este software é fornecido apenas para fins educacionais e de entretenimento. O 
 ## Logs
 
 Logs detalhados em console para debugging e monitoramento.
+
+### Controles das automações
+
+Stock Market, Garden, Simple Farm, Combo Endgame e Auto Ascensão usam o mesmo
+controle **Ligar / Desligar**, com estado **Desligada**, **Rodando** ou
+**Desligando…**. Não há uma etapa separada para habilitar “automação real”.
+As configurações são salvas, mas essas automações começam desligadas ao abrir o
+bot. Prévia e simulação continuam separadas e não ligam a execução.
+
+Ao desligar, a chamada já enviada ao jogo termina; novas ordens e ações são
+canceladas. As leituras de Stock e Garden continuam disponíveis. Durante um
+Combo Endgame, esses dois controles indicam **Pausada pelo Combo** e ainda
+permitem desligar a automação. As confirmações de início de Combo Endgame e
+Auto Ascensão foram mantidas.

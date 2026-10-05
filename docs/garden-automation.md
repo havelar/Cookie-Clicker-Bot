@@ -3,7 +3,8 @@
 ## Escopo e segurança
 
 A `Fazendeira`, em `app/core/fazendeira.py`, coordena a coleta das 34 sementes do
-Garden. A automação real começa desativada. O bot sempre cria um plano completo
+Garden. O controle começa em **Desligada**. **Ligar** inicia os ciclos automáticos;
+**Desligar** impede novas ações e aguarda o lote em andamento terminar. O bot sempre cria um plano completo
 antes de modificar o jogo e o modo **Simular próximo tick** nunca chama uma
 operação mutável da bridge.
 
@@ -59,7 +60,7 @@ A simulação também mostra o custo estimado e o saldo, sem executar ações.
 
 O checkbox **Green, aching thumb** prioriza temporariamente Thumbcorn para obter a
 conquista de colher 1.000 plantas maduras. Ele também respeita a separação entre
-planejamento e execução: com **Automação real** desligada, o modo produz somente
+planejamento e execução: com o controle em **Desligada**, o modo produz somente
 prévia e jamais chama uma operação mutável da bridge.
 
 Enquanto Thumbcorn ainda estiver bloqueado, a Fazendeira continua a coleção
@@ -155,7 +156,7 @@ no catálogo e nos testes associados.
 3. A prioridade favorece receitas prontas que liberam mais dependências;
    mutações já presentes no canteiro têm precedência.
 4. Uma estratégia explicitamente mapeada para a planta gera o plano.
-5. Em simulação, o fluxo termina. Em modo real explicitamente habilitado, todas
+5. Em simulação, o fluxo termina. Com a automação ligada, todas
    as ações do plano são enviadas no mesmo tick e novamente validadas no
    JavaScript; não existe limite parcial de ações por ciclo.
 
@@ -178,7 +179,7 @@ mesmo tick.
   jogo Steam; diferenças da versão embarcada aparecerão como falhas defensivas.
 - O planejador usa uma receita preferencial por planta quando o runtime oferece
   alternativas. As alternativas ficam documentadas no catálogo.
-- Habilitar **Automação real** autoriza explicitamente a limpeza de layouts
+- Clicar em **Ligar** inicia a limpeza de layouts
   antigos e de plantas que não correspondam ao objetivo atual.
 - Probabilidades raras, principalmente a Juicy queenbeet, podem
   exigir muitos ticks. O snapshot, e não uma previsão local, é sempre a evidência
