@@ -1,4 +1,4 @@
-"""Looper econômico de Golden Cookies com FtHoF único sem Sugar Lumps."""
+"""Looper econômico de Golden Cookies e Dual Cast oportunista sem Sugar Lumps."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.utils.logger import logger
 
 
 class SimpleFarmAutomation:
-    """Coleta naturais e usa um FtHoF único oportunista sem tocar nos minigames."""
+    """Coleta naturais e combina FtHoF sem mudar Garden ou Pantheon."""
 
     SKIP_SPELL_ID = 4  # Haggler's Charm: menor custo no save suportado.
     COOKIE_STORM_DROP = "cookie storm drop"
@@ -49,6 +49,7 @@ class SimpleFarmAutomation:
         self._buildings = 0
         self._cash_floor = 0.0
         self._last_reinvest_at = float("-inf")
+        self._last_spent = 0.0
         self._clicker_ativo = False
         self._investment_status = ""
         self._live_reserve = 0.0
@@ -133,7 +134,7 @@ class SimpleFarmAutomation:
                 return self._report(
                     EstadoSimpleFarm.COLETANDO,
                     "Golden Cookie natural coletado.",
-                    "Reavaliando o buff obtido e o FtHoF único no próximo ciclo.",
+                    "Reavaliando o buff obtido e o FtHoF no próximo ciclo.",
                     snapshot,
                     plano,
                 )
@@ -198,28 +199,40 @@ class SimpleFarmAutomation:
             )
 
         # O clique precisa começar antes da avaliação atômica que cria e abre
-        # o Click Frenzy; assim nenhum frame útil do FtHoF único é perdido.
+        # o Click Frenzy; assim nenhum frame útil do FtHoF é perdido.
         if not self._set_clicker(True):
-            return self._error("O FtHoF único estava pronto, mas o autoclicker não pôde ser ativado.")
+            return self._error("O FtHoF estava pronto, mas o autoclicker não pôde ser ativado.")
         result = self.bridge.execute_simple_farm_spell(
             expected_cast=plano.cast_inicial,
             minimum_buff_seconds=self.configuracao.duracao_minima_buff,
+            **self._orcamento_magia(),
         )
         if not result.get("ok"):
             if result.get("waiting"):
                 self._sincronizar_clicker(snapshot)
                 return self._report(
                     EstadoSimpleFarm.AGUARDANDO_BUFF,
-                    result.get("message", "Aguardando recursos para o FtHoF único."),
+                    result.get("message", "Aguardando recursos para o FtHoF."),
                     "Nada foi vendido; o modo tentará novamente.",
                     snapshot,
                     plano,
                 )
-            return self._error(result.get("message", "FtHoF único não confirmado"))
-        self._magias += 1
+            self._magias += int(result.get("casts", 0))
+            return self._error(result.get("message", "FtHoF não confirmado"))
+        self._magias += int(result.get("casts", 1))
+        self._cash_floor = max(self._cash_floor, float(result.get("before", 0)) * self.configuracao.reserva_caixa)
+        self._live_reserve = float(result.get("reserve", self._live_reserve))
+        if result.get("dualcast"):
+            recent = self._orcamento_magia()["spent_in_window"]
+            self._last_spent = recent + float(result.get("rebuy", 0))
+            self._last_reinvest_at = self.relogio()
+        snapshot = dict(snapshot, cookies=result.get("after", snapshot.get("cookies", 0)))
+        snapshot.update({key: result[key] for key in ("magic", "magicM", "spellsCastTotal") if key in result})
         return self._report(
             EstadoSimpleFarm.EXECUTANDO,
-            f"FtHoF único concluído sobre {trigger}; sem venda de torres; clicker ativo.",
+            (result.get("message", f"FtHoF concluído sobre {trigger}; clicker ativo.")
+             + (f" Custo líquido: {float(result.get('spent', 0)):.3g} cookies."
+                if result.get("dualcast") else "")),
             "Regenerando mana para a próxima oportunidade, sem usar Sugar Lumps.",
             snapshot,
             plano,
@@ -232,7 +245,7 @@ class SimpleFarmAutomation:
         now = self.relogio()
         if now - self._last_reinvest_at < self.REINVEST_INTERVAL_SECONDS:
             return None
-        # Buffs multiplicativos são curtos; durante eles o clicker e o FtHoF único
+        # Buffs multiplicativos são curtos; durante eles o clicker e o FtHoF
         # têm precedência total sobre compras de loja.
         if self._janela_ativa(snapshot):
             return None
@@ -248,6 +261,7 @@ class SimpleFarmAutomation:
         )
         self._live_reserve = float(result.get("reserve", self._cash_floor))
         self._investment_status = result.get("message", "")
+        self._last_spent = max(0.0, float(result.get("spent", 0)))
         if not result.get("ok"):
             if result.get("waiting"):
                 return None
@@ -264,12 +278,26 @@ class SimpleFarmAutomation:
             plano,
         )
 
+    def _orcamento_magia(self) -> dict:
+        recent = self.relogio() - self._last_reinvest_at < self.REINVEST_INTERVAL_SECONDS
+        return {
+            "cash_floor": self._cash_floor,
+            "max_spend_fraction": self.configuracao.investimento_por_ciclo,
+            "reserve_fraction": self.configuracao.reserva_caixa,
+            "spent_in_window": self._last_spent if recent else 0.0,
+        }
+
     def _planejar(self, snapshot: dict) -> Optional[PlanoSimpleFarm]:
-        raw = self.bridge.forecast_simple_farm_spell(self.configuracao.busca_maxima_spells)
+        raw = self.bridge.forecast_simple_farm_spell(
+            self.configuracao.busca_maxima_spells, **self._orcamento_magia(),
+        )
         if not isinstance(raw, dict) or not raw.get("ok"):
             return None
         outcomes = tuple(str(value) for value in raw.get("results", ()))
-        if outcomes != ("click frenzy",):
+        pair = (len(outcomes) == 2 and outcomes.count("click frenzy") == 1
+                and all(value in {"click frenzy", "frenzy", "building special", "blood frenzy"}
+                        for value in outcomes))
+        if outcomes != ("click frenzy",) and not pair:
             return None
         return PlanoSimpleFarm(
             seed=str(raw.get("seed", snapshot.get("seed", ""))),
@@ -279,6 +307,10 @@ class SimpleFarmAutomation:
             resultados=outcomes,
             spells_a_pular=int(raw.get("skipCount", 0)),
             qualidade=str(raw.get("quality", "Click Frenzy")),
+            torres_originais=int((raw.get("dual") or {}).get("originalTowers", 0)),
+            torres_temporarias=int((raw.get("dual") or {}).get("targetTowers", 0)),
+            custo_recompra=float((raw.get("dual") or {}).get("rebuy", 0)),
+            decisao=str(raw.get("decision", "")),
         )
 
     def _alinhar(self, snapshot: dict, plano: PlanoSimpleFarm) -> RelatorioSimpleFarm:

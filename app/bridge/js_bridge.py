@@ -12,6 +12,7 @@ except ImportError:
     raise ImportError("pychrome não encontrado. Instale com 'pip install pychrome'")
 
 from app.config.settings import app_config
+from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.models.garden import (
     GardenAction,
     GardenActionResult,
@@ -692,11 +693,17 @@ class CookieClickerBridge:
             "ok": False, "message": "Resposta inválida do forecast"
         }
 
-    def forecast_simple_farm_spell(self, max_ahead: int) -> Dict[str, Any]:
-        """Prevê um único Click Frenzy sem exigir uma quantidade mínima de torres."""
+    def forecast_simple_farm_spell(
+        self, max_ahead: int, *, cash_floor: float = 0, max_spend_fraction: float = 0.05,
+        reserve_fraction: float = 0.80, spent_in_window: float = 0,
+    ) -> Dict[str, Any]:
+        """Prefere um par complementar acessível; mantém CF único como alternativa."""
         if isinstance(max_ahead, bool) or not isinstance(max_ahead, int) or not 2 <= max_ahead <= 10_000:
             return {"ok": False, "message": "Alcance do Simple Farm inválido"}
+        if not self._valid_simple_farm_budget(cash_floor, max_spend_fraction, reserve_fraction, spent_in_window):
+            return {"ok": False, "message": "Orçamento da magia inválido"}
         script = """(() => {
+            const cashFloor=__FLOOR__, fraction=__FRACTION__, reserveFraction=__RESERVE__, spentInWindow=__SPENT__;
             const maxAhead=__MAX_AHEAD__;
             const fail=message=>({ok:false,message});
             const tower=globalThis.Game && Game.Objects ? Game.Objects['Wizard tower'] : null;
@@ -709,38 +716,30 @@ class CookieClickerBridge:
             let failBase=Number(M.getFailChance(spell))-0.15*onscreen;
             if (!Number.isFinite(current) || !Number.isFinite(failBase))
                 return fail('Estado do Grimoire inválido');
-            failBase=Math.max(0,Math.min(1,failBase));
-            const seasonal=Game.season==='valentines'||Game.season==='easter';
-            function outcome(cast,existing) {
-                const oldRandom=Math.random;
-                try {
-                    Math.seedrandom(String(Game.seed)+'/'+cast);
-                    const success=Math.random()<1-(failBase+0.15*existing);
-                    Math.random(); Math.random(); if (seasonal) Math.random();
-                    let choices;
-                    if (success) {
-                        choices=['frenzy','multiply cookies','click frenzy'];
-                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
-                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
-                        if (Math.random()<0.15) choices=['cookie storm drop'];
-                        if (Math.random()<0.0001) choices.push('free sugar lump');
-                    } else {
-                        choices=['clot','ruin cookies'];
-                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
-                        if (Math.random()<0.003) choices.push('free sugar lump');
-                        if (Math.random()<0.1) choices=['blab'];
-                    }
-                    return choices[Math.floor(Math.random()*choices.length)];
-                } finally { Math.random=oldRandom; }
-            }
+            __HELPERS__
+            const dual=dualPlan();
+            let single=null;
             for (let offset=0;offset<maxAhead;offset++) {
-                if (outcome(current+offset,0)!=='click frenzy') continue;
-                return {ok:true,seed:String(Game.seed),version:String(Game.version),
+                const first=predict(current+offset,0);
+                const results=offset+1<maxAhead ? [first,predict(current+offset+1,1)] : [first];
+                const pair=dual.ok && complementary(results);
+                if (pair) return {ok:true,seed:String(Game.seed),version:String(Game.version),
                     currentCast:current,startCast:current+offset,skipCount:offset,
-                    results:['click frenzy'],quality:'Click Frenzy com uma magia'};
+                    results,dual,quality:'Dual Cast complementar',
+                    decision:'Par complementar priorizado; Haggler’s Charm alinhará esta janela'};
+                if (first==='click frenzy' && !single) single={startCast:current+offset,skipCount:offset};
             }
+            if (single) return Object.assign({ok:true,seed:String(Game.seed),version:String(Game.version),
+                currentCast:current,results:['click frenzy'],dual:null,
+                quality:'Click Frenzy com uma magia',
+                decision:dual.message||'Nenhum par complementar no alcance; usando uma magia'},single);
             return fail('Nenhum Click Frenzy encontrado no alcance; farm continua sem magia');
         })()""".replace("__MAX_AHEAD__", str(max_ahead))
+        script = (script.replace("__HELPERS__", SIMPLE_FARM_HELPERS)
+                  .replace("__FLOOR__", repr(float(cash_floor)))
+                  .replace("__FRACTION__", repr(float(max_spend_fraction)))
+                  .replace("__RESERVE__", repr(float(reserve_fraction)))
+                  .replace("__SPENT__", repr(float(spent_in_window))))
         payload = self.execute_js(script)
         return payload if isinstance(payload, dict) else {
             "ok": False, "message": "Resposta inválida do forecast do Simple Farm"
@@ -748,12 +747,17 @@ class CookieClickerBridge:
 
     def execute_simple_farm_spell(
         self, *, expected_cast: int, minimum_buff_seconds: float,
+        cash_floor: float = 0, max_spend_fraction: float = 0.05,
+        reserve_fraction: float = 0.80, spent_in_window: float = 0,
     ) -> Dict[str, Any]:
-        """Confirma o forecast e lança/abre um único FtHoF na mesma avaliação."""
+        """Revalida custos e previsão; restaura torres antes de abrir o par de cookies."""
         if (isinstance(expected_cast, bool) or not isinstance(expected_cast, int)
                 or expected_cast < 0 or not 3 <= minimum_buff_seconds <= 60):
             return {"ok": False, "message": "Parâmetros da magia inválidos"}
+        if not self._valid_simple_farm_budget(cash_floor, max_spend_fraction, reserve_fraction, spent_in_window):
+            return {"ok": False, "message": "Orçamento da magia inválido"}
         script = """(() => {
+            const cashFloor=__FLOOR__, fraction=__FRACTION__, reserveFraction=__RESERVE__, spentInWindow=__SPENT__;
             const expectedCast=__CAST__, minimum=__MINIMUM__;
             const fail=(message,extra={waiting:true})=>Object.assign({ok:false,message},extra);
             if (!globalThis.Game || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer)
@@ -773,42 +777,73 @@ class CookieClickerBridge:
             if (!buffs.some(b=>b && b.type &&
                 ['frenzy','dragon harvest','building buff','blood frenzy'].includes(b.type.name) &&
                 Number(b.time)/fps>=minimum)) return fail('Aguardando multiplicador de produção');
-            const seasonal=Game.season==='valentines'||Game.season==='easter';
-            const failBase=Math.max(0,Math.min(1,Number(M.getFailChance(spell))));
-            function predict(cast,existing) {
-                const oldRandom=Math.random;
-                try {
-                    Math.seedrandom(String(Game.seed)+'/'+cast);
-                    const success=Math.random()<1-(failBase+0.15*existing);
-                    Math.random(); Math.random(); if (seasonal) Math.random();
-                    let choices;
-                    if (success) {
-                        choices=['frenzy','multiply cookies','click frenzy'];
-                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
-                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
-                        if (Math.random()<0.15) choices=['cookie storm drop'];
-                        if (Math.random()<0.0001) choices.push('free sugar lump');
-                    } else {
-                        choices=['clot','ruin cookies'];
-                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
-                        if (Math.random()<0.003) choices.push('free sugar lump');
-                        if (Math.random()<0.1) choices=['blab'];
-                    }
-                    return choices[Math.floor(Math.random()*choices.length)];
-                } finally { Math.random=oldRandom; }
+            const failBase=Number(M.getFailChance(spell));
+            if (!Number.isFinite(failBase)) return fail('Chance de backfire inválida');
+            __HELPERS__
+            const first=predict(expectedCast,0), second=predict(expectedCast+1,1);
+            const plan=dualPlan();
+            const useDual=plan.ok && complementary([first,second]);
+            if (!useDual && first!=='click frenzy') return fail('Par indisponível; replanejando sem gastar recursos');
+            const expected=useDual?[first,second]:[first];
+            const created=[];
+            let casts=0, error='', restorationError='';
+            const cookiesBefore=Number(Game.cookies), original=Number(tower.amount), buyMode=Game.buyMode;
+            function castOne(effect) {
+                const before=new Set((Game.shimmers||[]).map(s=>s.id));
+                if (Number(M.magic)<Number(M.getSpellCost(spell)) || M.castSpell(spell)!==true)
+                    throw Error('O jogo recusou a magia');
+                casts++;
+                const cookie=(Game.shimmers||[]).find(s=>s && s.type==='golden' && !before.has(s.id));
+                if (!cookie || cookie.force!==effect) throw Error('Resultado inesperado da magia; verifique o jogo');
+                created.push(cookie);
             }
-
-            if (predict(expectedCast,0)!=='click frenzy') return fail('Previsão mudou; replanejando');
-            const before=new Set((Game.shimmers||[]).map(s=>s.id));
-            if (M.castSpell(spell)!==true) return fail('O jogo recusou a magia');
-            const created=(Game.shimmers||[]).find(s=>s && s.type==='golden' && !before.has(s.id));
-            if (!created || created.force!=='click frenzy')
-                return fail('Resultado inesperado da magia; verifique o jogo',{waiting:false});
-            created.pop();
-            return {ok:true,message:'Click Frenzy ativado com uma magia, sem gastar cookies ou lumps'};
+            try {
+                castOne(first);
+                if (useDual) {
+                    tower.sell(original-plan.targetTowers);
+                    if (Number(tower.amount)!==plan.targetTowers) throw Error('Venda de torres não confirmada');
+                    M.computeMagicM();
+                    castOne(second);
+                }
+            } catch (e) { error=String(e.message||e); }
+            finally {
+                // Mesmo com uma falha no segundo cast, recompra antes de devolver o controle.
+                try {
+                    const missing=original-Number(tower.amount);
+                    if (missing>0) { Game.buyMode=1; tower.buy(missing); }
+                    if (Number(tower.amount)!==original) throw Error('Recompra incompleta das Wizard Towers');
+                    if (useDual) M.computeMagicM();
+                } catch (e) { restorationError=String(e.message||e); }
+                finally { Game.buyMode=buyMode; }
+            }
+            const details={waiting:false,casts,dualcast:useDual,before:cookiesBefore,after:Number(Game.cookies),
+                spent:Math.max(0,cookiesBefore-Number(Game.cookies)),rebuy:useDual?plan.rebuy:0,
+                reserve:plan.reserve,results:expected,magic:Number(M.magic),magicM:Number(M.magicM),
+                spellsCastTotal:Number(M.spellsCastTotal)};
+            if (restorationError || error) return fail([error,restorationError].filter(Boolean).join('; '),details);
+            if (useDual && Number(Game.cookies)<plan.reserve) return fail('Saldo abaixo da reserva após recompra',details);
+            try { for (const cookie of created) cookie.pop(); }
+            catch (e) { return fail('Falha ao abrir cookies: '+String(e.message||e),details); }
+            return Object.assign({ok:true,message:useDual
+                ? 'Dual Cast concluído; todas as torres recompradas e reserva preservada'
+                : 'Click Frenzy ativado com uma magia; '+(plan.message||'sem par complementar')},details);
         })()""".replace("__CAST__", str(expected_cast)).replace("__MINIMUM__", repr(float(minimum_buff_seconds)))
+
+        script = (script.replace("__HELPERS__", SIMPLE_FARM_HELPERS)
+                  .replace("__FLOOR__", repr(float(cash_floor)))
+                  .replace("__FRACTION__", repr(float(max_spend_fraction)))
+                  .replace("__RESERVE__", repr(float(reserve_fraction)))
+                  .replace("__SPENT__", repr(float(spent_in_window))))
         payload = self.execute_js(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida da magia"}
+
+    @staticmethod
+    def _valid_simple_farm_budget(cash_floor, fraction, reserve, spent):
+        values = (cash_floor, fraction, reserve, spent)
+        return (all(not isinstance(v, bool) and isinstance(v, (int, float)) for v in values)
+                and 0 <= cash_floor < float("inf") and 0 <= spent < float("inf")
+                and 0.01 <= fraction <= 0.20 and 0.15 <= reserve <= 0.99)
+
 
     def reinvest_simple_farm(
         self, cash_floor: float, max_spend_fraction: float, reserve_fraction: float = 0.80,
@@ -818,7 +853,7 @@ class CookieClickerBridge:
         if (any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values)
                 or not 0 <= cash_floor < float("inf")
                 or not 0.01 <= max_spend_fraction <= 0.20
-                or not 0.60 <= reserve_fraction <= 0.99):
+                or not 0.15 <= reserve_fraction <= 0.99):
             return {"ok": False, "message": "Orçamento de reinvestimento inválido"}
         script = """(() => {
             const cashFloor=__FLOOR__, fraction=__FRACTION__, reserveFraction=__RESERVE__;

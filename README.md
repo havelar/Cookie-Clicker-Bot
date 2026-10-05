@@ -19,7 +19,7 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 - **Garden por tick**: reconcilia o layout completo e automatiza opcionalmente a coleção de 34 sementes
 - **Auto Ascensão controlada**: simula ou executa ciclos com meta de prestígio, timeout, confirmação e parada segura
 - **Combo endgame autônomo**: busca um BS natural + um da spell, aproveita Frenzy do Quadcast e limita a espera padrão a três horas, com backup obrigatório
-- **Simple Farm**: farm paralelo ao Garden e Banco, com reserva de caixa, compras de produção e um FtHoF oportunista; sem vender torres, gastar Sugar Lumps ou alterar o Pantheon
+- **Simple Farm**: farm paralelo ao Garden e Banco, com reserva de caixa, compras de produção e Dual Cast oportunista com recompra das torres dentro do orçamento; sem gastar Sugar Lumps ou alterar o Pantheon
 
 ## 🚀 Instalação
 

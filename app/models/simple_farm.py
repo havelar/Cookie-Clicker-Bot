@@ -33,8 +33,8 @@ class ConfiguracaoSimpleFarm:
             raise ValueError("O intervalo deve ficar entre 0,1 e 10 segundos")
         if not 3.0 <= self.duracao_minima_buff <= 60.0:
             raise ValueError("A duração mínima deve ficar entre 3 e 60 segundos")
-        if not 0.60 <= self.reserva_caixa <= 0.99:
-            raise ValueError("A reserva de caixa deve ficar entre 60% e 99%")
+        if not 0.15 <= self.reserva_caixa <= 0.99:
+            raise ValueError("A reserva de caixa deve ficar entre 15% e 99%")
         if not 0.01 <= self.investimento_por_ciclo <= 0.20:
             raise ValueError("O investimento por ciclo deve ficar entre 1% e 20%")
 
@@ -48,14 +48,20 @@ class PlanoSimpleFarm:
     resultados: Tuple[str, ...]
     spells_a_pular: int
     qualidade: str
+    torres_originais: int = 0
+    torres_temporarias: int = 0
+    custo_recompra: float = 0.0
+    decisao: str = ""
 
     @property
     def resumo(self) -> str:
         efeitos = " → ".join(self.resultados)
-        return (
-            f"cast {self.cast_inicial} ({self.spells_a_pular} skips): {efeitos} "
-            "| uma magia, sem venda de torres"
+        strategy = (
+            f"Dual Cast | torres {self.torres_originais} → {self.torres_temporarias} → {self.torres_originais}"
+            f" | recompra ≤ {self.custo_recompra:.3g}"
+            if len(self.resultados) == 2 else "uma magia, sem venda de torres"
         )
+        return f"cast {self.cast_inicial} ({self.spells_a_pular} skips): {efeitos} | {strategy}"
 
 
 @dataclass(frozen=True)

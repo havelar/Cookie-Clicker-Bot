@@ -355,7 +355,7 @@ def load_automation_settings() -> None:
         automation_config.simple_farm_minimum_buff_seconds,
         type=float,
     )))
-    automation_config.simple_farm_cash_reserve_percent = min(99.0, max(60.0, settings.value(
+    automation_config.simple_farm_cash_reserve_percent = min(99.0, max(15.0, settings.value(
         "simple_farm_cash_reserve_percent",
         automation_config.simple_farm_cash_reserve_percent,
         type=float,

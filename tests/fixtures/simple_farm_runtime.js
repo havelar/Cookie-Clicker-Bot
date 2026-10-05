@@ -28,3 +28,62 @@ for (const raw of options.buildings||[]) {
             Game.cookies-=this.price;this.amount+=n;events.push(['building',this.id]);this.price*=1.15;}};
     Game.ObjectsById.push(o);
 }
+
+// Dual Cast fixture uses actual mana/price formulas and checks restoration order.
+if (options.dualRuntime) {
+    const tower=Game.Objects['Wizard tower'];
+    Object.assign(tower,{amount:options.towers??400,level:options.level??1,
+        basePrice:options.basePrice??5,free:0});
+    Game.BuildingsOwned=5000;
+    Game.priceIncrease=1.001;
+    Game.auraMult=()=>options.aura??0;
+    Game.modifyBuildingPrice=(_tower,price)=>price*(options.priceMultiplier??1);
+    tower.getPrice=function(){return Math.ceil(Game.modifyBuildingPrice(this,this.basePrice*Math.pow(Game.priceIncrease,this.amount)));};
+    tower.sell=function(n){
+        events.push(['sell',n]);
+        const count=options.partialSale?Math.floor(n/2):n;
+        for(let i=0;i<count;i++){Game.cookies+=Math.floor(this.getPrice()*.25);this.amount--;Game.BuildingsOwned--;}
+    };
+    tower.buy=function(n){
+        events.push(['rebuy',n]);
+        if(Game.buyMode!==1)throw Error('Wrong buy mode');
+        if(options.failRebuy)throw Error('Simulated rebuy failure');
+        for(let i=0;i<n;i++){const price=this.getPrice();if(Game.cookies<price)break;Game.cookies-=price;this.amount++;Game.BuildingsOwned++;}
+    };
+    M.computeMagicM=function(){
+        const n=Math.max(tower.amount,1),lvl=Math.max(tower.level,1);
+        this.magicM=Math.floor(4+Math.pow(n,.6)+Math.log((n+(lvl-1)*10)/15+1)*15);
+        this.magic=Math.min(this.magic,this.magicM);
+    };
+    Object.assign(M.spellsById[1],{costMin:10,costPercent:.6});
+    M.computeMagicM();M.magic=options.magic??M.magicM;
+    M.getSpellCost=()=>Math.floor((10+.6*M.magicM)*(1-.1*Game.auraMult()));
+    const effects=options.effects??['click frenzy','building special'];
+    Math.seedrandom=seed=>{
+        const index=Number(String(seed).split('/').pop())-10;
+        const effect=effects[index]??'click frenzy';
+        let rolls;
+        if(effect==='blood frenzy') rolls=[.99,0,0,0,.9,.9,.99];
+        else rolls=[options.successRoll??0,0,0,.9,effect==='building special'?0:.9,.9,.9,effect==='frenzy'?0:.99];
+        if(Game.season==='valentines'||Game.season==='easter')rolls.splice(3,0,0);
+        let i=0;Math.random=()=>rolls[i++%rolls.length];
+    };
+    M.getFailChance=()=>.15+.15*Game.shimmers.length;
+    M.castSpell=function(){
+        const index=this.spellsCastTotal-10;
+        events.push(['cast',index,tower.amount,this.magic,this.getSpellCost()]);
+        if(index===1 && options.rejectSecond)return false;
+        if(this.magic<this.getSpellCost())return false;
+        this.magic-=this.getSpellCost();this.spellsCastTotal++;
+        const force=index===1 && options.wrongSecond?'clot':effects[index]??'click frenzy';
+        const cookie={id:100+index,type:'golden',force,pop(){
+            events.push(['pop',this.force,tower.amount]);
+            Game.shimmers=Game.shimmers.filter(s=>s!==this);
+            Game.buffs[this.force]={type:{name:this.force},time:30};
+        }};
+        Game.shimmers.push(cookie);return true;
+    };
+    if(options.formulaMismatch){M.magicM++;M.magic=M.magicM;}
+    if(options.existingShimmer)Game.shimmers.push({id:90,type:'golden'});
+}
+Game.season=options.season??'';

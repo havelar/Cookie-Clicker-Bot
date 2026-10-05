@@ -59,7 +59,7 @@ class FakeSimpleFarmBridge:
         self.calls.append(("snapshot",))
         return self.state
 
-    def forecast_simple_farm_spell(self, ahead):
+    def forecast_simple_farm_spell(self, ahead, **kwargs):
         self.calls.append(("forecast", ahead))
         return dict(self.forecast)
 
@@ -274,6 +274,44 @@ class SimpleFarmStateMachineTests(unittest.TestCase):
 
         self.assertEqual(events[:2], ["start", "spell"])
 
+    def test_dual_plan_and_report_count_both_casts_and_updated_balance(self):
+        bridge = FakeSimpleFarmBridge(snapshot(buffs=[{
+            "name": "Frenzy", "type": "frenzy", "timeSeconds": 30,
+        }], cookies=100000))
+        bridge.forecast.update(results=["building special", "click frenzy"],
+                               dual={"originalTowers":400, "targetTowers":30, "rebuy":3000})
+        bridge.execute_simple_farm_spell = Mock(return_value={
+            "ok":True, "dualcast":True, "casts":2, "rebuy":3000, "spent":2200,
+            "before":100000, "after":97800, "reserve":80000, "magic":0,
+            "magicM":100, "spellsCastTotal":12,
+        })
+        farm = SimpleFarmAutomation(bridge, ConfiguracaoSimpleFarm(), relogio=lambda: 0)
+        report = farm.executar_passo()
+        self.assertEqual(report.magias_executadas, 2)
+        self.assertEqual(report.cookies_no_banco, 97800)
+        self.assertEqual(report.cast_atual, 12)
+        self.assertIn("Dual Cast", report.plano.resumo)
+        self.assertEqual(report.plano.custo_recompra, 3000)
+        self.assertEqual(bridge.execute_simple_farm_spell.call_args.kwargs['cash_floor'], 80000)
+        bridge.state['buffs'] = []
+        farm.executar_passo()
+        self.assertNotIn('reinvest', [c[0] for c in bridge.calls])
+
+    def test_recent_store_spending_is_subtracted_from_dual_budget(self):
+        now = [0]
+        bridge = FakeSimpleFarmBridge(snapshot(cookies=100000))
+        bridge.reinvest_result = {"ok":True,"spent":4000,"before":100000,"after":96000}
+        farm = SimpleFarmAutomation(bridge, ConfiguracaoSimpleFarm(), relogio=lambda: now[0])
+        farm.executar_passo()
+        bridge.state.update(cookies=96000, buffs=[{"type":"frenzy","timeSeconds":30}])
+        now[0] = 2
+        farm.executar_passo()
+        call = [c[1] for c in bridge.calls if c[0]=='spell'][-1]
+        self.assertEqual(call['spent_in_window'], 4000)
+        now[0] = 16
+        self.assertEqual(farm._orcamento_magia()['spent_in_window'], 0)
+
+
 
 class SimpleFarmBridgeTests(unittest.TestCase):
     class StubBridge(CookieClickerBridge):
@@ -291,11 +329,53 @@ class SimpleFarmBridgeTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(bridge.scripts, [])
 
+    def test_invalid_spell_budget_is_rejected_before_javascript(self):
+        for options in [dict(cash_floor=float('nan')), dict(spent_in_window=-1),
+                        dict(max_spend_fraction=.5), dict(reserve_fraction=.1)]:
+            bridge = self.StubBridge([])
+            self.assertFalse(bridge.execute_simple_farm_spell(
+                expected_cast=10, minimum_buff_seconds=8, **options)['ok'])
+            self.assertFalse(bridge.forecast_simple_farm_spell(10, **options)['ok'])
+            self.assertEqual(bridge.scripts, [])
+
     def test_invalid_reinvestment_budget_never_reaches_javascript(self):
-        for args in [(100, 0.99, 0.8), (100, 0.1, 0.3), (float("nan"), 0.1, 0.8)]:
+        for args in [(100, 0.99, 0.8), (100, 0.1, 0.14), (float("nan"), 0.1, 0.8)]:
             bridge = self.StubBridge([])
             self.assertFalse(bridge.reinvest_simple_farm(*args)["ok"])
             self.assertEqual(bridge.scripts, [])
+
+    def test_reserve_accepts_fifteen_percent_and_rejects_lower_values(self):
+        self.assertEqual(ConfiguracaoSimpleFarm(reserva_caixa=0.15).reserva_caixa, 0.15)
+        with self.assertRaises(ValueError):
+            ConfiguracaoSimpleFarm(reserva_caixa=0.149)
+
+    def test_simple_farm_strategy_values_are_saved_and_loaded(self):
+        from app.config import settings as settings_module
+
+        values = {}
+        settings = Mock()
+        settings.value.side_effect = lambda key, default=None, **_kwargs: values.get(key, default)
+        settings.setValue.side_effect = lambda key, value: values.update({key: value})
+        original = AutomationConfig(
+            simple_farm_max_search_ahead=321,
+            simple_farm_poll_interval_seconds=0.7,
+            simple_farm_minimum_buff_seconds=11.0,
+            simple_farm_cash_reserve_percent=15.0,
+            simple_farm_investment_percent=12.0,
+        )
+        with patch.object(settings_module, "QSettings", return_value=settings), patch.object(
+            settings_module, "automation_config", original,
+        ):
+            settings_module.save_automation_settings()
+            restored = AutomationConfig()
+            with patch.object(settings_module, "automation_config", restored):
+                settings_module.load_automation_settings()
+
+        self.assertEqual(restored.simple_farm_max_search_ahead, 321)
+        self.assertEqual(restored.simple_farm_poll_interval_seconds, 0.7)
+        self.assertEqual(restored.simple_farm_minimum_buff_seconds, 11.0)
+        self.assertEqual(restored.simple_farm_cash_reserve_percent, 15.0)
+        self.assertEqual(restored.simple_farm_investment_percent, 12.0)
 
 
 class SimpleFarmUiTests(unittest.TestCase):
