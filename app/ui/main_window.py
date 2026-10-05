@@ -1180,7 +1180,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(automation_group)
 
         sugar_group = QGroupBox("Sugar Lumps"); sugar_form = QFormLayout(sugar_group)
-        preserve_grid = QGridLayout(); entries = (("Tipo 0", 0), ("Tipo 1", 1), ("Golden", 2), ("Tipo 3", 3), ("Caramel", 4)); self._preserve_checkboxes = []
+        preserve_grid = QGridLayout(); entries = (("Normal", 0), ("Bifurcado", 1), ("Dourado", 2), ("Carnudo", 3), ("Caramelizado", 4)); self._preserve_checkboxes = []
         for index, (text, number) in enumerate(entries):
             checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, f"preserve_sugar_lump_type_{number}")); checkbox.stateChanged.connect(lambda state, n=number: self._set_sugar_lump_type(n, state)); preserve_grid.addWidget(checkbox, index // 3, index % 3); self._preserve_checkboxes.append(checkbox)
         sugar_form.addRow("Tipos preservados", preserve_grid)
