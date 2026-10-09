@@ -14,6 +14,7 @@ except ImportError:
 from app.config.settings import app_config
 from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.bridge.visual_sync import GAME_VISUAL_SYNC
+from app.core.garden_catalog import GARDEN_CATALOG
 from app.models.garden import (
     GardenAction,
     GardenActionResult,
@@ -475,6 +476,13 @@ class CookieClickerBridge:
                 return fail('unavailable','API de ascensão indisponível');
             if (Game.OnAscend || Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
                 return fail('wrong_screen','O jogo não está pronto para ascender');
+            const catalog=new Set(%s);
+            const garden=Game.Objects && Game.Objects.Farm && Game.Objects.Farm.minigame;
+            if (garden && Array.isArray(garden.plot) && garden.plot.some(row=>row.some(tile=>{
+                if (!Array.isArray(tile) || Number(tile[0])<=0) return false;
+                const plant=garden.plantsById && garden.plantsById[Number(tile[0])-1];
+                return !plant || !catalog.has(String(plant.key)) || !plant.unlocked;
+            }))) return fail('protected_plant','Ascensão bloqueada: há planta protegida no Garden (fora do catálogo ou semente não desbloqueada)');
             const current=Number(Game.prestige||0);
             const total=Number(Game.HowMuchPrestige(Number(Game.cookiesReset||0)+Number(Game.cookiesEarned||0)));
             const gain=Math.max(0,total-current);
@@ -486,7 +494,7 @@ class CookieClickerBridge:
             return {ok,reason:ok?'verified':'ambiguous_result',
                 message:ok?'Ascensão iniciada e verificada':'O jogo não confirmou o início da ascensão',
                 before:gain,after:gain};
-        })()""" % json.dumps(minimum))
+        })()""" % (json.dumps(minimum), json.dumps(sorted(GARDEN_CATALOG))))
         result = self._parse_ascension_action(payload, "ascender")
         self._log_ascension_action(result)
         return result
@@ -605,7 +613,6 @@ class CookieClickerBridge:
                 cookiesPs:finite(Game.cookiesPs), mouseCps:finite(Game.computedMouseCps),
                 achievementWon:!!(achievement && achievement.won),
                 lumps:Math.max(0,Math.trunc(finite(Game.lumps))),
-                canRefillLump:typeof Game.canRefillLump==='function' && !!Game.canRefillLump(),
                 lumpRefillRemaining:typeof Game.getLumpRefillRemaining==='function'
                     ? Math.max(0,finite(Game.getLumpRefillRemaining())/fps):0,
                 spellsCastTotal:Math.max(0,Math.trunc(finite(M.spellsCastTotal))),
@@ -1696,6 +1703,8 @@ class CookieClickerBridge:
         payload_actions = []
         seen = set()
         for action in actions:
+            if isinstance(action, GardenAction) and action.kind == "harvest" and action.seed_key not in GARDEN_CATALOG:
+                return (GardenActionResult(False, "layout", "Planta fora do catálogo protegida; lote cancelado."),)
             if (not isinstance(action, GardenAction) or action.kind not in {"plant", "harvest"}
                     or (action.kind == "harvest" and action.require_mature)
                     or not self._valid_garden_key(action.seed_key)
@@ -1705,7 +1714,7 @@ class CookieClickerBridge:
             seen.add((action.kind, action.x, action.y))
             payload_actions.append(dict(kind=action.kind, x=action.x, y=action.y, seedKey=action.seed_key))
         script = """(() => {
-            const actions=__ACTIONS__, results=[];
+            const actions=__ACTIONS__, results=[], catalog=new Set(__CATALOG__);
             const fail=(message,extra={})=>results.concat([Object.assign({ok:false,action:'layout',message},extra)]);
             if (!globalThis.Game || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer)
                 return fail('Jogo indisponível ou em transição');
@@ -1727,7 +1736,10 @@ class CookieClickerBridge:
                 if (!M.isTileUnlocked(a.x,a.y) || !Array.isArray(M.plot[a.y] && M.plot[a.y][a.x]))
                     return fail('Canteiro bloqueado ou inválido');
                 const current=plantAt(a.x,a.y), removal=removals.get(a.x+','+a.y);
+                if (Number(M.plot[a.y][a.x][0])>0 && !current) return fail('Planta sem identificação protegida; lote cancelado');
                 if (a.kind==='harvest') {
+                    if (current && !catalog.has(String(current.key))) return fail('Planta fora do catálogo protegida; lote cancelado');
+                    if (current && !current.unlocked) return fail('Descoberta ainda não desbloqueada protegida; lote cancelado');
                     if (!current || current.key!==a.seedKey) return fail('O canteiro mudou; replanejar antes de remover');
                 } else {
                     const seed=M.plants && M.plants[a.seedKey];
@@ -1757,7 +1769,7 @@ class CookieClickerBridge:
                             return fail('A remoção não foi confirmada; lote interrompido para preservar o canteiro');
                     } else {
                         const seed=M.plants[a.seedKey];
-                        if (plantAt(a.x,a.y)) return fail('Canteiro ocupado; plantio cancelado');
+                        if (Number(M.plot[a.y][a.x][0])!==0) return fail('Canteiro ocupado; plantio cancelado');
                         const cost=M.getCost(seed);
                         if (!Number.isFinite(cost) || cost<0) return fail('Custo mudou para um valor inválido');
                         if (Number(Game.cookies)<cost) return fail('Aguardando dinheiro; custo mudou durante o lote',
@@ -1772,7 +1784,7 @@ class CookieClickerBridge:
                 } catch (error) { return fail('Falha no layout: '+String(error && error.message || error)); }
             }
             return results;
-        })()""".replace("__ACTIONS__", json.dumps(payload_actions))
+        })()""".replace("__ACTIONS__", json.dumps(payload_actions)).replace("__CATALOG__", json.dumps(sorted(GARDEN_CATALOG)))
         payload = self._execute_game_action(script)
         if not isinstance(payload, list) or not payload or any(not isinstance(item, dict) for item in payload):
             return (GardenActionResult(False, "layout", "Resposta inválida do lote de Garden."),)
@@ -1791,7 +1803,7 @@ class CookieClickerBridge:
         if not self._valid_garden_position(x, y) or not isinstance(require_mature, bool):
             return GardenActionResult(False, "harvest", "Parâmetros de colheita inválidos.", x=x, y=y)
         payload = self._execute_game_action("""(() => {
-            const x=%d,y=%d,expected=%s,requireMature=%s;
+            const x=%d,y=%d,expected=%s,requireMature=%s,catalog=new Set(%s);
             const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:expected},extra);
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
             const M=farm && farm.minigameLoaded ? farm.minigame : null;
@@ -1802,6 +1814,8 @@ class CookieClickerBridge:
             const before=Array.isArray(tile) && Number(tile[0])>0 ? M.plantsById[Number(tile[0])-1] : null;
             if (!before) return fail('Canteiro vazio');
             const beforeKey=String(before.key||'');
+            if (!catalog.has(beforeKey)) return fail('Planta fora do catálogo protegida; colheita cancelada',{beforeKey});
+            if (!requireMature && !before.unlocked) return fail('Descoberta protegida; só pode ser colhida madura para desbloquear a semente',{beforeKey});
             if (expected!==null && beforeKey!==expected)
                 return fail('Planta divergente; colheita cancelada',{beforeKey});
             if (requireMature && Number(tile[1])<Number(before.mature))
@@ -1818,7 +1832,7 @@ class CookieClickerBridge:
             return {ok,message:ok
                 ? (unlocked?'Planta colhida e semente confirmada':'Planta colhida; semente ainda não confirmada')
                 :'O jogo não confirmou a colheita',x,y,seedKey:beforeKey,beforeKey,afterKey};
-        })()""" % (x, y, json.dumps(expected_key), "true" if require_mature else "false"))
+        })()""" % (x, y, json.dumps(expected_key), "true" if require_mature else "false", json.dumps(sorted(GARDEN_CATALOG))))
         return self._parse_garden_action(payload, "harvest", x=x, y=y, seed_key=expected_key)
 
     def change_garden_soil(self, soil_key: str) -> GardenActionResult:

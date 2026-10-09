@@ -411,6 +411,8 @@ class Fazendeira:
         replacements = []
         mature_thumbcorn = []
         for position, plant in sorted(plants_by_position.items(), key=lambda item: (item[0][1], item[0][0])):
+            if plant.key not in GARDEN_CATALOG or plant.key not in snapshot.unlocked_seed_keys:
+                continue
             if plant.key == "thumbcorn":
                 if plant.mature:
                     mature_thumbcorn.append(plant)
@@ -605,13 +607,16 @@ class Fazendeira:
     ):
         """Reconcilia um layout e administra crescimento e Wood chips."""
         actions = self._reconcile_layout(snapshot, desired)
+        ring_status = ""
+        if recipe.key == "queenbeetLump":
+            actions, ring_status = self._synchronize_queenbeet_rings(snapshot, desired, mutation_tiles, actions)
         if actions:
             removals = sum(action.kind == "harvest" for action in actions)
             plantings = sum(action.kind == "plant" for action in actions)
             return actions, (
                 f"Reconciliar o {description}: remover {removals} "
                 f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar "
-                f"{len(mutation_tiles)} espaços para a mutação."
+                f"{len(mutation_tiles)} espaços para a mutação. {ring_status}"
             )
 
         ready_tiles = tuple(
@@ -620,6 +625,8 @@ class Fazendeira:
         )
         if not ready_tiles:
             return self._growth_actions(snapshot), (
+                f"{description.capitalize()}: aguardando oito pais maduros e centro livre. {ring_status}"
+                if recipe.key == "queenbeetLump" else
                 f"{description.capitalize()} completo; aguardando a maturidade dos pais."
             )
         woodchips = next(
@@ -790,6 +797,8 @@ class Fazendeira:
     def _mutation_tile_is_ready(
         self, snapshot: GardenSnapshot, position: Tuple[int, int], recipe: GardenRecipe
     ) -> bool:
+        if any((plant.x, plant.y) == position for plant in snapshot.plants):
+            return False
         plants = {
             (plant.x, plant.y): plant for plant in snapshot.plants
             if (plant.x, plant.y) in set(self._neighbors(position))
@@ -805,6 +814,8 @@ class Fazendeira:
         center, desired = self._find_layout(snapshot, recipe)
         if center is None:
             return (), "Não existe espaço desbloqueado suficiente para o layout exigido."
+        if recipe.key == "queenbeetLump":
+            return self._plan_mutation_layout(snapshot, recipe, desired, (center,), "anel de oito Queenbeets")
         actions = self._reconcile_layout(snapshot, desired)
         if not actions:
             parents = self._plants_around(snapshot, center)
@@ -832,6 +843,46 @@ class Fazendeira:
             f"Reconciliar o anel ao redor de ({center[0]}, {center[1]}): remover {removals} "
             f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar o centro vazio."
         )
+
+    def _synchronize_queenbeet_rings(self, snapshot, desired, centers, actions):
+        """Renova cada anel incompleto em um lote, preservando círculos bloqueados."""
+        occupied = {(plant.x, plant.y): plant for plant in snapshot.plants}
+        actions = list(actions)
+        renewed = blocked = 0
+        for center in centers:
+            ring = set(self._neighbors(center)) & set(desired)
+            if len(ring) != 8:
+                continue
+            quadrant = ring | {center}
+            # Uma descoberta ou espécie desconhecida impede a renovação inteira.
+            # As outras sete plantas não são removidas enquanto ela ocupa o anel.
+            if any(position in occupied and (
+                occupied[position].key not in GARDEN_CATALOG
+                or occupied[position].key not in snapshot.unlocked_seed_keys
+            ) for position in quadrant):
+                actions = [action for action in actions if (action.x, action.y) not in quadrant]
+                blocked += 1
+                continue
+            survivors = [occupied[pos] for pos in ring
+                         if pos in occupied and occupied[pos].key == "queenbeet"]
+            if not 0 < len(survivors) < 8:
+                continue
+            # Nunca repõe apenas o espaço vazio de um grupo que perdeu um pai.
+            actions = [action for action in actions if (action.x, action.y) not in ring]
+            for x, y in sorted(ring, key=lambda pos: (pos[1], pos[0])):
+                current = occupied.get((x, y))
+                if current:
+                    actions.append(GardenAction(
+                        "harvest", "Renovar todo o anel incompleto de Queenbeets.",
+                        x=x, y=y, seed_key=current.key, require_mature=False,
+                    ))
+                actions.append(GardenAction(
+                    "plant", "Replantar as oito Queenbeets do mesmo ciclo.",
+                    x=x, y=y, seed_key="queenbeet",
+                ))
+            renewed += 1
+        detail = f"{renewed} anel(is) incompleto(s) renovado(s) por inteiro; {blocked} anel(is) preservado(s) por planta protegida."
+        return tuple(actions), detail
 
     def _find_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         unlocked = set(snapshot.unlocked_tiles)
@@ -862,7 +913,7 @@ class Fazendeira:
         actions = list(self._remove_plants_except(snapshot, allowed_layout=desired))
         for position, key in sorted(desired.items(), key=lambda item: (item[0][1], item[0][0])):
             current = occupied.get(position)
-            if current is not None and current.key == key:
+            if current is not None and (current.key == key or current.key not in GARDEN_CATALOG):
                 continue
             actions.append(GardenAction(
                 "plant", f"Plantar {GARDEN_CATALOG[key].name} na posição definida do layout.",
@@ -883,6 +934,8 @@ class Fazendeira:
         allowed_positions = allowed_positions or set()
         actions = []
         for plant in self._sorted_plants(snapshot):
+            if plant.key not in GARDEN_CATALOG or plant.key not in snapshot.unlocked_seed_keys:
+                continue
             position = (plant.x, plant.y)
             keep = (
                 allowed_layout.get(position) == plant.key
@@ -908,7 +961,7 @@ class Fazendeira:
         if snapshot.frozen and not any(action.kind == "set_freeze" for action in result):
             result.insert(0, GardenAction("set_freeze", "Descongelar o Garden para permitir crescimento e mutações.", freeze=False))
         desired = self._desired_soil(snapshot, actions)
-        if desired and desired != snapshot.soil_key and not snapshot.frozen:
+        if desired and desired != snapshot.soil_key and not snapshot.frozen and not any(a.kind == "change_soil" for a in result):
             result.insert(0, GardenAction("change_soil", f"Usar {desired} na etapa atual.", soil_key=desired))
         return tuple(result)
 
@@ -918,6 +971,12 @@ class Fazendeira:
         if not can_change:
             return None
         if any(action.kind == "plant" for action in actions) and "fertilizer" in available:
+            layout = self._maximum_special_layout(snapshot, GARDEN_CATALOG["queenbeetLump"])
+            if (layout and "queenbeetLump" not in snapshot.unlocked_seed_keys
+                    and any(action.kind == "plant" and action.seed_key == "queenbeet" for action in actions)):
+                if any(self._mutation_tile_is_ready(snapshot, center, GARDEN_CATALOG["queenbeetLump"])
+                       for center in layout[1]):
+                    return "woodchips" if "woodchips" in available else None
             return "fertilizer"
         return None
 

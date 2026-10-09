@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from app.models.combo import ConfiguracaoCombo, EstadoCombo, PlanoCombo, RelatorioCombo
 from app.utils.logger import logger
+from app.core.garden_catalog import GARDEN_CATALOG
 
 
 class ComboAutomation:
@@ -480,6 +481,8 @@ class ComboAutomation:
         for position, key in desired.items():
             plant = plants.get(position)
             if plant is not None and plant.key != key:
+                if plant.key not in GARDEN_CATALOG or plant.key not in garden.unlocked_seed_keys:
+                    continue
                 result = self.bridge.harvest_garden_tile(
                     position[0], position[1], expected_key=plant.key, require_mature=False
                 )

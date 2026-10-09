@@ -11,6 +11,9 @@ operação mutável da bridge.
 A estratégia funciona como reconciliação de estado:
 
 - a cada tick escolhe uma meta e calcula o layout completo antes de agir;
+- nunca remove espécies fora do catálogo, mesmo se outra automação solicitar
+  uma limpeza ou colheita; descobertas ainda não desbloqueadas só podem ser
+  colhidas maduras para liberar sua semente, nunca removidas como limpeza;
 - preserva toda planta que já está na posição correta do layout;
 - remove, mesmo imaturas, plantas erradas, plantas fora do layout e mutações
   indesejadas; se uma posição correta estava ocupada, limpa e replanta no mesmo
@@ -30,6 +33,24 @@ A estratégia funciona como reconciliação de estado:
 - descongela quando o crescimento precisa continuar, mas nunca congela
   automaticamente, pois isso pode matar Cheapcaps;
 - não sacrifica o Garden, não compra upgrades e não altera saves.
+
+## Círculos de Juicy queenbeet
+
+Para Juicy queenbeet, cada centro precisa estar vazio e cercado por **oito
+Queenbeets maduras**. No Garden 6×6, os quatro círculos são independentes. Se
+um círculo perder um pai, as sobreviventes daquele círculo são colhidas e as
+oito são replantadas juntas, em um único lote com orçamento validado antes da
+primeira remoção. Os outros círculos são preservados. Se ainda houver outro
+círculo pronto, Wood chips permanece ativo durante a renovação.
+
+Uma descoberta ainda não desbloqueada ou espécie fora do catálogo bloqueia
+a renovação de todo o círculo que ocupa: não se remove a planta protegida nem
+se preenche apenas parte do grupo. O restante do Garden pode continuar sendo
+preparado. A proteção também vale para Thumbcorn e Combo; Auto Ascensão é
+bloqueada se apagaria espécies desconhecidas ou descobertas não desbloqueadas.
+
+Plantar o círculo junto alinha o início do crescimento; variações aleatórias
+de idade ainda podem fazer as oito plantas amadurecerem em ticks diferentes.
 
 ## Saldo insuficiente e retomada
 
