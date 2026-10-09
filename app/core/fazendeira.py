@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 from dataclasses import replace
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 
@@ -471,6 +472,8 @@ class Fazendeira:
             return self.bridge.change_garden_soil(action.soil_key)
         if action.kind == "set_freeze":
             return self.bridge.set_garden_frozen(bool(action.freeze))
+        if action.kind == "boost_mutation":
+            return self.bridge.boost_juicy_queenbeet()
         return GardenActionResult(False, action.kind, "Ação do Garden desconhecida.")
 
     def _pending_discoveries(
@@ -610,6 +613,7 @@ class Fazendeira:
         ring_status = ""
         if recipe.key == "queenbeetLump":
             actions, ring_status = self._synchronize_queenbeet_rings(snapshot, desired, mutation_tiles, actions)
+            return self._plan_juicy_boost(snapshot, mutation_tiles, actions, ring_status)
         if actions:
             removals = sum(action.kind == "harvest" for action in actions)
             plantings = sum(action.kind == "plant" for action in actions)
@@ -843,6 +847,57 @@ class Fazendeira:
             f"Reconciliar o anel ao redor de ({center[0]}, {center[1]}): remover {removals} "
             f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar o centro vazio."
         )
+
+    def _plan_juicy_boost(self, snapshot, centers, actions, status):
+        """Prioriza círculos prontos e espera apenas um ganho próximo e seguro."""
+        status = f"{len(centers)} espaços para a mutação. " + status
+        occupied = {(p.x, p.y): p for p in snapshot.plants}
+        ready = []
+        upcoming = []
+        for center in centers:
+            parents = [occupied.get(pos) for pos in self._neighbors(center)]
+            if center in occupied or len(parents) != 8 or any(p is None or p.key != "queenbeet" for p in parents):
+                continue
+            if all(p.mature for p in parents):
+                ready.append(parents)
+            elif all(p.average_growth is not None and p.average_growth > 0 for p in parents):
+                eta = max(math.ceil(max(0, p.mature_age-p.age)/p.average_growth) for p in parents)
+                life = min(math.floor((100-p.age-1e-9)/p.maximum_growth)
+                           if p.maximum_growth is not None and p.maximum_growth > 0 else 0 for p in parents)
+                if eta + 2 <= life:
+                    upcoming.append(eta)
+        actions = list(actions)
+        if not ready:
+            return tuple((*self._growth_actions(snapshot), *actions)), "Nenhum círculo com oito Queenbeets maduras e centro livre. " + status
+        # Wood chips já rende mutações nos círculos prontos, mesmo com outros pais jovens.
+        woodchips = next((soil for soil in snapshot.soils if soil.key == "woodchips" and soil.available), None)
+        if woodchips is None:
+            return tuple(actions), "Aguardando Wood chips disponível para usar Sugar Lump. " + status
+        if snapshot.soil_key != "woodchips" and not snapshot.frozen:
+            if snapshot.next_soil_at is None or snapshot.next_soil_at <= self._clock():
+                actions.insert(0, GardenAction("change_soil", "Priorizar os círculos maduros com Wood chips.", soil_key="woodchips"))
+        safe = [parents for parents in ready if all(p.maximum_growth is not None and p.maximum_growth > 0
+                                                 and p.age+p.maximum_growth < 100 for p in parents)]
+        if not safe:
+            return tuple(actions), f"{len(ready)} círculo(s) pronto(s); não gastar lump sem margem segura de vida dos pais. " + status
+        lifetime = min(math.floor((100-p.age-1e-9)/p.maximum_growth) for parents in safe for p in parents)
+        # Espera no máximo um cooldown (15 min) e deixa dois ticks de margem de vida.
+        wait_limit = min(max(1, math.floor(15/woodchips.tick_minutes)), lifetime-2)
+        if upcoming and min(upcoming) <= wait_limit:
+            eta = min(upcoming)
+            return tuple(actions), (
+                f"{len(ready)} círculo(s) pronto(s) em Wood chips; esperar outro círculo por cerca de "
+                f"{eta} tick(s) ({eta*woodchips.tick_minutes:g} min), com margem de vida de {lifetime} ticks. " + status
+            )
+        if snapshot.frozen:
+            actions.insert(0, GardenAction("set_freeze", "Descongelar antes do tick de mutação.", freeze=False))
+            return tuple(actions), "Descongelar e reavaliar antes de gastar Sugar Lump. " + status
+        if snapshot.soil_key != "woodchips" and not any(action.kind == "change_soil" for action in actions):
+            return tuple(actions), "Aguardando o cooldown para mudar para Wood chips antes de gastar Sugar Lump. " + status
+        if snapshot.can_refill_lump is not True or snapshot.sugar_lumps is None or snapshot.sugar_lumps < 1:
+            return tuple(actions), f"{len(ready)} círculo(s) pronto(s) em Wood chips; aguardando lump e cooldown de recarga. " + status
+        actions.append(GardenAction("boost_mutation", f"Usar 1 Sugar Lump com {len(safe)} círculo(s) pronto(s); tentativas de mutação ×3 neste tick."))
+        return tuple(actions), f"{len(ready)} círculo(s) pronto(s): Wood chips e 1 Sugar Lump; sem esperar todos os quadrantes. " + status
 
     def _synchronize_queenbeet_rings(self, snapshot, desired, centers, actions):
         """Renova cada anel incompleto em um lote, preservando círculos bloqueados."""

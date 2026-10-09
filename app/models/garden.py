@@ -55,6 +55,8 @@ class GardenPlant:
     weed: bool = False
     fungus: bool = False
     immortal: bool = False
+    average_growth: Optional[float] = None
+    maximum_growth: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,9 @@ class GardenSnapshot:
     green_aching_thumb_message: str = "Estado da conquista Green, aching thumb indisponível no runtime."
 
     cookies: Optional[float] = None
+    sugar_lumps: Optional[float] = None
+    can_refill_lump: Optional[bool] = None
+    lump_refill_seconds: Optional[float] = None
 
     @property
     def unlocked_seed_keys(self) -> frozenset[str]:

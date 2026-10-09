@@ -613,6 +613,7 @@ class CookieClickerBridge:
                 cookiesPs:finite(Game.cookiesPs), mouseCps:finite(Game.computedMouseCps),
                 achievementWon:!!(achievement && achievement.won),
                 lumps:Math.max(0,Math.trunc(finite(Game.lumps))),
+                canRefillLump:typeof Game.canRefillLump==='function' && !!Game.canRefillLump(),
                 lumpRefillRemaining:typeof Game.getLumpRefillRemaining==='function'
                     ? Math.max(0,finite(Game.getLumpRefillRemaining())/fps):0,
                 spellsCastTotal:Math.max(0,Math.trunc(finite(M.spellsCastTotal))),
@@ -1592,10 +1593,14 @@ class CookieClickerBridge:
                 if (!seed) continue;
                 const age = Number(tile[1]);
                 const matureAge = Number(seed.mature);
+                const growthBoost=Number(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0]);
+                const dragonBoost=1+0.05*(typeof Game.auraMult==='function'?Game.auraMult('Supreme Intellect'):0);
                 plants.push({
                     x,y, seedId:Number(seed.id), key:String(seed.key || ''),
                     name:String(seed.name || seed.key || ''), age:finiteOrNull(age),
                     matureAge:finiteOrNull(matureAge),
+                    averageGrowth:finiteOrNull((Number(seed.ageTick)+Number(seed.ageTickR)/2)*growthBoost*dragonBoost),
+                    maximumGrowth:finiteOrNull(Math.ceil((Number(seed.ageTick)+Number(seed.ageTickR))*growthBoost*dragonBoost)),
                     mature:Number.isFinite(age) && Number.isFinite(matureAge) && age>=matureAge,
                     weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
                 });
@@ -1625,6 +1630,9 @@ class CookieClickerBridge:
                 farmLevel:Math.max(0,Math.trunc(Number(farm.level)||0)),
                 farmAmount:Math.max(0,Math.trunc(Number(farm.amount)||0)),
                 soilKey:currentSoil ? String(currentSoil.key || '') : null,
+                sugarLumps:finiteOrNull(Game.lumps),
+                canRefillLump:typeof Game.canRefillLump==='function'?!!Game.canRefillLump():null,
+                lumpRefillSeconds:typeof Game.getLumpRefillRemaining==='function'?finiteOrNull(Game.getLumpRefillRemaining()/Game.fps):null,
                 soilName:currentSoil ? String(currentSoil.name || currentSoil.key || '') : null,
                 frozen:!!M.freeze,
                 nextTickAt:finiteOrNull(M.nextStep), tickSeconds:finiteOrNull(M.stepT),
@@ -1834,6 +1842,70 @@ class CookieClickerBridge:
                 :'O jogo não confirmou a colheita',x,y,seedKey:beforeKey,beforeKey,afterKey};
         })()""" % (x, y, json.dumps(expected_key), "true" if require_mature else "false", json.dumps(sorted(GARDEN_CATALOG))))
         return self._parse_garden_action(payload, "harvest", x=x, y=y, seed_key=expected_key)
+
+    def boost_juicy_queenbeet(self) -> GardenActionResult:
+        """Usa a recarga nativa uma vez, somente com um anel vivo e Wood chips."""
+        payload = self._execute_game_action("""(() => {
+            const fail=(message,waiting=false)=>({ok:false,message,waiting,action:'boost_mutation'});
+            const farm=globalThis.Game && Game.Objects && Game.Objects.Farm;
+            const M=farm && farm.minigameLoaded && farm.minigame;
+            if (!M || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer || !Array.isArray(M.plot))
+                return fail('Garden indisponível para o bônus');
+            if (M.freeze) return fail('Garden congelado; nenhum lump gasto',true);
+            const soil=M.soilsById && M.soilsById[Number(M.soil)];
+            if (!soil || soil.key!=='woodchips') return fail('Aguardando Wood chips antes de gastar o lump',true);
+            if (!Game.prefs || typeof Game.refillLump!=='function' || typeof Game.canRefillLump!=='function'
+                    || typeof Game.auraMult!=='function') return fail('API de recarga incompatível');
+            if (Number(M.loopsMult)>1) return fail('Tick bônus já pendente; nenhum lump adicional gasto',true);
+            if (Number(Game.lumps)<1 || !Game.canRefillLump()) return fail('Aguardando lump ou cooldown compartilhado',true);
+            const catalog=new Set(__CATALOG__);
+            const boost=1+0.05*Number(Game.auraMult('Supreme Intellect'));
+            const at=(x,y)=>{
+                const t=M.plot[y] && M.plot[y][x];
+                const p=t && Number(t[0])>0 && M.plantsById[Number(t[0])-1];
+                return {t,p};
+            };
+            const maxGrowth=(x,y,p)=>Math.ceil((Number(p.ageTick)+Number(p.ageTickR))*
+                Number(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0])*boost);
+            // Não acelera um tick que mataria uma descoberta protegida.
+            for(let y=0;y<M.plot.length;y++) for(let x=0;x<M.plot[y].length;x++) {
+                const {t,p}=at(x,y);
+                if (!t || !Number(t[0])) continue;
+                if (!p || !catalog.has(String(p.key))) return fail('Planta fora do catálogo protegida; nenhum tick extra acionado');
+                if (p.key==='queenbeetLump' || (M.plants.queenbeetLump && M.plants.queenbeetLump.unlocked))
+                    return fail('Juicy queenbeet já encontrada; bônus dispensado');
+                if (!p.unlocked && !p.immortal && (!Number.isFinite(maxGrowth(x,y,p)) || Number(t[1])+maxGrowth(x,y,p)>=100))
+                    return fail('Tick extra ameaçaria uma descoberta protegida');
+            }
+            let ready=0;
+            for(let y=1;y<M.plot.length-1;y++) for(let x=1;x<M.plot[y].length-1;x++) {
+                if (!M.isTileUnlocked(x,y) || Number(M.plot[y][x][0])!==0) continue;
+                let valid=true;
+                for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) {
+                    if (!dx&&!dy) continue;
+                    const {t,p}=at(x+dx,y+dy);
+                    const growth=p?maxGrowth(x+dx,y+dy,p):NaN;
+                    if (!M.isTileUnlocked(x+dx,y+dy) || !p || p.key!=='queenbeet' || !p.unlocked
+                            || Number(t[1])<Number(p.mature) || !Number.isFinite(growth) || growth<=0
+                            || Number(t[1])+growth>=100) valid=false;
+                }
+                if(valid) ready++;
+            }
+            if (!ready) return fail('Nenhum círculo com oito pais maduros e margem segura; nenhum lump gasto',true);
+            const before=Number(Game.lumps),ask=Game.prefs.askLumps;
+            let applied=false;
+            try {
+                Game.prefs.askLumps=0;
+                Game.refillLump(1,()=>{
+                    M.loopsMult=3;M.nextSoil=Date.now();M.nextStep=Date.now();applied=true;
+                });
+            } finally { Game.prefs.askLumps=ask; }
+            const ok=applied && Number(Game.lumps)===before-1 && Number(M.loopsMult)===3;
+            return {ok,action:'boost_mutation',message:ok
+                ?`1 Sugar Lump usado com ${ready} círculo(s) em Wood chips; tick extra com mutações ×3`
+                :'Recarga não confirmada; não repetir sem reavaliar o jogo'};
+        })()""".replace("__CATALOG__", json.dumps(sorted(GARDEN_CATALOG))))
+        return self._parse_garden_action(payload, "boost_mutation")
 
     def change_garden_soil(self, soil_key: str) -> GardenActionResult:
         """Troca o solo somente quando o requisito e o cooldown permitem."""
@@ -2183,6 +2255,8 @@ class CookieClickerBridge:
                 x, y, seed_id, key, str(raw.get("name") or key), age, mature_age,
                 bool(raw.get("mature")), bool(raw.get("weed")), bool(raw.get("fungus")),
                 bool(raw.get("immortal")),
+                average_growth=self._optional_float(raw.get("averageGrowth")),
+                maximum_growth=self._optional_float(raw.get("maximumGrowth")),
             ))
 
         soils = []
@@ -2210,6 +2284,9 @@ class CookieClickerBridge:
         return GardenSnapshot(
             status=status,
             cookies=self._optional_float(payload.get("cookies")),
+            sugar_lumps=self._optional_float(payload.get("sugarLumps")),
+            can_refill_lump=payload.get("canRefillLump") if isinstance(payload.get("canRefillLump"), bool) else None,
+            lump_refill_seconds=self._optional_float(payload.get("lumpRefillSeconds")),
             farm_level=self._optional_int(payload.get("farmLevel")),
             farm_amount=self._optional_int(payload.get("farmAmount")),
             soil_key=str(payload["soilKey"]) if self._valid_garden_key(payload.get("soilKey")) else None,

@@ -52,6 +52,30 @@ bloqueada se apagaria espécies desconhecidas ou descobertas não desbloqueadas.
 Plantar o círculo junto alinha o início do crescimento; variações aleatórias
 de idade ainda podem fazer as oito plantas amadurecerem em ticks diferentes.
 
+### Sugar Lump para a mutação
+
+Com pelo menos um círculo completo e maduro, a Fazendeira prioriza Wood chips,
+mesmo se os outros quadrantes tiverem pais jovens. Nunca gasta um lump em
+Fertilizer nem considera um círculo com um pai imaturo como pronto.
+
+Antes do gasto, estima a chegada do próximo círculo pela planta que mais
+demora a maturar, usando o crescimento médio por tick informado pelo runtime.
+A vida restante dos pais já prontos é estimada pelo crescimento máximo. Só
+espera o próximo círculo se ele puder ficar pronto em até 15 minutos e houver
+dois ticks de margem de vida, reavaliando a estimativa a cada tick. Nesse tempo,
+os círculos prontos continuam tentando mutações em Wood chips.
+
+Sem um ganho próximo e seguro pela espera, usa **1 Sugar Lump** para acionar
+um tick extra com tentativas de mutação ×3 (além do multiplicador de Wood chips).
+Respeita o cooldown nativo compartilhado com o Grimoire; após cada recarga,
+uma nova leitura decide quando gastar novamente. Para ao encontrar a Juicy ou
+desbloquear sua semente. Prévia e automação desligada nunca gastam lumps.
+
+A bridge revalida o solo, as oito plantas maduras, margem de vida, saldo e
+cooldown antes do débito. O tick extra é cancelado se houver espécie fora do
+catálogo ou se ele puder matar uma descoberta ainda não desbloqueada. As
+decisões de espera e cada gasto aparecem no acompanhamento e no log.
+
 ## Saldo insuficiente e retomada
 
 Antes de limpar ou substituir o layout, a automação soma os preços atuais de

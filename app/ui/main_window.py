@@ -1723,7 +1723,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _format_garden_action(index, action) -> str:
         labels = {
-            "plant": "Plantar", "harvest": "Colher", "change_soil": "Trocar solo",
+            "plant": "Plantar", "harvest": "Colher", "change_soil": "Trocar solo", "boost_mutation": "Usar Sugar Lump",
             "set_freeze": "Descongelar",
         }
         if action.kind == "harvest" and not action.require_mature:
