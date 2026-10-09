@@ -224,3 +224,10 @@ canceladas. As leituras de Stock e Garden continuam disponíveis. Durante um
 Combo Endgame, esses dois controles indicam **Pausada pelo Combo** e ainda
 permitem desligar a automação. As confirmações de início de Combo Endgame e
 Auto Ascensão foram mantidas.
+
+## Referência local do JavaScript do jogo
+
+A pasta [reference/cookie-clicker](reference/cookie-clicker/README.md) contém todos
+os arquivos JavaScript da instalação Steam, preservados sem alterações, com
+versão, origem e hashes de integridade registrados em `manifest.json`.
+Use essa cópia como referência ao implementar ou revisar as automações.
