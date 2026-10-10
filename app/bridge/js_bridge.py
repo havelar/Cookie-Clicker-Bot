@@ -2593,6 +2593,66 @@ class CookieClickerBridge:
     def harvest_sugar_lump(self, *, preserved_types=()) -> bool:
         return self.harvest_sugar_lump_result(preserved_types=preserved_types).get("ok") is True
 
+    def get_sugar_lump_checkpoint(self) -> Optional[Dict[str, Any]]:
+        """Exporta estado e save na mesma avaliação, antes de qualquer tentativa."""
+        payload = self.execute_js("""(() => {
+            __HELPERS__
+            const status=lumpStatus();
+            if (!status || typeof Game.WriteSave!=='function') return null;
+            const save=Game.WriteSave(1);
+            if (typeof save!=='string' || !save) return null;
+            return {save,status,seed:String(Game.seed)};
+        })()""".replace("__HELPERS__", SUGAR_LUMP_HELPERS))
+        return payload if isinstance(payload, dict) and isinstance(payload.get("save"), str) else None
+
+    def load_game_save(self, save_data: str) -> bool:
+        """Importa o save pela API nativa, sem prompts genéricos ou eval do conteúdo."""
+        if not isinstance(save_data, str) or not save_data.strip():
+            return False
+        payload = self._execute_game_action("""(() => {
+            if (!globalThis.Game || typeof Game.LoadSave!=='function'
+                || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer) return false;
+            return Game.LoadSave(__SAVE__)===true;
+        })()""".replace("__SAVE__", json.dumps(save_data.strip())))
+        return payload is True
+
+    def restore_sugar_lump_checkpoint(self, checkpoint) -> Dict[str, Any]:
+        """Impede restauração expirada e verifica seed, início e tipo após LoadSave."""
+        if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("status"), dict):
+            return {"ok": False, "message": "Checkpoint inválido"}
+        script = """(() => {
+            __HELPERS__
+            const checkpoint=__CHECKPOINT__,s=checkpoint.status;
+            const fail=message=>({ok:false,message});
+            if (!lumpStatus() || typeof Game.LoadSave!=='function' || typeof b64_to_utf8!=='function')
+                return fail('Runtime indisponível para restauração');
+            if (Date.now()-s.started>=s.overripeMs-5000) return fail('Backup expirou: a importação colheria automaticamente o lump');
+            let parts;
+            try { parts=b64_to_utf8(unescape(checkpoint.save).split('!END!')[0]).split('|'); }
+            catch(e) { return fail('Save do checkpoint inválido'); }
+            const stats=(parts[2]||'').split(';'),lumps=(parts[4]||'').split(';');
+            if (Number(lumps[44])!==s.started || Number(lumps[46])!==s.type || stats[4]!==checkpoint.seed)
+                return fail('Save não corresponde ao checkpoint inicial');
+            if (Game.LoadSave(checkpoint.save)!==true) return fail('O jogo rejeitou a restauração');
+            const after=lumpStatus();
+            if (!after || after.started!==s.started || after.type!==s.type || String(Game.seed)!==checkpoint.seed)
+                return fail('Restauração divergente; automações devem permanecer pausadas');
+            return {ok:true,message:'Backup inicial restaurado e verificado'};
+        })()""".replace("__HELPERS__", SUGAR_LUMP_HELPERS).replace("__CHECKPOINT__", json.dumps(checkpoint))
+        payload = self._execute_game_action(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Falha de comunicação ao restaurar"}
+
+    def persist_game_save(self) -> bool:
+        """Solicita gravação nativa do resultado aceito no disco/localStorage."""
+        result = self.execute_js("""(() => {
+            if (!globalThis.Game || typeof Game.WriteSave!=='function') return false;
+            Game.WriteSave();
+            if (typeof localStorageGet!=='function' || typeof b64_to_utf8!=='function') return false;
+            const stored=localStorageGet(Game.SaveTo);
+            return !!stored && b64_to_utf8(unescape(stored).split('!END!')[0])===Game.lastSaveData;
+        })()""")
+        return result is True
+
     def get_golden_cookie(self) -> Optional[Dict]:
         """Retorna o shimmer do golden cookie se existir."""
         return self.execute_js("Game.shimmers.find(s => s.type === 'golden')")

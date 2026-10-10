@@ -39,7 +39,7 @@ class AutomationControl(QWidget):
         self.status.setStyleSheet("color: #e8b766;")
         self.button.setEnabled(False)
 
-    def set_paused(self, paused: bool):
+    def set_paused(self, paused: bool, owner: str = "Combo"):
         if self.running and not self.stopping:
-            self.status.setText("Pausada pelo Combo" if paused else "Rodando")
+            self.status.setText(f"Pausada pelo {owner}" if paused else "Rodando")
             self.status.setStyleSheet(f"color: {'#e8b766' if paused else '#65d6a5'};")

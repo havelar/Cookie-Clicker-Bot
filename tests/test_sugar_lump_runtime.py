@@ -91,3 +91,29 @@ Game.LoadSave=save=>{events.push(['load']);if(cfg.reject)return false;const part
     def test_preserved_ripe_lump_is_harvested(self):
         result=self.run_script('harvest_sugar_lump_result',{'type':2},preserved_types=(2,4))
         self.assertTrue(result['result']['ok'])
+
+    def checkpoint(self,started=999999997500):
+        fields=['0']*47;fields[44]=str(started);fields[46]='0'
+        import base64
+        save=base64.b64encode(('2.053||0;0;0;bakery;example||'+';'.join(fields)).encode()).decode()+'!END!'
+        return {'save':save,'seed':'example','status':{'started':started,'type':0,'overripeMs':10000}}
+
+    def test_export_and_persist_use_native_save(self):
+        result=self.run_script('get_sugar_lump_checkpoint')
+        self.assertEqual(result['result']['status']['type'],0)
+        self.assertTrue(result['result']['save'])
+        result=self.run_script('persist_game_save')
+        self.assertTrue(result['result'])  # WriteSave() itself returns undefined.
+
+    def test_restore_matches_seed_start_and_type(self):
+        result=self.run_script('restore_sugar_lump_checkpoint',checkpoint=self.checkpoint())
+        self.assertTrue(result['result']['ok'])
+        self.assertEqual(result['events'],[['load']])
+        for options in ({'diverge':True},{'reject':True}):
+            self.assertFalse(self.run_script('restore_sugar_lump_checkpoint',options,checkpoint=self.checkpoint())['result']['ok'])
+
+    def test_expired_or_mismatched_checkpoint_never_loads(self):
+        for checkpoint in (self.checkpoint(999999980000),dict(self.checkpoint(),seed='other')):
+            result=self.run_script('restore_sugar_lump_checkpoint',checkpoint=checkpoint)
+            self.assertFalse(result['result']['ok'])
+            self.assertEqual(result['events'],[])

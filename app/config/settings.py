@@ -60,6 +60,12 @@ class AutomationConfig:
     preserve_sugar_lump_type_3: bool = False
     preserve_sugar_lump_type_4: bool = True
 
+    # Save Scum: apenas preferências; sempre inicia desligado.
+    save_scum_golden: bool = True
+    save_scum_caramelized: bool = True
+    save_scum_max_attempts: int = 1000
+    save_scum_interval_seconds: float = 0.2
+
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
 
@@ -210,6 +216,10 @@ def load_automation_settings() -> None:
         automation_config.preserve_sugar_lump_type_4,
         type=bool,
     )
+    automation_config.save_scum_golden = settings.value("save_scum_golden", True, type=bool)
+    automation_config.save_scum_caramelized = settings.value("save_scum_caramelized", True, type=bool)
+    automation_config.save_scum_max_attempts = min(100000, max(1, settings.value("save_scum_max_attempts", 1000, type=int)))
+    automation_config.save_scum_interval_seconds = min(10.0, max(0.05, settings.value("save_scum_interval_seconds", 0.2, type=float)))
     automation_config.stock_market_buy_price_limit = settings.value(
         "stock_market_buy_price_limit",
         automation_config.stock_market_buy_price_limit,
@@ -364,6 +374,8 @@ def save_automation_settings() -> None:
     settings.setValue("preserve_sugar_lump_type_2", automation_config.preserve_sugar_lump_type_2)
     settings.setValue("preserve_sugar_lump_type_3", automation_config.preserve_sugar_lump_type_3)
     settings.setValue("preserve_sugar_lump_type_4", automation_config.preserve_sugar_lump_type_4)
+    for name in ("save_scum_golden", "save_scum_caramelized", "save_scum_max_attempts", "save_scum_interval_seconds"):
+        settings.setValue(name, getattr(automation_config, name))
     settings.setValue("stock_market_buy_price_limit", automation_config.stock_market_buy_price_limit)
     settings.setValue("stock_market_sell_price_limit", automation_config.stock_market_sell_price_limit)
     settings.setValue("stock_market_trend_ticks", automation_config.stock_market_trend_ticks)

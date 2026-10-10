@@ -231,3 +231,7 @@ A pasta [reference/cookie-clicker](reference/cookie-clicker/README.md) contém t
 os arquivos JavaScript da instalação Steam, preservados sem alterações, com
 versão, origem e hashes de integridade registrados em `manifest.json`.
 Use essa cópia como referência ao implementar ou revisar as automações.
+
+## Save Scum de Sugar Lumps
+
+A aba **Save Scum** permite procurar Dourado e Caramelizado com backup e restauração verificados. Veja [como configurar e testar](docs/save-scum.md).

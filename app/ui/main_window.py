@@ -25,6 +25,7 @@ from app.models.auto_ascensao import RelatorioAutoAscensao
 from app.models.combo import ConfiguracaoCombo, EstadoCombo, RelatorioCombo
 from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
+from app.ui.save_scum_tab import SaveScumTab
 from app.ui.automation_control import AutomationControl
 from app.ui.number_inputs import ScrollSafeDoubleSpinBox, ScrollSafeSpinBox
 from app.ui.stock_limits_dialog import StockLimitsDialog
@@ -147,6 +148,9 @@ class MainWindow(QMainWindow):
         self._combo_automation: Optional[ComboAutomation] = None
         self._simple_farm_automation: Optional[SimpleFarmAutomation] = None
         self._combo_exclusive = False
+        self._save_scum_exclusive = False
+        self._save_scum_disabled_widgets = []
+        self._save_scum_resume_clicker = False
         self._combo_keep_awake = False
         self._session_started_at = time.monotonic()
         self.stock_automation = StockMarketAutomation(bridge) if bridge else None
@@ -191,6 +195,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._garden_tab(), "Garden")
         self.tabs.addTab(self._combo_tab(), "Combo")
         self.tabs.addTab(self._auto_ascension_tab(), "Auto Ascensão")
+        self.save_scum_tab = SaveScumTab(self)
+        self.tabs.addTab(self.save_scum_tab, "Save Scum")
         self.tabs.addTab(self._activity_tab(), "Atividade")
         self.tabs.addTab(self._settings_tab(), "Configurações")
         layout.addWidget(self.tabs, 1)
@@ -951,6 +957,62 @@ class MainWindow(QMainWindow):
             ):
                 widget.setEnabled(not busy)
 
+    def _acquire_save_scum(self):
+        if not self.bridge or not self.runner:
+            self.save_scum_tab.display_error("Bridge ou runner indisponível.")
+            return False
+        if self._save_scum_exclusive:
+            self.save_scum_tab.display_error("Restaure o início antes de iniciar outra sessão.")
+            return False
+        if any(worker and worker.isRunning() for worker in (self._combo_worker, self._auto_ascension_worker)):
+            self.save_scum_tab.display_error("Desligue Simple Farm, Combo e Auto Ascensão antes de iniciar Save Scum.")
+            return False
+        self._save_scum_resume_clicker = self.runner.is_running
+        if not self.runner.acquire_exclusive("save_scum"):
+            self.save_scum_tab.display_error("Outra automação mantém o controle exclusivo do jogo.")
+            return False
+        self._save_scum_exclusive = True
+        self.stock_refresh_timer.stop()
+        self.garden_refresh_timer.stop()
+        for worker in (self._stock_worker, self._garden_worker):
+            if worker and worker.isRunning() and not worker.wait((app_config.connection_timeout + 1) * 1000):
+                self._release_save_scum()
+                self.save_scum_tab.display_error("A operação do Garden/Banco ainda não terminou. Tente novamente.")
+                return False
+        widgets = (self.clicker_button, self.backups_button, self.golden_checkbox, self.fortune_checkbox,
+                   self.reindeer_checkbox, self.wrinkler_checkbox, self.grimoire_spell_spam_checkbox,
+                   self.sugar_lump_checkbox, self.stock_toggle, self.garden_toggle,
+                   self.combo_toggle, self.combo_preview_button, self.simple_farm_toggle,
+                   self.simple_farm_preview_button, self.auto_ascension_toggle, self.auto_ascension_preview_button,
+                   *self._preserve_checkboxes)
+        self._save_scum_disabled_widgets = [(w, w.isEnabled()) for w in widgets]
+        for widget, _ in self._save_scum_disabled_widgets:
+            widget.setEnabled(False)
+        self.stock_toggle.set_paused(True, "Save Scum")
+        self.garden_toggle.set_paused(True, "Save Scum")
+        return True
+
+    def _release_save_scum(self):
+        if not self._save_scum_exclusive:
+            return
+        self.runner.release_exclusive("save_scum")
+        self._save_scum_exclusive = False
+        for widget, enabled in self._save_scum_disabled_widgets:
+            widget.setEnabled(enabled)
+        self._save_scum_disabled_widgets = []
+        self.stock_toggle.set_paused(False)
+        self.garden_toggle.set_paused(False)
+        if self.bridge:
+            self.stock_automation = StockMarketAutomation(self.bridge)
+            self.fazendeira = Fazendeira(self.bridge)
+            self._stock_snapshot = None
+            self.stock_refresh_timer.start(5000)
+            QTimer.singleShot(0, self.refresh_garden)
+            QTimer.singleShot(0, self._on_stock_market_timer)
+        if self._save_scum_resume_clicker:
+            self.runner.ensure_clicker_running()
+        self._save_scum_resume_clicker = False
+
     def _auto_ascension_tab(self):
         """Cria os controles e o relatório da máquina de Auto Ascensão."""
         tab = QWidget()
@@ -1073,7 +1135,7 @@ class MainWindow(QMainWindow):
 
     def start_auto_ascension(self, _checked: bool = False):
         """Liga a automação; a prévia tem um botão independente."""
-        if self._combo_exclusive or self._simple_farm_automation is not None:
+        if self._combo_exclusive or self._save_scum_exclusive or self._simple_farm_automation is not None:
             self._auto_ascension_failed("Pare o farm/Combo antes de iniciar a Auto Ascensão.")
             return
         if not self.bridge:
@@ -1299,7 +1361,7 @@ class MainWindow(QMainWindow):
 
     def refresh_stock_market(self, automatic: bool = False):
         """Solicita um snapshot manual sem bloquear a thread da interface."""
-        if self._combo_exclusive:
+        if self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.bridge:
             self._show_stock_unavailable("Bridge não está disponível")
@@ -1312,7 +1374,7 @@ class MainWindow(QMainWindow):
 
     def _on_stock_market_timer(self):
         """Atualiza o snapshot a cada 5 segundos e aplica a regra somente se autorizada."""
-        if self._combo_exclusive:
+        if self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.bridge or (self._stock_worker and self._stock_worker.isRunning()):
             return
@@ -1367,7 +1429,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_stock_auto_trade(self, enabled: bool):
         if enabled:
-            if self._combo_exclusive or not self.bridge or not self.stock_automation:
+            if self._combo_exclusive or self._save_scum_exclusive or not self.bridge or not self.stock_automation:
                 self._show_stock_feedback(False, "Não foi possível ligar: conecte a bridge e aguarde o Combo terminar.")
                 return
             self._stock_stop = threading.Event()
@@ -1415,7 +1477,7 @@ class MainWindow(QMainWindow):
         save_automation_settings()
 
     def _submit_stock_order(self, side: str):
-        if self._combo_exclusive:
+        if self._combo_exclusive or self._save_scum_exclusive:
             self._show_stock_feedback(False, "Modo Combo está ativo; ordens estão pausadas.")
             return
         if not self.bridge:
@@ -1547,7 +1609,7 @@ class MainWindow(QMainWindow):
 
     def refresh_garden(self, _checked: bool = False):
         """Atualiza snapshot e plano sem alterar o Garden."""
-        if self._combo_exclusive:
+        if self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
@@ -1564,7 +1626,7 @@ class MainWindow(QMainWindow):
 
     def simulate_garden(self, _checked: bool = False):
         """Executa somente a leitura e o planejamento da Fazendeira."""
-        if self._combo_exclusive:
+        if self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
@@ -1581,7 +1643,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_garden_timer(self):
-        if self._combo_exclusive:
+        if self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.fazendeira or (self._garden_worker and self._garden_worker.isRunning()):
             return
@@ -1753,7 +1815,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_garden_automation(self, enabled: bool):
         if enabled:
-            if self._combo_exclusive or not self.bridge or not self.fazendeira:
+            if self._combo_exclusive or self._save_scum_exclusive or not self.bridge or not self.fazendeira:
                 self._show_garden_feedback(False, "Não foi possível ligar: conecte a bridge e aguarde o Combo terminar.")
                 return
             self._garden_stop = threading.Event()
@@ -2005,11 +2067,23 @@ class MainWindow(QMainWindow):
             self.backup_dialog = BackupDialog(self.backup_manager, self); self.backup_dialog.backup_restored.connect(self.on_backup_restored)
         self.backup_dialog.show(); self.backup_dialog.raise_(); self.backup_dialog.activateWindow()
     def on_backup_restored(self, save_data):
+        if self._save_scum_exclusive:
+            if self.save_scum_tab.worker or not self.save_scum_tab.last_report or self.save_scum_tab.last_report.safe_to_resume:
+                self.add_log("Save Scum ativo: desligue antes de importar outro backup.")
+                return
+            if self.bridge and self.bridge.load_game_save(save_data):
+                self.save_scum_tab.manual_recovery()
+            else:
+                self.add_log("Falha ao importar backup; outras automações continuam pausadas.")
+            return
         if self.runner and self.runner.bridge and self.runner.bridge.load_game_save(save_data): logger.info("Save restaurado com sucesso via backup"); self.add_log("Save restaurado com sucesso!")
         else: logger.warning("Bridge não disponível ou falhou ao restaurar save"); self.add_log("ERRO: Falha ao restaurar save")
 
     def closeEvent(self, event):
         """Evita destruir uma thread de consulta ainda em execução."""
+        if not self.save_scum_tab.shutdown():
+            event.ignore()
+            return
         self._stock_stop.set()
         self._garden_stop.set()
         if self._combo_worker and self._combo_worker.isRunning():
