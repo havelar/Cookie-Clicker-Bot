@@ -957,45 +957,48 @@ class MainWindow(QMainWindow):
             ):
                 widget.setEnabled(not busy)
 
-    def _acquire_save_scum(self):
+    def _acquire_save_scum(self, owner="save_scum", error_handler=None):
+        report_error = error_handler or self.save_scum_tab.display_error
+        label = "Save Scum" if owner == "save_scum" else "Backups"
         if not self.bridge or not self.runner:
-            self.save_scum_tab.display_error("Bridge ou runner indisponível.")
+            report_error("Bridge ou runner indisponível.")
             return False
         if self._save_scum_exclusive:
-            self.save_scum_tab.display_error("Restaure o início antes de iniciar outra sessão.")
+            report_error("Restaure o início antes de iniciar outra sessão.")
             return False
         if any(worker and worker.isRunning() for worker in (self._combo_worker, self._auto_ascension_worker)):
-            self.save_scum_tab.display_error("Desligue Simple Farm, Combo e Auto Ascensão antes de iniciar Save Scum.")
+            report_error("Desligue Simple Farm, Combo e Auto Ascensão antes de iniciar Save Scum.")
             return False
         self._save_scum_resume_clicker = self.runner.is_running
-        if not self.runner.acquire_exclusive("save_scum"):
-            self.save_scum_tab.display_error("Outra automação mantém o controle exclusivo do jogo.")
+        if not self.runner.acquire_exclusive(owner):
+            report_error("Outra automação mantém o controle exclusivo do jogo.")
             return False
+        self._exclusive_session_owner = owner
         self._save_scum_exclusive = True
         self.stock_refresh_timer.stop()
         self.garden_refresh_timer.stop()
         for worker in (self._stock_worker, self._garden_worker):
             if worker and worker.isRunning() and not worker.wait((app_config.connection_timeout + 1) * 1000):
                 self._release_save_scum()
-                self.save_scum_tab.display_error("A operação do Garden/Banco ainda não terminou. Tente novamente.")
+                report_error("A operação do Garden/Banco ainda não terminou. Tente novamente.")
                 return False
         widgets = (self.clicker_button, self.backups_button, self.golden_checkbox, self.fortune_checkbox,
                    self.reindeer_checkbox, self.wrinkler_checkbox, self.grimoire_spell_spam_checkbox,
                    self.sugar_lump_checkbox, self.stock_toggle, self.garden_toggle,
                    self.combo_toggle, self.combo_preview_button, self.simple_farm_toggle,
                    self.simple_farm_preview_button, self.auto_ascension_toggle, self.auto_ascension_preview_button,
-                   *self._preserve_checkboxes)
+                   *self._preserve_checkboxes, self.save_scum_tab.toggle, self.save_scum_tab.preview)
         self._save_scum_disabled_widgets = [(w, w.isEnabled()) for w in widgets]
         for widget, _ in self._save_scum_disabled_widgets:
             widget.setEnabled(False)
-        self.stock_toggle.set_paused(True, "Save Scum")
-        self.garden_toggle.set_paused(True, "Save Scum")
+        self.stock_toggle.set_paused(True, label)
+        self.garden_toggle.set_paused(True, label)
         return True
 
     def _release_save_scum(self):
         if not self._save_scum_exclusive:
             return
-        self.runner.release_exclusive("save_scum")
+        self.runner.release_exclusive(self._exclusive_session_owner)
         self._save_scum_exclusive = False
         for widget, enabled in self._save_scum_disabled_widgets:
             widget.setEnabled(enabled)
@@ -1012,6 +1015,8 @@ class MainWindow(QMainWindow):
         if self._save_scum_resume_clicker:
             self.runner.ensure_clicker_running()
         self._save_scum_resume_clicker = False
+        self._exclusive_session_owner = "save_scum"
+        self._backup_recovery_pending = False
 
     def _auto_ascension_tab(self):
         """Cria os controles e o relatório da máquina de Auto Ascensão."""
@@ -2064,8 +2069,44 @@ class MainWindow(QMainWindow):
         self.cookies_clicked_label.setText(f"Cliques: {self.runner.cookies_clicked}"); self.golden_clicked_label.setText(f"Golden: {self.runner.golden_cookies_clicked}"); self.reindeer_popped_label.setText(f"Renas: {self.runner.reindeer_popped}"); self.wrinklers_popped_label.setText(f"Wrinklers: {self.runner.wrinklers_popped}")
     def open_backup_dialog(self):
         if self.backup_dialog is None:
-            self.backup_dialog = BackupDialog(self.backup_manager, self); self.backup_dialog.backup_restored.connect(self.on_backup_restored)
-        self.backup_dialog.show(); self.backup_dialog.raise_(); self.backup_dialog.activateWindow()
+            self.backup_dialog = BackupDialog(
+                self.backup_manager, self, get_bridge=lambda: self.bridge,
+                acquire_restore=self._acquire_backup_restore,
+                finish_restore=self._finish_backup_restore,
+            )
+        self.backup_dialog.show()
+        self.backup_dialog.raise_()
+        self.backup_dialog.activateWindow()
+
+    def _acquire_backup_restore(self):
+        if self._save_scum_exclusive:
+            if self._exclusive_session_owner == "backup_restore":
+                return True
+            pending = (not self.save_scum_tab.worker and self.save_scum_tab.last_report
+                       and not self.save_scum_tab.last_report.safe_to_resume)
+            if pending:
+                return True
+            self.backup_dialog.set_status("Desligue Save Scum antes de carregar um backup.", True)
+            return False
+        return self._acquire_save_scum(
+            owner="backup_restore",
+            error_handler=lambda message: self.backup_dialog.set_status(message, True),
+        )
+
+    def _finish_backup_restore(self, result):
+        self.add_log("Backups: " + result.message)
+        if self._exclusive_session_owner == "save_scum":
+            if result.ok:
+                self.save_scum_tab.manual_recovery()
+            return
+        if result.ok or (result.safe_to_resume and not self._backup_recovery_pending):
+            self._backup_recovery_pending = False
+            self._release_save_scum()
+        else:
+            self._backup_recovery_pending = True
+            self.backups_button.setEnabled(True)
+            self.add_log("Outras automações continuam pausadas até recuperar o save.")
+
     def on_backup_restored(self, save_data):
         if self._save_scum_exclusive:
             if self.save_scum_tab.worker or not self.save_scum_tab.last_report or self.save_scum_tab.last_report.safe_to_resume:
@@ -2081,6 +2122,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Evita destruir uma thread de consulta ainda em execução."""
+        if self.backup_dialog and not self.backup_dialog.shutdown():
+            event.ignore()
+            return
         if not self.save_scum_tab.shutdown():
             event.ignore()
             return

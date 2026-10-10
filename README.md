@@ -235,3 +235,7 @@ Use essa cópia como referência ao implementar ou revisar as automações.
 ## Save Scum de Sugar Lumps
 
 A aba **Save Scum** permite procurar Dourado e Caramelizado com backup e restauração verificados. Veja [como configurar e testar](docs/save-scum.md).
+
+## Backups do jogo
+
+Salve e carregue diretamente pela tela **Gerenciar Backups**, com nome opcional e **Desfazer carga**. Veja [como usar](docs/backups.md).
