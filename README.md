@@ -27,7 +27,7 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 
 - Python 3.12 ou superior
 - Windows 10/11 (suporte nativo para APIs Win32)
-- Cookie Clicker rodando no navegador Chrome
+- Cookie Clicker instalado pela Steam
 
 ### Instalação das Dependências
 
@@ -42,16 +42,21 @@ pip install -r requirements.txt
 
 ## 🎮 Como Usar
 
-1. **Inicie o Cookie Clicker** no navegador Chrome
+1. **Deixe a Steam aberta**. Não é necessário configurar opções de inicialização.
 2. **Execute o bot**:
    ```bash
    python main.py
    ```
-3. **Configure as automações** na interface gráfica:
+3. Clique em **Abrir jogo**, no topo do bot. O Cookie Clicker será iniciado com
+   `--remote-debugging-port=9222` e conectado automaticamente. O bot pode abrir
+   mesmo com o jogo fechado. A instalação é localizada nas bibliotecas da Steam;
+   se necessário, selecione `Cookie Clicker.exe` uma vez para salvar o caminho.
+   Se o jogo já estiver aberto sem debugger, salve e feche antes de usar o botão.
+4. **Configure as automações** na interface gráfica:
    - Ative o clicker do cookie principal
    - Habilite detecção de Golden Cookies
    - Habilite detecção de Fortune Cookies
-4. **Controle via teclado**: Use SCROLL LOCK para ligar/desligar o clicker
+5. **Controle via teclado**: Use SCROLL LOCK para ligar/desligar o clicker
 
 ## 🏗️ Arquitetura
 
@@ -216,8 +221,8 @@ Logs detalhados em console para debugging e monitoramento.
 Stock Market, Garden, Simple Farm, Combo Endgame e Auto Ascensão usam o mesmo
 controle **Ligar / Desligar**, com estado **Desligada**, **Rodando** ou
 **Desligando…**. Não há uma etapa separada para habilitar “automação real”.
-As configurações são salvas, mas essas automações começam desligadas ao abrir o
-bot. Prévia e simulação continuam separadas e não ligam a execução.
+As configurações são salvas. Stock Market e Garden também preservam se estavam
+ligados e aguardam **Ligar bot** para retomar; os modos especiais começam desligados. Prévia e simulação continuam separadas e não ligam a execução.
 
 Ao desligar, a chamada já enviada ao jogo termina; novas ordens e ações são
 canceladas. As leituras de Stock e Garden continuam disponíveis. Durante um
@@ -239,3 +244,19 @@ A aba **Save Scum** permite procurar Dourado e Caramelizado com backup e restaur
 ## Backups do jogo
 
 Salve e carregue diretamente pela tela **Gerenciar Backups**, com nome opcional e **Desfazer carga**. Veja [como usar](docs/backups.md).
+
+## Controle geral do bot
+
+A barra superior mostra **Abrir jogo** com o jogo fechado, **Ligar bot** com o jogo aberto e **Desligar bot** durante a execução. Conectar ao jogo não inicia as automações. Ligar libera as configurações e os controles individuais; desligar bloqueia detector, clicker (inclusive Scroll Lock), Banco, Garden e os modos especiais.
+
+Banco e Garden mantêm a seleção para retomar ao ligar novamente. Combo, Simple Farm, Auto Ascensão e Save Scum recebem parada segura e devem ser iniciados novamente nas abas. O botão mostra **Pausando…** enquanto as ações em andamento terminam. Uma restauração pendente ainda precisa ser resolvida antes de liberar o bot. As configurações e consultas continuam disponíveis enquanto ele está pausado.
+
+A seleção de **Ligar/Desligar** do Stock Market e Garden é salva imediatamente e restaurada entre execuções. Desligar o bot, fechar o programa ou pausar por um modo exclusivo mantém essa seleção; desligar uma automação na própria aba salva a escolha de deixá-la desligada.
+
+## Clareza dos logs
+
+A aba Atividade usa horário, nível e mensagem. Verificações de janela, conexão e detalhes técnicos ficam em DEBUG; jogo fechado não é tratado como erro. As coletas comuns são resumidas a cada 60 segundos de atividade e ao pausar/encerrar, com contadores em tempo real na interface. Sugar Lumps e uso de magias continuam registrados individualmente.
+
+O Garden agrupa plantios e colheitas comuns por planta; descobertas de sementes e ações especiais continuam explícitas. Save Scum atualiza o estado em tempo real e registra progresso no máximo a cada cinco segundos, além dos resultados finais. Falhas novas aparecem imediatamente; mensagens idênticas do mesmo ponto do código são limitadas a uma por 30 segundos, com a contagem de repetições no próximo registro.
+
+O histórico não força a rolagem para baixo durante a leitura. Mensagens são exibidas como texto literal e o arquivo usa UTF-8. Os detalhes por ação continuam disponíveis com nível DEBUG.

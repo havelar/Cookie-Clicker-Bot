@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication, QCheckBox, QMessageBox
 from app.ui.main_window import MainWindow
+from app.config.settings import automation_config
 
 
 class AutomationControlTests(unittest.TestCase):
@@ -14,6 +15,11 @@ class AutomationControlTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        previous = (automation_config.enable_stock_market_auto_trade, automation_config.enable_garden_automation)
+        self.addCleanup(lambda: setattr(automation_config, "enable_stock_market_auto_trade", previous[0]))
+        self.addCleanup(lambda: setattr(automation_config, "enable_garden_automation", previous[1]))
+        automation_config.enable_stock_market_auto_trade = False
+        automation_config.enable_garden_automation = False
         self.patches = [patch('app.ui.main_window.save_automation_settings'),
                         patch('app.ui.main_window.QTimer.singleShot'),
                         patch.object(MainWindow, '_set_combo_keep_awake')]
@@ -21,6 +27,10 @@ class AutomationControlTests(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
         self.window = MainWindow()
+        self.window._bot_enabled = True  # Fixture: bot global ligado para testar controles individuais.
+        for name in ("clicker_button", "stock_toggle", "garden_toggle", "simple_farm_toggle", "combo_toggle", "auto_ascension_toggle"):
+            getattr(self.window, name).setEnabled(True)
+        self.window.save_scum_tab.toggle.setEnabled(True)
         self.addCleanup(self.close_window)
 
     def close_window(self):

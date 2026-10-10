@@ -9,7 +9,7 @@ from app.automation.input import InputHandler
 from app.bridge.js_bridge import CookieClickerBridge
 from app.config.settings import app_config, automation_config
 from app.core.window_finder import find_cookie_window
-from app.utils.logger import logger
+from app.utils.logger import logger, ActivitySummary
 
 
 class Macro:
@@ -60,6 +60,8 @@ class AutomationRunner:
         self.bridge = bridge
         self.is_running = False
         self.stop_event = threading.Event()
+        self.paused = threading.Event()
+        self._collection_summary = ActivitySummary(logger)
         self._clicker_state_lock = threading.RLock()
         self._exclusive_lock = threading.RLock()
         self._exclusive_owner: Optional[str] = None
@@ -85,6 +87,15 @@ class AutomationRunner:
         self.detector_thread: Optional[threading.Thread] = None
         self.clicker_thread: Optional[threading.Thread] = None
 
+    def set_paused(self, paused: bool):
+        """Bloqueia detector, atalhos e clicker sem alterar as preferências."""
+        if paused:
+            self.paused.set()
+            self._collection_summary.flush()
+            self.ensure_clicker_stopped()
+        else:
+            self.paused.clear()
+
     def update_cookie_position(self) -> bool:
         """
         Atualiza a posição do cookie antes de iniciar o clique.
@@ -99,11 +110,13 @@ class AutomationRunner:
 
         self.cookie_position = (cookie_pos['x'], cookie_pos['y'])
         self.input_handler.cookie_position = self.cookie_position
-        logger.info(f"Posição do cookie atualizada: {self.cookie_position}")
+        logger.debug(f"Posição do cookie atualizada: {self.cookie_position}")
         return True
 
     def toggle_clicker(self) -> None:
         """Liga/desliga o clicker do cookie."""
+        if self.paused.is_set():
+            return
         with self._exclusive_lock:
             if self._simple_farm_active:
                 self._simple_farm_manual_clicker = not self._simple_farm_manual_clicker
@@ -121,7 +134,7 @@ class AutomationRunner:
             self.is_running = not self.is_running
             current_state = self.is_running
         status = "INICIADO" if current_state else "PARADO"
-        logger.info(f"Macro {status}!")
+        logger.info("Clicker: %s.", "ligado" if current_state else "desligado")
 
         if self.on_clicker_state_change:
             try:
@@ -132,7 +145,7 @@ class AutomationRunner:
     def ensure_clicker_running(self) -> bool:
         """Habilita o clicker de forma idempotente para a fase de produção."""
         with self._clicker_state_lock:
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or self.paused.is_set():
                 logger.warning("Clicker não foi habilitado porque o runner está encerrando")
                 return False
             if self.is_running:
@@ -215,18 +228,18 @@ class AutomationRunner:
 
     def detector_loop(self) -> None:
         """Thread dedicada às coletas e automações baseadas no runtime."""
-        logger.info("Thread detector iniciada. Monitorando automações do jogo...")
+        logger.debug("Detector: thread iniciada")
 
         while not self.stop_event.is_set():
             try:
-                if self.exclusive_owner is not None:
+                if self.paused.is_set() or self.exclusive_owner is not None:
                     # O dono exclusivo usa a mesma bridge e decide quais ações
                     # são seguras; o detector comum permanece totalmente passivo.
                     time.sleep(app_config.detect_interval)
                     continue
                 # A exclusividade aguarda todo o ciclo de ações em andamento.
                 with self._exclusive_lock:
-                    if self._exclusive_owner is None:
+                    if self._exclusive_owner is None and not self.paused.is_set():
                         self._run_detector_cycle()
 
                 # Delay configurável
@@ -237,28 +250,32 @@ class AutomationRunner:
                 time.sleep(1)
 
     def _run_detector_cycle(self):
+        if self.paused.is_set():
+            return
         # A mesma trava aguarda uma coleta/cast em andamento ao iniciar o farm.
         with self._exclusive_lock:
             if not self._simple_farm_active and self._exclusive_owner is None:
                 if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
                     self.golden_cookies_clicked += 1
-                    logger.info("Golden cookie coletado!")
+                    self._collection_summary.record("Golden Cookies")
                 self._run_grimoire_cycle()
 
         # Verificar fortune cookie
-        if automation_config.enable_fortune_cookie and self.bridge.click_fortune():
-            logger.info("Fortune cookie clicado!")
+        if not self.paused.is_set() and automation_config.enable_fortune_cookie and self.bridge.click_fortune():
+            self._collection_summary.record("Fortunes")
 
         # Verificar rena
-        if automation_config.enable_reindeer and self.bridge.pop_reindeer():
+        if not self.paused.is_set() and automation_config.enable_reindeer and self.bridge.pop_reindeer():
             self.reindeer_popped += 1
-            logger.info("Rena coletada!")
+            self._collection_summary.record("Renas")
 
         # Verificar wrinklers normais com delay de popagem
-        if automation_config.enable_wrinkler_popper:
+        if not self.paused.is_set() and automation_config.enable_wrinkler_popper:
             wrinklers = self.bridge.get_wrinklers() or []
             current_time = time.time()
             for wr in wrinklers:
+                if self.paused.is_set():
+                    return
                 index = wr.get('index')
                 hp = wr.get('hp', 0)
                 wr_type = wr.get('type')
@@ -273,12 +290,13 @@ class AutomationRunner:
                 if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
                     if self.bridge.pop_wrinkler_by_index(index):
                         self.wrinklers_popped += 1
+                        self._collection_summary.record("Wrinklers")
                     self.wrinkler_seen_at.pop(index, None)
 
         self._run_sugar_lump_cycle()
 
     def _run_sugar_lump_cycle(self):
-        if not automation_config.enable_sugar_lump_harvest:
+        if self.paused.is_set() or not automation_config.enable_sugar_lump_harvest:
             return False
         status = self.bridge.get_sugar_lump_status()
         if not status or not status.get("mature") or status.get("overripe"):
@@ -294,7 +312,7 @@ class AutomationRunner:
 
     def _run_grimoire_cycle(self, now: Optional[float] = None) -> bool:
         """Tenta uma vez por segundo; a bridge decide atomicamente se a mana está cheia."""
-        if not automation_config.enable_grimoire_spell_spam:
+        if self.paused.is_set() or not automation_config.enable_grimoire_spell_spam:
             self._last_grimoire_failure = None
             return False
         current_time = time.monotonic() if now is None else now
@@ -319,11 +337,11 @@ class AutomationRunner:
 
     def clicker_loop(self) -> None:
         """Thread dedicada para clicar no cookie principal."""
-        logger.info(f"Thread clicker iniciada. Pressione {app_config.toggle_key} para ligar/desligar.")
+        logger.debug("Clicker: thread iniciada; atalho %s", app_config.toggle_key)
 
         while not self.stop_event.is_set():
             try:
-                if self.is_running:
+                if self.is_running and not self.paused.is_set():
                     # Clique direto sem consultar bridge
                     self.input_handler.click_cookie()
                     self.cookies_clicked += 1
@@ -331,7 +349,7 @@ class AutomationRunner:
                     time.sleep(app_config.click_interval)
 
                 # Verificar toggle
-                if self.input_handler.is_key_pressed(app_config.toggle_key):
+                if not self.paused.is_set() and self.input_handler.is_key_pressed(app_config.toggle_key):
                     self.toggle_clicker()
                     time.sleep(0.3)  # Debounce
 
@@ -345,7 +363,7 @@ class AutomationRunner:
 
     def start(self) -> None:
         """Inicia as threads de automação em background."""
-        logger.info("Iniciando automações...")
+        logger.debug("Preparando threads de automação")
 
         # Iniciar threads
         self.detector_thread = threading.Thread(target=self.detector_loop, daemon=True, name="Detector")
@@ -354,11 +372,12 @@ class AutomationRunner:
         self.detector_thread.start()
         self.clicker_thread.start()
 
-        logger.info("Threads de automação iniciadas em background")
+        logger.debug("Threads de automação prontas; execução depende do controle geral")
 
     def stop(self) -> None:
         """Para todas as threads."""
         self.stop_event.set()
+        self._collection_summary.flush()
         logger.info("Automações paradas")
 
 

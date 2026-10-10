@@ -1,3 +1,4 @@
+import threading
 """Testes da automação de mana máxima do Grimoire."""
 import os
 import unittest
@@ -82,6 +83,7 @@ class GrimoireRunnerTests(unittest.TestCase):
             {"cast": True, "reason": "cast", "spellName": "Stretch Time"},
         ])
         runner = object.__new__(AutomationRunner)
+        runner.paused = threading.Event()
         runner.bridge = bridge
         runner._last_grimoire_attempt_at = 0.0
         runner._last_grimoire_failure = None

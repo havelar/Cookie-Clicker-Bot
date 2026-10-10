@@ -25,6 +25,8 @@ class AppConfig:
     remote_debugging_port: int = 9222
     connection_timeout: int = 5
 
+    game_executable_path: str = ""
+
     # Automação timing
     click_interval: float = 0.005  # 5ms entre cliques
     detect_interval: float = 0.2   # 200ms para detecção
@@ -68,6 +70,10 @@ class AutomationConfig:
 
     # Futuro: outras automações
     enable_reindeer: bool = False  # Para Natal
+
+    # Seleção persistida; execução depende do controle geral Ligar bot.
+    enable_stock_market_auto_trade: bool = False
+    enable_garden_automation: bool = False
 
     # Stock Market
     stock_market_buy_price_limit: float = 20.0
@@ -127,6 +133,7 @@ def load_app_settings() -> None:
     """Carrega as configurações gerais da aplicação do QSettings."""
     settings = QSettings("CookieClickerBot", "CookieClickerBot")
     settings.beginGroup("Application")
+    app_config.game_executable_path = settings.value("game_executable_path", "", type=str)
     app_config.max_log_lines = max(1, settings.value(
         "max_log_lines", app_config.max_log_lines, type=int
     ))
@@ -137,6 +144,7 @@ def save_app_settings() -> None:
     """Salva as configurações gerais da aplicação no QSettings."""
     settings = QSettings("CookieClickerBot", "CookieClickerBot")
     settings.beginGroup("Application")
+    settings.setValue("game_executable_path", app_config.game_executable_path)
     settings.setValue("max_log_lines", max(1, app_config.max_log_lines))
     settings.endGroup()
     settings.sync()
@@ -146,6 +154,12 @@ def load_automation_settings() -> None:
     """Carrega as configurações de automação do QSettings."""
     settings = QSettings("CookieClickerBot", "CookieClickerBot")
     settings.beginGroup("Automation")
+    automation_config.enable_stock_market_auto_trade = settings.value(
+        "enable_stock_market_auto_trade", False, type=bool,
+    )
+    automation_config.enable_garden_automation = settings.value(
+        "enable_garden_automation", False, type=bool,
+    )
     automation_config.enable_cookie_clicker = settings.value(
         "enable_cookie_clicker",
         automation_config.enable_cookie_clicker,
@@ -360,6 +374,8 @@ def save_automation_settings() -> None:
     """Salva as configurações de automação no QSettings."""
     settings = QSettings("CookieClickerBot", "CookieClickerBot")
     settings.beginGroup("Automation")
+    settings.setValue("enable_stock_market_auto_trade", automation_config.enable_stock_market_auto_trade)
+    settings.setValue("enable_garden_automation", automation_config.enable_garden_automation)
     settings.setValue("enable_cookie_clicker", automation_config.enable_cookie_clicker)
     settings.setValue("enable_golden_cookie", automation_config.enable_golden_cookie)
     settings.setValue("enable_fortune_cookie", automation_config.enable_fortune_cookie)

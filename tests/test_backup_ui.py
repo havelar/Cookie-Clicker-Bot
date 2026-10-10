@@ -97,6 +97,10 @@ class BackupCoordinationTests(unittest.TestCase):
     def setUp(self):
         self.patch=patch('app.ui.main_window.QTimer.singleShot');self.patch.start();self.addCleanup(self.patch.stop)
         self.window=MainWindow()
+        self.window._bot_enabled = True  # Fixture: bot global ligado para testar controles individuais.
+        for name in ("clicker_button", "stock_toggle", "garden_toggle", "simple_farm_toggle", "combo_toggle", "auto_ascension_toggle"):
+            getattr(self.window, name).setEnabled(True)
+        self.window.save_scum_tab.toggle.setEnabled(True)
         self.window.bridge=Mock()
         self.window.runner=Mock()
         self.window.runner.is_running=True

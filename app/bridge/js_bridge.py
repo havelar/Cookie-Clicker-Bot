@@ -83,7 +83,7 @@ class CookieClickerBridge:
         # pychrome não garante acesso concorrente seguro ao mesmo websocket.
         self._runtime_lock = threading.RLock()
 
-    def connect(self) -> bool:
+    def connect(self, tab_id: Optional[str] = None) -> bool:
         """
         Conecta ao remote debugging do CEF.
 
@@ -98,14 +98,16 @@ class CookieClickerBridge:
                     logger.error("Nenhuma aba encontrada no remote debugging")
                     return False
 
-                # Assume a primeira aba é o jogo
-                self.tab = tabs[0]
+                self.tab = next((tab for tab in tabs if tab.id == tab_id), None) if tab_id else tabs[0]
+                if self.tab is None:
+                    logger.error("A aba do jogo não está disponível no debugger")
+                    return False
                 # Evita despejar cada pacote CDP no console quando a variável
                 # de ambiente DEBUG estiver definida no processo.
                 self.tab.debug = False
                 self.tab.start()
                 self.connected = True
-                logger.info("Conectado ao CEF do Cookie Clicker via CDP")
+                logger.debug("Bridge: conexão CDP estabelecida")
                 return True
             except Exception as e:
                 logger.error(f"Erro ao conectar ao remote debugging: {e}")
@@ -123,7 +125,7 @@ class CookieClickerBridge:
             self.browser = None
             self.tab = None
             self.connected = False
-            logger.info("Desconectado do remote debugging")
+            logger.debug("Bridge: conexão CDP encerrada")
 
     def execute_js(self, code: str) -> Optional[Any]:
         """
@@ -150,10 +152,14 @@ class CookieClickerBridge:
                     # Isso não é uma falha de CDP e não deve poluir o log.
                     return None
                 elif 'exceptionDetails' in result:
-                    logger.error(f"Erro JS: {result['exceptionDetails']}")
+                    details = result['exceptionDetails']
+                    description = details.get('exception', {}).get('description') or details.get('text') or 'Erro sem descrição'
+                    logger.error("Jogo: erro de JavaScript: %s", str(description).splitlines()[0][:240])
+                    logger.debug("Detalhes do erro JavaScript: %r", details)
                     return None
                 else:
-                    logger.error(f"Resposta inesperada do CDP: {result!r}")
+                    logger.error("Bridge: o debugger retornou uma resposta inválida.")
+                    logger.debug("Resposta CDP completa: %r", result)
                     return None
             except Exception as e:
                 logger.error(f"Erro ao executar JS: {e}")
@@ -2467,7 +2473,7 @@ class CookieClickerBridge:
             f"quantidade={result.quantidade_executada}, motivo={result.motivo or 'sem código'}"
         )
         if result.sucesso:
-            logger.info(f"Auto Ascensão: {result.mensagem} ({context})")
+            logger.debug(f"Auto Ascensão: {result.mensagem} ({context})")
         else:
             logger.warning(f"Auto Ascensão: {result.mensagem} ({context})")
 
@@ -2685,7 +2691,7 @@ class CookieClickerBridge:
         if result:
             return True
         
-        logger.info("[FAIL] Golden cookie detectado mas pop() falhou")
+        logger.warning("Golden Cookie detectado, mas a coleta falhou; será tentada novamente.")
         return False
 
     def pop_reindeer(self) -> bool:

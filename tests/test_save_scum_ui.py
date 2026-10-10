@@ -18,6 +18,10 @@ class SaveScumUiTests(unittest.TestCase):
         self.patches=[patch('app.ui.save_scum_tab.save_automation_settings'),patch('app.ui.main_window.save_automation_settings'),patch('app.ui.main_window.QTimer.singleShot')]
         for p in self.patches:p.start();self.addCleanup(p.stop)
         self.window=MainWindow()
+        self.window._bot_enabled = True  # Fixture: bot global ligado para testar controles individuais.
+        for name in ("clicker_button", "stock_toggle", "garden_toggle", "simple_farm_toggle", "combo_toggle", "auto_ascension_toggle"):
+            getattr(self.window, name).setEnabled(True)
+        self.window.save_scum_tab.toggle.setEnabled(True)
         self.tab=self.window.save_scum_tab
         self.addCleanup(self.close)
     def close(self):

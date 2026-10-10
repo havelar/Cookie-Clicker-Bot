@@ -826,6 +826,7 @@ class ComboUiTests(unittest.TestCase):
 
     def test_tab_exposes_preview_real_opt_in_and_emergency_stop(self):
         window = MainWindow()
+        window._bot_enabled = True  # Fixture de execução com controle geral liberado.
         tab_names = [window.tabs.tabText(index) for index in range(window.tabs.count())]
 
         self.assertIn("Combo", tab_names)
@@ -851,6 +852,7 @@ class ComboUiTests(unittest.TestCase):
 
     def test_resume_control_releases_paused_worker_and_disables_on_finish(self):
         window = MainWindow()
+        window._bot_enabled = True  # Fixture de execução com controle geral liberado.
         worker = Mock()
         worker.isRunning.return_value = True
         automation = Mock()

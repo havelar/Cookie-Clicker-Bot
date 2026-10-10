@@ -1,4 +1,6 @@
 """Aba Save Scum: tentativas em worker e recuperação explícita de checkpoint."""
+import time
+from app.utils.logger import logger
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QGroupBox, QCheckBox, QLabel, QPushButton, QTextEdit
 from app.config.settings import automation_config, save_automation_settings
@@ -28,6 +30,9 @@ class SaveScumTab(QWidget):
         super().__init__(window)
         self.window, self.worker, self.automation = window, None, None
         self.last_report = None
+        self._last_log_signature = None
+        self._last_log_state = None
+        self._last_log_at = 0.0
         layout = QVBoxLayout(self)
         description = QLabel("Exporta um backup, colhe o lump atual e lê o próximo tipo. Se não for um alvo, restaura e tenta de novo em outro instante. Ao encontrar o alvo, salva e encerra. As outras automações ficam pausadas durante as tentativas.")
         description.setWordWrap(True)
@@ -106,6 +111,9 @@ class SaveScumTab(QWidget):
                 self.toggle.set_stopping()
                 self.automation.parar()
             return
+        if not self.window._bot_enabled:
+            self.display_error("Ligue o bot no topo antes de iniciar Save Scum.")
+            return
         if self.worker:
             return
         config = self.configuration()
@@ -142,15 +150,24 @@ class SaveScumTab(QWidget):
         text = f"{report.state} | Tentativas: {report.attempts} | {report.message}"
         self.status.setText(text)
         self.backup.setText("Backup inicial: " + (report.backup_path or "—"))
+        signature = (report.state, report.attempts, report.message)
+        now = time.monotonic()
+        if signature == self._last_log_signature:
+            return
+        if report.state == "rodando" and self._last_log_state == report.state and now - self._last_log_at < 5:
+            logger.debug("Save Scum: %s", text)
+            return
+        self._last_log_signature, self._last_log_state, self._last_log_at = signature, report.state, now
         self.logs.append(text)
         self.logs.document().setMaximumBlockCount(500)
-        self.window.add_log("Save Scum: " + text)
+        log = logger.error if not report.safe_to_resume or report.state == "erro" else logger.info
+        log("Save Scum: %s", text)
 
     def display_error(self, message):
         if self.worker:
             self.last_report = None
         self.status.setText("Erro: " + message)
-        self.window.add_log("Save Scum: " + message)
+        logger.error("Save Scum: %s", message)
 
     def finished(self):
         worker, self.worker = self.worker, None
@@ -166,6 +183,8 @@ class SaveScumTab(QWidget):
             self.window._release_save_scum()
         if worker:
             worker.deleteLater()
+
+        self.window.refresh_bot_control()
 
     def manual_recovery(self):
         self.display(SaveScumReport("restaurado", "Backup selecionado pelo usuário importado; sessão encerrada."))

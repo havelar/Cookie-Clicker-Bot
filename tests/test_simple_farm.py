@@ -385,6 +385,10 @@ class SimpleFarmUiTests(unittest.TestCase):
 
     def test_combo_tab_has_separate_simple_and_endgame_modes(self):
         window = MainWindow()
+        window._bot_enabled = True  # Fixture de execução com controle geral liberado.
+        window.clicker_button.setEnabled(True)
+        window.garden_toggle.setEnabled(True)
+        window.stock_toggle.setEnabled(True)
 
         names = [window.combo_mode_tabs.tabText(i) for i in range(window.combo_mode_tabs.count())]
         self.assertEqual(names, ["Simple Farm", "Endgame 1e72"])
@@ -410,6 +414,7 @@ class SimpleFarmUiTests(unittest.TestCase):
 
     def test_start_keeps_garden_and_bank_workers_and_timers_running(self):
         window = MainWindow()
+        window._bot_enabled = True  # Fixture de execução com controle geral liberado.
         window.bridge = Mock()
         window.runner = Mock()
         window.backup_manager = Mock()

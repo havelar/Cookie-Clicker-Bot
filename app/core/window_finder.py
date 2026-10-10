@@ -18,11 +18,11 @@ def find_cookie_window() -> Optional[int]:
     def callback(hwnd, pids):
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd)
-            if "Cookie Clicker" in title:
+            if "Cookie Clicker" in title and "Cookie Clicker Bot" not in title:
                 try:
                     _, pid = win32process.GetWindowThreadProcessId(hwnd)
                     pids.append(pid)
-                    logger.info(f"Janela encontrada: '{title}' (PID: {pid})")
+                    logger.debug(f"Janela encontrada: '{title}' (PID: {pid})")
                 except Exception as e:
                     logger.warning(f"Erro ao obter PID da janela '{title}': {e}")
 
@@ -33,5 +33,5 @@ def find_cookie_window() -> Optional[int]:
         # Retorna o primeiro PID encontrado
         return pids[0]
 
-    logger.warning("Nenhuma janela do Cookie Clicker encontrada")
+    logger.debug("Jogo fechado: nenhuma janela do Cookie Clicker encontrada")
     return None

@@ -1,4 +1,5 @@
 """Regra de colheita comum e preservação de Sugar Lumps."""
+import threading
 import copy
 import unittest
 from unittest.mock import Mock
@@ -11,6 +12,7 @@ class SugarHarvestRuleTests(unittest.TestCase):
         self.addCleanup(lambda:automation_config.__dict__.update(self.previous))
         automation_config.enable_sugar_lump_harvest=True
         self.runner=AutomationRunner.__new__(AutomationRunner)
+        self.runner.paused = threading.Event()
         self.runner.bridge=Mock()
         self.runner.sugar_lumps_harvested=0
         self.runner.bridge.harvest_sugar_lump.return_value=True

@@ -343,14 +343,37 @@ class Fazendeira:
         if layout and not should_stop():
             results.extend(self.bridge.execute_garden_layout(tuple(layout)))
         budget_wait = any(result.waiting and result.reason == "insufficient_funds" for result in results)
+        grouped = Counter()
+        waiting_logged = False
+        failures = []
         for result in results:
             if result.waiting:
-                if not self._last_budget_wait:
-                    logger.info(f"Garden: {result.message}")
+                if not self._last_budget_wait and not waiting_logged:
+                    logger.info("Garden: %s", result.message)
+                    waiting_logged = True
+                else:
+                    logger.debug("Garden: %s", result.message)
             elif result.success:
-                logger.info(f"Garden: {result.message}")
+                discovery = (result.action == "harvest" and result.seed_key
+                             and result.seed_key not in snapshot.unlocked_seed_keys)
+                if result.action in {"plant", "harvest"} and not discovery:
+                    grouped[(result.action, result.seed_key)] += 1
+                    logger.debug("Garden: %s", result.message)
+                else:
+                    logger.info("Garden: %s", result.message)
             else:
-                logger.warning(f"Garden: {result.message}")
+                failures.append(result)
+                logger.debug("Garden: %s", result.message)
+        if grouped:
+            descriptions = []
+            for (action, key), count in grouped.items():
+                recipe = GARDEN_CATALOG.get(key)
+                name = recipe.name if recipe else key or "plantas"
+                verb = "plantou" if action == "plant" else "colheu"
+                descriptions.append(f"{verb} {count} {name}")
+            logger.info("Garden: %s.", "; ".join(descriptions))
+        if failures:
+            logger.warning("Garden: %s ação(ões) não concluída(s). %s", len(failures), failures[0].message)
         self._last_budget_wait = budget_wait
         if budget_wait:
             waiting = next(result for result in results if result.waiting)
