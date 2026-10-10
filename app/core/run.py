@@ -224,64 +224,10 @@ class AutomationRunner:
                     # são seguras; o detector comum permanece totalmente passivo.
                     time.sleep(app_config.detect_interval)
                     continue
-                # A mesma trava aguarda uma coleta/cast em andamento ao iniciar o farm.
+                # A exclusividade aguarda todo o ciclo de ações em andamento.
                 with self._exclusive_lock:
-                    if not self._simple_farm_active and self._exclusive_owner is None:
-                        if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
-                            self.golden_cookies_clicked += 1
-                            logger.info("Golden cookie coletado!")
-                        self._run_grimoire_cycle()
-
-                # Verificar fortune cookie
-                if automation_config.enable_fortune_cookie and self.bridge.click_fortune():
-                    logger.info("Fortune cookie clicado!")
-
-                # Verificar rena
-                if automation_config.enable_reindeer and self.bridge.pop_reindeer():
-                    self.reindeer_popped += 1
-                    logger.info("Rena coletada!")
-
-                # Verificar wrinklers normais com delay de popagem
-                if automation_config.enable_wrinkler_popper:
-                    wrinklers = self.bridge.get_wrinklers() or []
-                    current_time = time.time()
-                    for wr in wrinklers:
-                        index = wr.get('index')
-                        hp = wr.get('hp', 0)
-                        wr_type = wr.get('type')
-                        if index is None or hp <= 0 or wr_type == 1:
-                            self.wrinkler_seen_at.pop(index, None)
-                            continue
-
-                        if index not in self.wrinkler_seen_at:
-                            self.wrinkler_seen_at[index] = current_time
-                            continue
-
-                        if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
-                            if self.bridge.pop_wrinkler_by_index(index):
-                                self.wrinklers_popped += 1
-                            self.wrinkler_seen_at.pop(index, None)
-
-                # Verificar Sugar Lump
-                if automation_config.enable_sugar_lump_harvest:
-                    lump_info = self.bridge.get_sugar_lump_status()
-                    if lump_info:
-                        lump_type = lump_info.get('type')
-                        lump_ready = lump_info.get('ready', False)
-                        preserve_flag = False
-                        if isinstance(lump_type, int) and 0 <= lump_type <= 4:
-                            preserve_flag = getattr(
-                                automation_config,
-                                f"preserve_sugar_lump_type_{lump_type}",
-                                False,
-                            )
-
-                        if not preserve_flag or lump_ready:
-                            if self.bridge.harvest_sugar_lump():
-                                self.sugar_lumps_harvested += 1
-                                logger.info(
-                                    f"Sugar Lump tipo {lump_type} coletado (ready={lump_ready})"
-                                )
+                    if self._exclusive_owner is None:
+                        self._run_detector_cycle()
 
                 # Delay configurável
                 time.sleep(app_config.detect_interval)
@@ -289,6 +235,62 @@ class AutomationRunner:
             except Exception as e:
                 logger.error(f"Erro na thread detector: {e}")
                 time.sleep(1)
+
+    def _run_detector_cycle(self):
+        # A mesma trava aguarda uma coleta/cast em andamento ao iniciar o farm.
+        with self._exclusive_lock:
+            if not self._simple_farm_active and self._exclusive_owner is None:
+                if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
+                    self.golden_cookies_clicked += 1
+                    logger.info("Golden cookie coletado!")
+                self._run_grimoire_cycle()
+
+        # Verificar fortune cookie
+        if automation_config.enable_fortune_cookie and self.bridge.click_fortune():
+            logger.info("Fortune cookie clicado!")
+
+        # Verificar rena
+        if automation_config.enable_reindeer and self.bridge.pop_reindeer():
+            self.reindeer_popped += 1
+            logger.info("Rena coletada!")
+
+        # Verificar wrinklers normais com delay de popagem
+        if automation_config.enable_wrinkler_popper:
+            wrinklers = self.bridge.get_wrinklers() or []
+            current_time = time.time()
+            for wr in wrinklers:
+                index = wr.get('index')
+                hp = wr.get('hp', 0)
+                wr_type = wr.get('type')
+                if index is None or hp <= 0 or wr_type == 1:
+                    self.wrinkler_seen_at.pop(index, None)
+                    continue
+
+                if index not in self.wrinkler_seen_at:
+                    self.wrinkler_seen_at[index] = current_time
+                    continue
+
+                if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
+                    if self.bridge.pop_wrinkler_by_index(index):
+                        self.wrinklers_popped += 1
+                    self.wrinkler_seen_at.pop(index, None)
+
+        self._run_sugar_lump_cycle()
+
+    def _run_sugar_lump_cycle(self):
+        if not automation_config.enable_sugar_lump_harvest:
+            return False
+        status = self.bridge.get_sugar_lump_status()
+        if not status or not status.get("mature") or status.get("overripe"):
+            return False
+        preserved = tuple(t for t in range(5) if getattr(automation_config, f"preserve_sugar_lump_type_{t}"))
+        if status.get("type") in preserved and not status.get("ready"):
+            return False
+        if self.bridge.harvest_sugar_lump(preserved_types=preserved):
+            self.sugar_lumps_harvested += 1
+            logger.info("Sugar Lump %s colhido; colheita garantida=%s", status.get("typeName"), status.get("ready"))
+            return True
+        return False
 
     def _run_grimoire_cycle(self, now: Optional[float] = None) -> bool:
         """Tenta uma vez por segundo; a bridge decide atomicamente se a mana está cheia."""

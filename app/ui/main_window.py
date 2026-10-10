@@ -220,7 +220,8 @@ class MainWindow(QMainWindow):
         self.grimoire_spell_spam_checkbox.setChecked(automation_config.enable_grimoire_spell_spam)
         self.grimoire_spell_spam_checkbox.stateChanged.connect(self.toggle_grimoire_spell_spam)
         grid.addWidget(self.grimoire_spell_spam_checkbox, 2, 0)
-        self.sugar_lump_checkbox = QCheckBox("Coletar Sugar Lumps maduras")
+        self.sugar_lump_checkbox = QCheckBox("Coletar Sugar Lumps ao maturar")
+        self.sugar_lump_checkbox.setToolTip("Colhe assim que matura, com 50% de chance de render zero. Os tipos preservados nas Configurações aguardam a fase de colheita garantida.")
         self.sugar_lump_checkbox.setChecked(automation_config.enable_sugar_lump_harvest)
         self.sugar_lump_checkbox.stateChanged.connect(self.toggle_sugar_lump_harvest)
         grid.addWidget(self.sugar_lump_checkbox, 2, 1)
@@ -1183,7 +1184,12 @@ class MainWindow(QMainWindow):
         preserve_grid = QGridLayout(); entries = (("Normal", 0), ("Bifurcado", 1), ("Dourado", 2), ("Carnudo", 3), ("Caramelizado", 4)); self._preserve_checkboxes = []
         for index, (text, number) in enumerate(entries):
             checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, f"preserve_sugar_lump_type_{number}")); checkbox.stateChanged.connect(lambda state, n=number: self._set_sugar_lump_type(n, state)); preserve_grid.addWidget(checkbox, index // 3, index % 3); self._preserve_checkboxes.append(checkbox)
-        sugar_form.addRow("Tipos preservados", preserve_grid)
+        sugar_hint = QLabel("Tipos marcados aguardam a colheita garantida. Os demais são colhidos ao maturar, com 50% de chance de render zero.")
+        sugar_hint.setWordWrap(True)
+        sugar_form.addRow(sugar_hint)
+        for checkbox in self._preserve_checkboxes:
+            checkbox.setToolTip("Preservar significa esperar a fase garantida, não deixar de colher. Também protege o tipo encontrado pelo Save Scum.")
+        sugar_form.addRow("Aguardar colheita garantida", preserve_grid)
         layout.addWidget(sugar_group)
         self.set_sugar_lump_preserve_enabled(automation_config.enable_sugar_lump_harvest)
 

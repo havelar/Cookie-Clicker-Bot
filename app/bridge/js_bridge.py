@@ -14,6 +14,7 @@ except ImportError:
 from app.config.settings import app_config
 from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.bridge.visual_sync import GAME_VISUAL_SYNC
+from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
 from app.core.garden_catalog import GARDEN_CATALOG
 from app.models.garden import (
     GardenAction,
@@ -2560,51 +2561,37 @@ class CookieClickerBridge:
         return self.execute_js("typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : null")
 
     def get_sugar_lump_status(self) -> Optional[Dict[str, Any]]:
-        """Retorna o estado atual do Sugar Lump."""
-        return self.execute_js("""(() => {
-            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
-            if (!lump) return null;
-            return {
-                type: typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : lump.type,
-                ready: !!lump.ready,
-                progress: lump.progress || lump.value || 0,
-                typeName: lump.typeName || null,
-            };
-        })()""")
+        """Lê o lump em crescimento; Game.lumps é o saldo numérico."""
+        payload = self.execute_js("(() => {" + SUGAR_LUMP_HELPERS + "return lumpStatus();})()")
+        return payload if isinstance(payload, dict) else None
 
-    def harvest_sugar_lump(self) -> bool:
-        """Tenta colher o Sugar Lump atual diretamente via JS."""
+    def harvest_sugar_lump_result(self, *, preserved_types=(), expected_start=None, after_start=None) -> Dict[str, Any]:
+        """Colhe pela API nativa e confirma a rotação, inclusive colheita de saldo zero."""
+        types = tuple(preserved_types)
+        if any(type(t) is not int or t not in range(5) for t in types):
+            return {"ok": False, "reason": "invalid_types", "message": "Tipos inválidos."}
         script = """(() => {
-            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
-            if (!lump) return false;
+            __HELPERS__
+            const fail=(reason,message)=>({ok:false,reason,message});
+            const before=lumpStatus(),preserved=__TYPES__,expected=__EXPECTED__,last=__LAST__;
+            if (!before || typeof Game.clickLump!=='function') return fail('unavailable','Sugar Lump indisponível');
+            if (expected!==null && before.started!==expected) return fail('changed','O lump mudou; replanejar antes de colher');
+            if (!before.mature) return fail('growing','O lump ainda não está maduro');
+            if (before.overripe) return fail('overripe','Colheita automática iminente; reavaliar');
+            if (preserved.includes(before.type) && !before.ready) return fail('preserved','Tipo protegido até a colheita garantida');
+            if (last!==null && Date.now()<=last) return fail('same_timestamp','Aguardar outro instante de sorteio');
+            Game.clickLump();
+            const after=lumpStatus();
+            if (!after || after.started===before.started) return fail('unconfirmed','A colheita não foi confirmada');
+            return {ok:true,reason:'harvested',message:'Lump colhido e próximo tipo confirmado',
+                oldType:before.type,newType:after.type,newStart:after.started,gained:after.lumps-before.lumps};
+        })()""".replace("__HELPERS__", SUGAR_LUMP_HELPERS).replace("__TYPES__", json.dumps(types)).replace(
+            "__EXPECTED__", json.dumps(expected_start)).replace("__LAST__", json.dumps(after_start))
+        result = self._execute_game_action(script)
+        return result if isinstance(result, dict) else {"ok": False, "reason": "bridge_error", "message": "Falha na leitura da colheita"}
 
-            if (typeof lump.pop === 'function') {
-                lump.pop();
-                return true;
-            }
-
-            if (typeof lump.click === 'function') {
-                lump.click();
-                return true;
-            }
-
-            const lumpElement = document.querySelector('#lumps');
-            if (lumpElement) {
-                lumpElement.click();
-            }
-
-            const button = Array.from(document.querySelectorAll('button')).find(
-                el => /harvest|coletar|yes|sim/i.test(el.innerText)
-            );
-            if (button) {
-                button.click();
-                return true;
-            }
-
-            return false;
-        })()"""
-        result = self.execute_js(script)
-        return bool(result)
+    def harvest_sugar_lump(self, *, preserved_types=()) -> bool:
+        return self.harvest_sugar_lump_result(preserved_types=preserved_types).get("ok") is True
 
     def get_golden_cookie(self) -> Optional[Dict]:
         """Retorna o shimmer do golden cookie se existir."""
