@@ -59,6 +59,12 @@ class AutomationRunner:
         """
         self.bridge = bridge
         self.is_running = False
+        self.mouse_clicker_running = False
+        self.cookie_hold_active = False
+        self.mouse_hold_active = False
+        self.mouse_clicks = 0
+        self.mouse_clicker_over_game = False
+        self.hotkey_capture_active = threading.Event()
         self.stop_event = threading.Event()
         self.paused = threading.Event()
         self._collection_summary = ActivitySummary(logger)
@@ -96,6 +102,8 @@ class AutomationRunner:
         """Bloqueia detector, atalhos e clicker sem alterar as preferências."""
         if paused:
             self.paused.set()
+            self.cookie_hold_active = self.mouse_hold_active = False
+            self.mouse_clicker_running = False
             with self._cash_request_lock:
                 self._cash_requests.clear()
             self._collection_summary.flush()
@@ -151,6 +159,27 @@ class AutomationRunner:
             except Exception as e:
                 logger.error(f"Erro no callback de estado do clicker: {e}")
 
+    def toggle_mouse_clicker(self):
+        with self._exclusive_lock:
+            if self.paused.is_set() or self.stop_event.is_set() or self._exclusive_owner is not None:
+                return False
+            self.mouse_clicker_running = not self.mouse_clicker_running
+            logger.info("Clicker do mouse: %s.", "ligado" if self.mouse_clicker_running else "desligado")
+            return self.mouse_clicker_running
+
+    def reset_manual_clicker(self, mouse=False):
+        """Limpa o acionamento manual ao mudar o modo, preservando as farms."""
+        with self._exclusive_lock:
+            if mouse:
+                self.mouse_clicker_running = self.mouse_hold_active = False
+            else:
+                self.cookie_hold_active = False
+                if self._simple_farm_active:
+                    self._simple_farm_manual_clicker = False
+                    self.set_simple_farm_clicker(self._simple_farm_clicker_requested)
+                elif self._exclusive_owner is None:
+                    self.ensure_clicker_stopped()
+
     def ensure_clicker_running(self) -> bool:
         """Habilita o clicker de forma idempotente para a fase de produção."""
         with self._clicker_state_lock:
@@ -184,6 +213,8 @@ class AutomationRunner:
             if self._simple_farm_active or self._exclusive_owner not in (None, owner):
                 return False
             self._exclusive_owner = owner
+            self.cookie_hold_active = self.mouse_hold_active = False
+            self.mouse_clicker_running = False
         self.ensure_clicker_stopped()
         logger.info("Modo exclusivo adquirido por %s", owner)
         return True
@@ -421,27 +452,66 @@ class AutomationRunner:
         """Thread dedicada para clicar no cookie principal."""
         logger.debug("Clicker: thread iniciada; atalho %s", app_config.toggle_key)
 
+        deadlines = {"cookie": 0.0, "mouse": 0.0}
+        previous_keys = {"cookie": app_config.toggle_key, "mouse": app_config.mouse_toggle_key}
+        previous_modes = {"cookie": app_config.clicker_mode, "mouse": app_config.mouse_clicker_mode}
+        held = {"cookie": False, "mouse": False}
+        hold_started = {"cookie": False, "mouse": False}
         while not self.stop_event.is_set():
             try:
-                if self.is_running and not self.paused.is_set():
-                    # Clique direto sem consultar bridge
-                    self.input_handler.click_cookie()
-                    self.cookies_clicked += 1
-                    # Delay configurável
-                    time.sleep(app_config.click_interval)
-
-                # Verificar toggle
-                if not self.paused.is_set() and self.input_handler.is_key_pressed(app_config.toggle_key):
-                    self.toggle_clicker()
-                    time.sleep(0.3)  # Debounce
-
-                # Pequeno delay quando parado
-                if not self.is_running:
-                    time.sleep(0.01)
-
-            except Exception as e:
-                logger.error(f"Erro na thread clicker: {e}")
-                time.sleep(0.1)
+                keys = {"cookie": app_config.toggle_key, "mouse": app_config.mouse_toggle_key}
+                modes = {"cookie": app_config.clicker_mode, "mouse": app_config.mouse_clicker_mode}
+                for mode, key in keys.items():
+                    down = self.input_handler.is_key_pressed(key)
+                    if key != previous_keys[mode] or modes[mode] != previous_modes[mode]:
+                        previous_keys[mode], held[mode] = key, down
+                        previous_modes[mode] = modes[mode]
+                        hold_started[mode] = False
+                    manual_allowed = (not self.paused.is_set() and not self.hotkey_capture_active.is_set()
+                                      and self._exclusive_owner is None)
+                    if not down or not manual_allowed:
+                        hold_started[mode] = False
+                    if down and not held[mode] and manual_allowed:
+                        if modes[mode] == "toggle":
+                            self.toggle_clicker() if mode == "cookie" else self.toggle_mouse_clicker()
+                        else:
+                            hold_started[mode] = mode == "mouse" or bool(self.cookie_position) or self.update_cookie_position()
+                    setattr(self, "cookie_hold_active" if mode == "cookie" else "mouse_hold_active",
+                            modes[mode] == "hold" and hold_started[mode] and down and manual_allowed)
+                    held[mode] = down
+                # Uma única fila envia down/up completos de cada clique.
+                now = time.monotonic()
+                allowed = not self.paused.is_set() and not self.hotkey_capture_active.is_set()
+                active = {"cookie": (self.is_running or self.cookie_hold_active) and allowed,
+                          "mouse": (self.mouse_clicker_running or self.mouse_hold_active) and allowed and self._exclusive_owner is None}
+                for mode, enabled in active.items():
+                    if not enabled:
+                        deadlines[mode] = now
+                        continue
+                    if now < deadlines[mode]:continue
+                    if mode == "cookie":
+                        self.input_handler.click_cookie()
+                        self.cookies_clicked += 1
+                        interval = app_config.click_interval
+                    else:
+                        # Leituras lentas do detector não bloqueiam os cliques no cookie.
+                        acquired = self._exclusive_lock.acquire(blocking=False)
+                        interval = 0.01
+                        if acquired:
+                            try:
+                                if (self._exclusive_owner is None and (self.mouse_clicker_running or self.mouse_hold_active)
+                                        and not self.paused.is_set() and not self.hotkey_capture_active.is_set()):
+                                    self.mouse_clicker_over_game = self.input_handler.click_at_cursor()
+                                    if self.mouse_clicker_over_game:self.mouse_clicks += 1
+                                    interval = app_config.mouse_click_interval
+                            finally:
+                                self._exclusive_lock.release()
+                    deadlines[mode] = time.monotonic() + interval
+                due = [deadlines[mode] - time.monotonic() for mode in active if active[mode]]
+                self.stop_event.wait(min(0.01, max(0.001, min(due))) if due else 0.01)
+            except Exception as error:
+                logger.error("Erro na thread clicker: %s", error)
+                self.stop_event.wait(0.1)
 
     def start(self) -> None:
         """Inicia as threads de automação em background."""

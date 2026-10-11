@@ -10,6 +10,7 @@ import win32gui
 import win32process
 
 from app.utils.logger import logger
+from app.automation.hotkeys import HOTKEY_CODES
 
 # Constantes do Windows
 WM_LBUTTONDOWN = 0x0201
@@ -20,50 +21,8 @@ MK_LBUTTON = 0x0001
 class InputHandler:
     """Classe responsável por gerenciar interações de entrada (mouse e teclado)."""
 
-    VK_MAP = {
-        # Teclas de função
-        "F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
-        "F5": 0x74, "F6": 0x75, "F7": 0x76, "F8": 0x77,
-        "F9": 0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B,
+    VK_MAP = HOTKEY_CODES
 
-        # Letras A-Z
-        **{chr(i): i for i in range(0x41, 0x5B)},  # A-Z
-
-        # Dígitos 0-9
-        **{str(i): 0x30 + i for i in range(10)},
-
-        # Controle e edição
-        "ESC": 0x1B, "TAB": 0x09, "CAPSLOCK": 0x14, "SPACE": 0x20,
-        "ENTER": 0x0D, "BACKSPACE": 0x08, "INS": 0x2D, "DEL": 0x2E,
-        "HOME": 0x24, "END": 0x23, "PGUP": 0x21, "PGDOWN": 0x22,
-
-        # Setas
-        "LEFT": 0x25, "UP": 0x26, "RIGHT": 0x27, "DOWN": 0x28,
-
-        # Shift / Ctrl / Alt
-        "SHIFT": 0x10, "CTRL": 0x11, "ALT": 0x12,
-        "LSHIFT": 0xA0, "RSHIFT": 0xA1,
-        "LCTRL": 0xA2, "RCTRL": 0xA3,
-        "LALT": 0xA4, "RALT": 0xA5,
-
-        # Teclado numérico
-        **{f"NUMPAD{i}": 0x60 + i for i in range(10)},
-        "NUMPAD_DIV": 0x6F, "NUMPAD_MUL": 0x6A,
-        "NUMPAD_SUB": 0x6D, "NUMPAD_ADD": 0x6B, "NUMPAD_DOT": 0x6E,
-
-        # Pontuação e símbolos
-        "OEM_COMMA": 0xBC, "OEM_PERIOD": 0xBE,
-        "OEM_MINUS": 0xBD, "OEM_PLUS": 0xBB,
-        "OEM_SLASH": 0xBF, "OEM_SEMICOLON": 0xBA,
-        "OEM_QUOTE": 0xDE, "OEM_BRACKET_LEFT": 0xDB,
-        "OEM_BRACKET_RIGHT": 0xDD, "OEM_BACKSLASH": 0xDC,
-        "OEM_TILDE": 0xC0,
-
-        # Teclas extras
-        "PRINTSCREEN": 0x2C, "SCROLLLOCK": 0x91,
-        "PAUSE": 0x13, "NUMLOCK": 0x90,
-        "APPS": 0x5D, "WIN": 0x5B,
-    }
 
     def __init__(self, pid: int, restore_game: bool = True, cookie_position: Optional[Tuple[int, int]] = None):
         """
@@ -118,6 +77,20 @@ class InputHandler:
         except Exception as e:
             print(f"Erro ao clicar no cookie: {e}")
             return False
+
+    def click_at_cursor(self) -> bool:
+        """Clique virtual somente sobre a área cliente visível do jogo."""
+        if not win32gui.IsWindow(self.hwnd) or win32gui.IsIconic(self.hwnd):
+            return False
+        screen_position = win32api.GetCursorPos()
+        target = win32gui.WindowFromPoint(screen_position)
+        if win32gui.GetAncestor(target, win32con.GA_ROOT) != win32gui.GetAncestor(self.hwnd, win32con.GA_ROOT):
+            return False
+        x, y = win32gui.ScreenToClient(self.hwnd, screen_position)
+        left, top, right, bottom = win32gui.GetClientRect(self.hwnd)
+        if not (left <= x < right and top <= y < bottom):
+            return False
+        return self.click(x, y)
 
     def move(self, x: int, y: int) -> bool:
         """

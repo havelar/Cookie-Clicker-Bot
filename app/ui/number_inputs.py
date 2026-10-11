@@ -1,6 +1,11 @@
 """Campos numéricos que deixam a roda do mouse rolar a página."""
 
-from PyQt5.QtWidgets import QDoubleSpinBox, QSpinBox
+from PyQt5.QtWidgets import QComboBox, QDoubleSpinBox, QSpinBox
+
+
+class ScrollSafeComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class ScrollSafeSpinBox(QSpinBox):

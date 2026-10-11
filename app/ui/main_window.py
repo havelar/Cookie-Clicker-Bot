@@ -12,7 +12,7 @@ from PyQt5.QtGui import QColor, QIcon, QTextCursor
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
 
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
-from app.config.settings import app_config, automation_config, save_app_settings, save_automation_settings
+from app.config.settings import CLICKER_HOTKEYS, app_config, automation_config, save_app_settings, save_automation_settings
 from app.core.backup_manager import BackupManager
 from app.core.auto_ascensao import AutoAscensao, ConfiguracaoAutoAscensao
 from app.core.combo import ComboAutomation
@@ -28,7 +28,8 @@ from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
 from app.ui.save_scum_tab import SaveScumTab
 from app.ui.automation_control import AutomationControl
-from app.ui.number_inputs import ScrollSafeDoubleSpinBox, ScrollSafeSpinBox
+from app.ui.hotkey_capture import HotkeyCapture
+from app.ui.number_inputs import ScrollSafeComboBox, ScrollSafeDoubleSpinBox, ScrollSafeSpinBox
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
 from app.utils.logger import logger
@@ -135,6 +136,7 @@ class MainWindow(QMainWindow):
         self._connection_busy = False
         self._bot_stopping = False
         self._resume_clicker = False
+        self._resume_mouse_clicker = False
         self.bridge = bridge
         self.log_emitter, self.runner = LogSignalEmitter(), None
         self.backup_manager, self.backup_dialog = BackupManager(), None
@@ -184,6 +186,11 @@ class MainWindow(QMainWindow):
 
     def _configure_user_tooltips(self):
         tips = {
+            "clicker_hotkey_input": "Clique em Apertar para detectar e pressione a tecla ou o botão lateral desejado. Esc cancela. O atalho funciona com o bot ligado no topo.",
+            "mouse_clicker_hotkey_input": "Clique em Apertar para detectar e pressione uma tecla ou botão lateral. Esc cancela. Escolha um atalho diferente do cookie principal.",
+            "mouse_clicker_speed_input": "Quantidade desejada de cliques por segundo na posição do mouse. A configuração fica salva.",
+            "mouse_clicker_button": "Repete cliques na posição do cursor, apenas sobre a janela do jogo. Usa a quantidade e o modo Comprar/Vender escolhidos no jogo. As compras podem consumir o dinheiro reservado para Garden e Banco.",
+            "clicker_speed_input": "Quantidade desejada de cliques por segundo. O ritmo real depende do jogo e do computador. A alteração vale imediatamente e fica salva.",
             "clicker_button": "Liga ou desliga os cliques no cookie principal. As outras automações seguem a seleção de cada aba.",
             "golden_checkbox": "Coleta os Golden Cookies assim que aparecem, incluindo os cookies de ira.",
             "fortune_checkbox": "Clica nas notícias de fortuna quando aparecem no topo do jogo.",
@@ -258,7 +265,7 @@ class MainWindow(QMainWindow):
         self.bot_status.setStyleSheet("color: #aeb8c9;")
         self.open_game_button.setToolTip("Abre o jogo e conecta o bot automaticamente. Deixe a Steam aberta.")
         self.open_game_button.clicked.connect(lambda: self.open_game_requested.emit())
-        self.clicker_button = QPushButton("Ligar clicker"); self.clicker_button.setObjectName("primaryButton"); self.clicker_button.setMinimumHeight(32); self.clicker_button.clicked.connect(self.toggle_clicker)
+        self.clicker_button = QPushButton("Ligar"); self.clicker_button.setObjectName("clickerButton"); self.clicker_button.setCheckable(True); self.clicker_button.setFixedWidth(110); self.clicker_button.setMinimumHeight(32); self.clicker_button.clicked.connect(self.toggle_clicker)
         self.backups_button = QPushButton("Backups"); self.backups_button.setToolTip("Salvar, carregar e gerenciar backups do jogo"); self.backups_button.clicked.connect(self.open_backup_dialog)
         header.addWidget(self.bot_status); header.addWidget(self.open_game_button); header.addWidget(self.backups_button); layout.addLayout(header)
 
@@ -296,6 +303,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._settings_tab(), "Configurações")
         layout.addWidget(self.tabs, 1)
         self.stats_timer = QTimer(self); self.stats_timer.timeout.connect(self.refresh_stats); self.stats_timer.start(1000)
+        self.clicker_status_timer = QTimer(self)
+        self.clicker_status_timer.timeout.connect(self.refresh_clicker_states)
+        self.clicker_status_timer.start(50)
         self.status_bar = QStatusBar(); self.setStatusBar(self.status_bar); self.status_bar.showMessage("Pronto para conectar ao Cookie Clicker")
         self.stock_refresh_timer = QTimer(self)
         self.stock_refresh_timer.timeout.connect(self._on_stock_market_timer)
@@ -337,7 +347,7 @@ class MainWindow(QMainWindow):
             "Abre o jogo e conecta o bot automaticamente. Deixe a Steam aberta.")
         self.automation_gate_label.setVisible(not self._bot_enabled)
         if not self._bot_enabled:
-            for widget in (self.clicker_button, self.stock_toggle, self.garden_toggle,
+            for widget in (self.clicker_button, self.mouse_clicker_button, self.stock_toggle, self.garden_toggle,
                            self.simple_farm_toggle, self.combo_toggle, self.combo_resume_button,
                            self.auto_ascension_toggle, self.save_scum_tab.toggle):
                 widget.setEnabled(False)
@@ -354,6 +364,7 @@ class MainWindow(QMainWindow):
         if self.runner:
             if not enabled:
                 self._resume_clicker = self.runner.is_running
+                self._resume_mouse_clicker = bool(self.runner.mouse_clicker_running)
             self.runner.set_paused(not enabled)
         if enabled:
             # Substitui os tokens só depois que os workers antigos terminaram.
@@ -363,7 +374,7 @@ class MainWindow(QMainWindow):
                 self._stock_stop.set()
             if not self.garden_toggle.running:
                 self._garden_stop.set()
-            for widget in (self.clicker_button, self.stock_toggle, self.garden_toggle,
+            for widget in (self.clicker_button, self.mouse_clicker_button, self.stock_toggle, self.garden_toggle,
                            self.simple_farm_toggle, self.combo_toggle,
                            self.auto_ascension_toggle, self.save_scum_tab.toggle):
                 widget.setEnabled(True)
@@ -371,6 +382,8 @@ class MainWindow(QMainWindow):
             self.garden_toggle.set_paused(False)
             if self._resume_clicker:
                 self.runner.ensure_clicker_running()
+            if self._resume_mouse_clicker and not self.runner.mouse_clicker_running:
+                self.runner.toggle_mouse_clicker()
             QTimer.singleShot(0, self._on_stock_market_timer)
             QTimer.singleShot(0, self._on_garden_timer)
         else:
@@ -388,7 +401,10 @@ class MainWindow(QMainWindow):
     def attach_game(self, bridge, runner):
         """Conecta todos os recursos quando o jogo fica pronto após abrir a UI."""
         self.bridge, self.runner = bridge, runner
+        if self.clicker_hotkey_input.is_capturing or self.mouse_clicker_hotkey_input.is_capturing:
+            runner.hotkey_capture_active.set()
         self._game_open = True
+        self._resume_mouse_clicker = False
         self._bot_enabled = False
         runner.set_paused(True)
         self.stock_automation = StockMarketAutomation(bridge)
@@ -429,13 +445,68 @@ class MainWindow(QMainWindow):
         self.krumblor_checkbox.stateChanged.connect(self.toggle_krumblor_upgrades)
         grid.addWidget(self.krumblor_checkbox, 3, 0, 1, 2)
         grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
-        grid.setHorizontalSpacing(36); grid.setVerticalSpacing(10)
+        grid.setHorizontalSpacing(36); grid.setVerticalSpacing(3)
         self.automation_gate_label = QLabel("Bot pausado. Ligue no topo para liberar as automações.")
         self.automation_gate_label.setWordWrap(True)
         self.automation_gate_label.setStyleSheet("color: #e8b766;")
         group_layout.addWidget(self.automation_gate_label)
-        group_layout.addWidget(self.clicker_button)
-        group_layout.addLayout(grid); layout.addWidget(group); layout.addStretch(); return tab
+        group_layout.addLayout(grid)
+        layout.addWidget(group)
+
+        self.clicker_group = QGroupBox("Clickers")
+        self.clicker_group.setMinimumHeight(240)
+        clicker_layout = QHBoxLayout(self.clicker_group)
+        self.clicker_run_status = QLabel("Desligado")
+        self.mouse_clicker_run_status = QLabel("Desligado")
+        self.mouse_clicker_button = QPushButton("Ligar")
+        self.mouse_clicker_button.setCheckable(True)
+        self.mouse_clicker_button.setFixedWidth(90)
+        self.mouse_clicker_button.clicked.connect(self.toggle_mouse_clicker)
+        self.clicker_button.setFixedWidth(90)
+        for mode, title, button, status, key, interval in (
+            ("clicker", "Cookie principal", self.clicker_button, self.clicker_run_status,
+             app_config.toggle_key, app_config.click_interval),
+            ("mouse_clicker", "Na posição do mouse", self.mouse_clicker_button, self.mouse_clicker_run_status,
+             app_config.mouse_toggle_key, app_config.mouse_click_interval),
+        ):
+            card = QGroupBox(title)
+            card_layout = QVBoxLayout(card)
+            header = QHBoxLayout()
+            status.setStyleSheet("color: #9aa7ba;")
+            header.addWidget(status)
+            header.addStretch()
+            header.addWidget(button)
+            card_layout.addLayout(header)
+            form = QFormLayout()
+            form.setHorizontalSpacing(10)
+            activation = ScrollSafeComboBox()
+            activation.addItem("Alternar (Toggle)", "toggle")
+            activation.addItem("Segurar (Hold)", "hold")
+            activation.setCurrentIndex(activation.findData(getattr(app_config, mode + "_mode")))
+            activation.setToolTip("Alternar: aperte o atalho para ligar e novamente para desligar. Segurar: clica enquanto o atalho estiver pressionado e para ao soltar. Cada clicker tem seu próprio modo, que fica salvo.")
+            setattr(self, mode + "_mode_input", activation)
+            activation.currentIndexChanged.connect(lambda index, name=mode: self.update_clicker_mode(name))
+            form.addRow("Acionamento", activation)
+            hotkey = HotkeyCapture(key)
+            setattr(self, mode + "_hotkey_input", hotkey)
+            hotkey.changed.connect(self.update_clicker_hotkey if mode == "clicker" else self.update_mouse_clicker_hotkey)
+            hotkey.capturing_changed.connect(self._hotkey_capture_changed)
+            form.addRow("Atalho", hotkey)
+            speed = ScrollSafeSpinBox()
+            speed.setRange(1, 1000)
+            speed.setSuffix(" cliques/s")
+            speed.setMaximumWidth(180)
+            speed.setValue(round(1.0 / interval))
+            speed.valueChanged.connect(self.update_clicker_speed if mode == "clicker" else self.update_mouse_clicker_speed)
+            setattr(self, mode + "_speed_input", speed)
+            form.addRow("Velocidade", speed)
+            card_layout.addLayout(form)
+            clicker_layout.addWidget(card, 1)
+        layout.addWidget(self.clicker_group)
+        self.set_clicker_state(False)
+        self.set_mouse_clicker_state(False)
+        layout.addStretch()
+        return tab
 
     def _load_grimoire_spells(self):
         magias = self.bridge.get_grimoire_spells() if self.bridge else []
@@ -1151,7 +1222,7 @@ class MainWindow(QMainWindow):
         self.combo_resume_button.setEnabled(False)
         if not preview:
             for widget in (
-                self.clicker_button, self.golden_checkbox, self.fortune_checkbox,
+                self.clicker_button, self.mouse_clicker_button, self.golden_checkbox, self.fortune_checkbox,
                 self.reindeer_checkbox, self.wrinkler_checkbox,
                 self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox, self.krumblor_checkbox,
                 self.garden_thumbcorn_checkbox,
@@ -1184,7 +1255,7 @@ class MainWindow(QMainWindow):
                 self._release_save_scum()
                 report_error("A operação do Garden/Banco ainda não terminou. Tente novamente.")
                 return False
-        widgets = (self.clicker_button, self.backups_button, self.golden_checkbox, self.fortune_checkbox,
+        widgets = (self.clicker_button, self.mouse_clicker_button, self.backups_button, self.golden_checkbox, self.fortune_checkbox,
                    self.reindeer_checkbox, self.wrinkler_checkbox, self.grimoire_spell_spam_checkbox,
                    self.sugar_lump_checkbox, self.krumblor_checkbox, self.stock_toggle, self.garden_toggle,
                    self.combo_toggle, self.combo_preview_button, self.simple_farm_toggle,
@@ -2317,13 +2388,99 @@ class MainWindow(QMainWindow):
         app_config.max_log_lines = max(1, int(value)); save_app_settings(); self._trim_logs()
 
     def toggle_clicker(self):
-        if not self._bot_enabled:
+        if app_config.clicker_mode == "hold":
+            return
+        if not self._bot_enabled or self.clicker_hotkey_input.is_capturing or self.mouse_clicker_hotkey_input.is_capturing:
             return
         if not self.runner: logger.warning("Runner não está disponível"); return
         self.runner.toggle_clicker(); self.set_clicker_state(self.runner.is_running)
     def set_clicker_state(self, active):
-        self.clicker_button.setText("Desligar clicker" if active else "Ligar clicker"); self.clicker_button.setObjectName("dangerButton" if active else "primaryButton"); self.clicker_button.style().unpolish(self.clicker_button); self.clicker_button.style().polish(self.clicker_button)
-        self.clicker_status.setText("Clicker: Ativo" if active else "Clicker: Parado"); self.clicker_status.setStyleSheet(f"color: {'#65d6a5' if active else '#9aa7ba'}; font-weight: 600;")
+        hold = app_config.clicker_mode == "hold"
+        self.clicker_button.setText("Segure o atalho" if hold else "Desligar" if active else "Ligar")
+        self.clicker_button.setFixedWidth(125 if hold else 90)
+        if hold:
+            self.clicker_button.setEnabled(False)
+        self.clicker_button.setChecked(active)
+        capturing = self.clicker_hotkey_input.is_capturing or self.mouse_clicker_hotkey_input.is_capturing
+        self.clicker_run_status.setText("Detectando atalho…" if capturing else "Clicando" if active else "Aguardando atalho" if hold and self._bot_enabled else "Desligado")
+        color = "#65d6a5" if active else "#9aa7ba"
+        self.clicker_run_status.setStyleSheet(f"color: {color};")
+        self.clicker_status.setText("Clicker: Ativo" if active else "Clicker: Parado")
+        self.clicker_status.setStyleSheet(f"color: {color}; font-weight: 600;")
+
+    def _hotkey_capture_changed(self, capturing):
+        if capturing:
+            source = self.sender()
+            for widget in (self.clicker_hotkey_input, self.mouse_clicker_hotkey_input):
+                if widget is not source and widget.is_capturing:widget.cancel()
+        active = self.clicker_hotkey_input.is_capturing or self.mouse_clicker_hotkey_input.is_capturing
+        if self.runner:
+            self.runner.hotkey_capture_active.set() if active else self.runner.hotkey_capture_active.clear()
+            self.set_clicker_state(bool(self.runner.is_running))
+            self.set_mouse_clicker_state(bool(self.runner.mouse_clicker_running))
+
+    def _save_clicker_hotkey(self, mode, key):
+        own = "toggle_key" if mode == "clicker" else "mouse_toggle_key"
+        other = "mouse_toggle_key" if mode == "clicker" else "toggle_key"
+        widget = getattr(self, mode + "_hotkey_input")
+        if key == getattr(app_config, other):
+            widget.set_key(getattr(app_config, own))
+            self.status_bar.showMessage("Este atalho já está no outro clicker. Detecte uma tecla ou botão diferente.", 7000)
+            return
+        if key in CLICKER_HOTKEYS:
+            setattr(app_config, own, key)
+            save_app_settings()
+
+    def update_clicker_hotkey(self, key):
+        self._save_clicker_hotkey("clicker", key)
+
+    def update_mouse_clicker_hotkey(self, key):
+        self._save_clicker_hotkey("mouse_clicker", key)
+
+    def update_clicker_speed(self, value):
+        app_config.click_interval = 1.0 / value
+        save_app_settings()
+
+    def update_clicker_mode(self, name):
+        mode = getattr(self, name + "_mode_input").currentData()
+        setattr(app_config, name + "_mode", mode)
+        if self.runner:
+            self.runner.reset_manual_clicker(mouse=name == "mouse_clicker")
+        button = getattr(self, name + "_button")
+        button.setEnabled(mode == "toggle" and self._bot_enabled and not self._combo_exclusive
+                          and not self._save_scum_exclusive)
+        save_app_settings()
+        self.refresh_clicker_states()
+
+    def refresh_clicker_states(self):
+        cookie = bool(self.runner and (self.runner.is_running or self.runner.cookie_hold_active))
+        mouse = bool(self.runner and (self.runner.mouse_clicker_running or self.runner.mouse_hold_active))
+        self.set_clicker_state(cookie)
+        self.set_mouse_clicker_state(mouse)
+
+    def update_mouse_clicker_speed(self, value):
+        app_config.mouse_click_interval = 1.0 / value
+        save_app_settings()
+
+    def toggle_mouse_clicker(self):
+        if app_config.mouse_clicker_mode == "hold":
+            return
+        if self._bot_enabled and self.runner and not self.clicker_hotkey_input.is_capturing and not self.mouse_clicker_hotkey_input.is_capturing:
+            self.runner.toggle_mouse_clicker()
+            self.set_mouse_clicker_state(self.runner.mouse_clicker_running)
+
+    def set_mouse_clicker_state(self, active):
+        hold = app_config.mouse_clicker_mode == "hold"
+        self.mouse_clicker_button.setText("Segure o atalho" if hold else "Desligar" if active else "Ligar")
+        self.mouse_clicker_button.setFixedWidth(125 if hold else 90)
+        if hold:
+            self.mouse_clicker_button.setEnabled(False)
+        self.mouse_clicker_button.setChecked(active)
+        over_game = self.runner.mouse_clicker_over_game if self.runner and hasattr(self.runner, "mouse_clicker_over_game") else True
+        capturing = self.clicker_hotkey_input.is_capturing or self.mouse_clicker_hotkey_input.is_capturing
+        self.mouse_clicker_run_status.setText("Detectando atalho…" if capturing else "Clicando" if active and over_game else "Aguardando o mouse no jogo" if active else "Aguardando atalho" if hold and self._bot_enabled else "Desligado")
+        self.mouse_clicker_run_status.setStyleSheet(f"color: {'#65d6a5' if active else '#9aa7ba'};")
+
     def update_bridge_status(self, connected):
         if bool(connected) != self._sugar_lump_connected:
             self._sugar_lump_connection_epoch += 1
@@ -2462,9 +2619,13 @@ class MainWindow(QMainWindow):
         if not self.save_scum_tab.shutdown():
             event.ignore()
             return
+        self.clicker_hotkey_input.cancel()
+        self.mouse_clicker_hotkey_input.cancel()
+        self.clicker_status_timer.stop()
         self.stats_timer.stop()
         if (self._sugar_lump_worker and self._sugar_lump_worker.isRunning()
                 and not self._sugar_lump_worker.wait((app_config.connection_timeout + 1) * 1000)):
+            self.clicker_status_timer.start(50)
             self.stats_timer.start(1000)
             event.ignore()
             return

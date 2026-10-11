@@ -7,6 +7,10 @@ from typing import Optional
 
 from PyQt5.QtCore import QSettings
 from app.core.stock_policy import valid_limits
+from app.automation.hotkeys import HOTKEY_CODES
+
+
+CLICKER_HOTKEYS = tuple(HOTKEY_CODES)
 
 
 @dataclass
@@ -36,6 +40,10 @@ class AppConfig:
 
     # Toggle keys
     toggle_key: str = "SCROLLLOCK"
+    mouse_toggle_key: str = "MOUSE4"
+    clicker_mode: str = "toggle"
+    mouse_clicker_mode: str = "toggle"
+    mouse_click_interval: float = 0.05
 
     # Window detection
     window_title_pattern: str = "cookie"
@@ -139,6 +147,21 @@ def load_app_settings() -> None:
     app_config.max_log_lines = max(1, settings.value(
         "max_log_lines", app_config.max_log_lines, type=int
     ))
+    key = settings.value("toggle_key", "SCROLLLOCK", type=str).strip().upper()
+    app_config.toggle_key = key if key in CLICKER_HOTKEYS else "SCROLLLOCK"
+    app_config.click_interval = min(1.0, max(0.001, settings.value(
+        "click_interval", 0.005, type=float,
+    )))
+    mouse_key = settings.value("mouse_toggle_key", "MOUSE4", type=str).strip().upper()
+    app_config.mouse_toggle_key = mouse_key if mouse_key in CLICKER_HOTKEYS else "MOUSE4"
+    if app_config.mouse_toggle_key == app_config.toggle_key:
+        app_config.mouse_toggle_key = "MOUSE5" if app_config.toggle_key == "MOUSE4" else "MOUSE4"
+    app_config.mouse_click_interval = min(1.0, max(0.001, settings.value(
+        "mouse_click_interval", 0.05, type=float,
+    )))
+    for field in ("clicker_mode", "mouse_clicker_mode"):
+        mode = settings.value(field, "toggle", type=str)
+        setattr(app_config, field, mode if mode in ("toggle", "hold") else "toggle")
     settings.endGroup()
 
 
@@ -148,6 +171,12 @@ def save_app_settings() -> None:
     settings.beginGroup("Application")
     settings.setValue("game_executable_path", app_config.game_executable_path)
     settings.setValue("max_log_lines", max(1, app_config.max_log_lines))
+    settings.setValue("toggle_key", app_config.toggle_key)
+    settings.setValue("click_interval", app_config.click_interval)
+    settings.setValue("mouse_toggle_key", app_config.mouse_toggle_key)
+    settings.setValue("mouse_click_interval", app_config.mouse_click_interval)
+    settings.setValue("clicker_mode", app_config.clicker_mode)
+    settings.setValue("mouse_clicker_mode", app_config.mouse_clicker_mode)
     settings.endGroup()
     settings.sync()
 
