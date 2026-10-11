@@ -72,7 +72,10 @@ class AutomationRunner:
 
         self.cookie_position: Optional[Tuple[int, int]] = None
         self.input_handler = InputHandler(pid=pid, restore_game=False, cookie_position=None)
-        self.wrinkler_seen_at: dict[int, float] = {}
+        self._next_wrinkler_check = 0.0
+        self._wrinkler_blocked = False
+        self._cash_requests: dict[str, dict] = {}
+        self._cash_request_lock = threading.RLock()
         self._next_krumblor_check = 0.0
         self._last_krumblor_state = None
         self._last_grimoire_attempt_at = 0.0
@@ -93,11 +96,14 @@ class AutomationRunner:
         """Bloqueia detector, atalhos e clicker sem alterar as preferências."""
         if paused:
             self.paused.set()
+            with self._cash_request_lock:
+                self._cash_requests.clear()
             self._collection_summary.flush()
             self.ensure_clicker_stopped()
         else:
             self.paused.clear()
             self.reset_krumblor_schedule()
+            self._next_wrinkler_check = 0.0
 
     def update_cookie_position(self) -> bool:
         """
@@ -214,6 +220,9 @@ class AutomationRunner:
             self._exclusive_owner = None
         if owner in {"save_scum", "backup_restore"}:
             self.reset_krumblor_schedule()
+            self._next_wrinkler_check = 0.0
+            with self._cash_request_lock:
+                self._cash_requests.clear()
         logger.info("Modo exclusivo liberado por %s", owner)
         return True
 
@@ -277,32 +286,54 @@ class AutomationRunner:
             self.reindeer_popped += 1
             self._collection_summary.record("Renas")
 
-        # Verificar wrinklers normais com delay de popagem
-        if not self.paused.is_set() and automation_config.enable_wrinkler_popper:
-            wrinklers = self.bridge.get_wrinklers() or []
-            current_time = time.time()
-            for wr in wrinklers:
-                if self.paused.is_set():
-                    return
-                index = wr.get('index')
-                hp = wr.get('hp', 0)
-                wr_type = wr.get('type')
-                if index is None or hp <= 0 or wr_type == 1:
-                    self.wrinkler_seen_at.pop(index, None)
-                    continue
-
-                if index not in self.wrinkler_seen_at:
-                    self.wrinkler_seen_at[index] = current_time
-                    continue
-
-                if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
-                    if self.bridge.pop_wrinkler_by_index(index):
-                        self.wrinklers_popped += 1
-                        self._collection_summary.record("Wrinklers")
-                    self.wrinkler_seen_at.pop(index, None)
+        self._run_wrinkler_cycle()
 
         self._run_sugar_lump_cycle()
         self._run_krumblor_cycle()
+
+    def request_wrinkler_cash(self, source, target=0, seed=None, ttl=120):
+        """Pedido temporário de uma ação real bloqueada por falta de cookies."""
+        import math
+        with self._cash_request_lock:
+            self._cash_requests.pop(source, None)
+            if seed and math.isfinite(target) and target > 0 and not self.paused.is_set():
+                self._cash_requests[source] = dict(source=source, target=target, seed=seed,
+                                                   expires=time.monotonic() + ttl)
+
+    def _run_wrinkler_cycle(self, now=None):
+        if (self.paused.is_set() or self.stop_event.is_set() or self.exclusive_owner is not None
+                or not automation_config.enable_wrinkler_popper):
+            return False
+        current = time.monotonic() if now is None else now
+        if current < self._next_wrinkler_check:
+            return False
+        self._next_wrinkler_check = current + 2.0
+        with self._cash_request_lock:
+            self._cash_requests = {k: v for k, v in self._cash_requests.items() if v['expires'] > current}
+            requests = [dict(v) for v in self._cash_requests.values()]
+        result = self.bridge.manage_wrinklers(automation_config.wrinkler_free_slots, requests)
+        if not isinstance(result, dict):
+            return False
+        with self._cash_request_lock:
+            for source in result.get('funded', []):
+                # Não apaga um pedido mais recente enviado durante a chamada à bridge.
+                sent = next((v for v in requests if v['source'] == source), None)
+                if self._cash_requests.get(source) == sent:
+                    self._cash_requests.pop(source, None)
+        popped = result.get('popped', [])
+        self.wrinklers_popped += len(popped)
+        vacancies = sum(v['reason'] == 'vacancy' for v in popped)
+        if vacancies:
+            for _ in range(vacancies):
+                self._collection_summary.record("Wrinklers (vagas para Shiny)")
+        cash = sum(v['reason'] == 'cash' for v in popped)
+        if cash:
+            logger.info("Wrinklers: %s normais coletados para liberar caixa para Garden/Banco; Shiny preservados.", cash)
+        blocked = bool(result.get('blocked'))
+        if blocked and not self._wrinkler_blocked:
+            logger.info("Wrinklers: não há normais suficientes para abrir as vagas; Shiny permanecem protegidos.")
+        self._wrinkler_blocked = blocked
+        return bool(popped)
 
     def reset_krumblor_schedule(self):
         self._next_krumblor_check = 0.0

@@ -327,9 +327,13 @@ class MainWindow(QMainWindow):
     def _automation_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
         group = QGroupBox("Ligar ou desligar"); group_layout = QVBoxLayout(group); grid = QGridLayout()
-        controls = (("golden_checkbox", "Coletar Golden Cookies", "enable_golden_cookie", self.toggle_golden_detection), ("fortune_checkbox", "Coletar Fortune Cookies", "enable_fortune_cookie", self.toggle_fortune_detection), ("reindeer_checkbox", "Coletar Renas (Natal)", "enable_reindeer", self.toggle_reindeer_detection), ("wrinkler_checkbox", "Coletar Wrinklers", "enable_wrinkler_popper", self.toggle_wrinkler_detection))
+        controls = (("golden_checkbox", "Coletar Golden Cookies", "enable_golden_cookie", self.toggle_golden_detection), ("fortune_checkbox", "Coletar Fortune Cookies", "enable_fortune_cookie", self.toggle_fortune_detection), ("reindeer_checkbox", "Coletar Renas (Natal)", "enable_reindeer", self.toggle_reindeer_detection), ("wrinkler_checkbox", "Wrinklers inteligentes", "enable_wrinkler_popper", self.toggle_wrinkler_detection))
         for index, (name, text, setting, handler) in enumerate(controls):
             checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, setting)); checkbox.stateChanged.connect(handler); setattr(self, name, checkbox); grid.addWidget(checkbox, index // 2, index % 2)
+        self.wrinkler_checkbox.setToolTip(
+            "Mantém vagas para procurar Shiny, preserva os Shiny e os normais mais rentáveis. "
+            "Pode liberar caixa para ações do Garden/Banco bloqueadas por falta de cookies. "
+            "A quantidade de vagas pode ser ajustada em Configurações.")
         self.grimoire_spell_spam_checkbox = QCheckBox("Spammar Skill")
         self.grimoire_spell_spam_checkbox.setToolTip(
             "Aguarda a mana chegar ao máximo e usa uma vez a skill configurada"
@@ -1380,8 +1384,19 @@ class MainWindow(QMainWindow):
 
         automation_group = QGroupBox("Automações"); automation_form = QFormLayout(automation_group)
         automation_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.wrinkler_delay_input = ScrollSafeDoubleSpinBox(); self.wrinkler_delay_input.setRange(0.1, 60.0); self.wrinkler_delay_input.setSingleStep(0.1); self.wrinkler_delay_input.setSuffix(" s"); self.wrinkler_delay_input.setMaximumWidth(140); self.wrinkler_delay_input.setValue(automation_config.wrinkler_pop_delay); self.wrinkler_delay_input.valueChanged.connect(self.update_wrinkler_delay); self.wrinkler_delay_input.setEnabled(automation_config.enable_wrinkler_popper)
-        automation_form.addRow("Intervalo entre Wrinklers", self.wrinkler_delay_input)
+        self.wrinkler_free_slots_input = ScrollSafeSpinBox()
+        self.wrinkler_free_slots_input.setRange(1, 12)
+        self.wrinkler_free_slots_input.setMaximumWidth(140)
+        self.wrinkler_free_slots_input.setValue(automation_config.wrinkler_free_slots)
+        self.wrinkler_free_slots_input.setToolTip(
+            "Mínimo de vagas para novos Wrinklers. Uma vaga mantém mais normais rendendo; "
+            "Mais vagas renovam mais Wrinklers para procurar Shiny, reduzindo o rendimento. "
+            "Aceita de 1 a 12, limitado pela capacidade atual do jogo. "
+            "Abre vagas coletando os normais com menos cookies. Shiny nunca são coletados. "
+            "Pode coletar os maiores para destravar Garden/Banco sem dinheiro, mantendo um normal rendendo.")
+        self.wrinkler_free_slots_input.valueChanged.connect(self.update_wrinkler_free_slots)
+        self.wrinkler_free_slots_input.setEnabled(automation_config.enable_wrinkler_popper)
+        automation_form.addRow("Vagas mínimas para Shiny", self.wrinkler_free_slots_input)
         self.grimoire_spell_combo = QComboBox(); self.grimoire_spell_combo.setMinimumWidth(230)
         self._load_grimoire_spells()
         self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
@@ -1597,6 +1612,8 @@ class MainWindow(QMainWindow):
             self.stock_toggle.set_running(True)
             QTimer.singleShot(0, self._on_stock_market_timer)
         else:
+            if self.runner:
+                self.runner.request_wrinkler_cash("Banco")
             self._stock_stop.set()
             if self._stock_worker and self._stock_worker.isRunning():
                 self.stock_toggle.set_stopping()
@@ -1860,6 +1877,12 @@ class MainWindow(QMainWindow):
             self._show_garden_feedback(False, "Resposta inesperada do ciclo do Garden.")
             logger.error("Garden: worker retornou resultado inválido")
             return
+        if self.runner:
+            waits = [r.required_cookies for r in value.action_results
+                     if r.waiting and r.reason == "insufficient_funds" and r.required_cookies]
+            target = max(waits, default=0) if (not value.dry_run and self._bot_enabled
+                       and self.garden_toggle.running and not self._garden_stop.is_set()) else 0
+            self.runner.request_wrinkler_cash("Garden", target, value.snapshot.game_seed, ttl=600)
         snapshot, plan = value.snapshot, value.plan
         achievement_completed = plan.mode == "green_aching_thumb" and plan.completed
         if achievement_completed and self.garden_thumbcorn_checkbox.isChecked():
@@ -1996,6 +2019,8 @@ class MainWindow(QMainWindow):
             else:
                 QTimer.singleShot(0, self._on_garden_timer)
         else:
+            if self.runner:
+                self.runner.request_wrinkler_cash("Garden")
             self._garden_stop.set()
             self._garden_run_when_idle = False
             if self._garden_worker and self._garden_worker.isRunning():
@@ -2083,6 +2108,18 @@ class MainWindow(QMainWindow):
             self._show_stock_feedback(False, "Resposta inesperada do ciclo automático.")
             logger.error("Stock Market: worker retornou ciclo automático inválido")
             return
+        if self.runner and value.tick_changed:
+            snapshot = value.snapshot
+            entries = {signal.asset_id for signal in value.signals if signal.is_entry_candidate}
+            costs = [asset.price * (snapshot.highest_raw_cps or 0) * (snapshot.broker_overhead or 1)
+                     for asset in snapshot.assets if asset.asset_id in entries and asset.owned == 0
+                     and asset.capacity and asset.capacity > 0]
+            target = min(costs, default=0) if (snapshot.status.available and self._bot_enabled
+                      and self.stock_toggle.running and not self._stock_stop.is_set()) else 0
+            if target <= (snapshot.cookies or 0):
+                target = 0
+            self.runner.request_wrinkler_cash("Banco", target, snapshot.game_seed,
+                                             ttl=max(1, snapshot.seconds_per_tick or 60))
         if value.tick_changed or self._stock_snapshot is None:
             self._display_stock_snapshot(value.snapshot)
         if not value.snapshot.status.available:
@@ -2183,7 +2220,7 @@ class MainWindow(QMainWindow):
     def toggle_golden_detection(self, state): self._save("enable_golden_cookie", state)
     def toggle_fortune_detection(self, state): self._save("enable_fortune_cookie", state)
     def toggle_reindeer_detection(self, state): self._save("enable_reindeer", state)
-    def toggle_wrinkler_detection(self, state): self._save("enable_wrinkler_popper", state); self.wrinkler_delay_input.setEnabled(bool(state))
+    def toggle_wrinkler_detection(self, state): self._save("enable_wrinkler_popper", state); self.wrinkler_free_slots_input.setEnabled(bool(state))
     def update_krumblor_interval(self, value):
         automation_config.krumblor_pet_interval_seconds = float(value)
         save_automation_settings()
@@ -2215,7 +2252,7 @@ class MainWindow(QMainWindow):
     def toggle_preserve_sugar_lump_type_4(self, state): self._set_sugar_lump_type(4, state)
     def set_sugar_lump_preserve_enabled(self, enabled):
         for checkbox in self._preserve_checkboxes: checkbox.setEnabled(enabled)
-    def update_wrinkler_delay(self, value): automation_config.wrinkler_pop_delay = value; save_automation_settings()
+    def update_wrinkler_free_slots(self, value): automation_config.wrinkler_free_slots = value; save_automation_settings()
     def update_log_limit(self, value):
         app_config.max_log_lines = max(1, int(value)); save_app_settings(); self._trim_logs()
 

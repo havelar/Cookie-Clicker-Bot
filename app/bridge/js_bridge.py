@@ -15,6 +15,7 @@ from app.config.settings import app_config
 from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.bridge.visual_sync import GAME_VISUAL_SYNC
 from app.bridge.krumblor_scripts import KRUMBLOR_PET_SCRIPT
+from app.bridge.wrinkler_scripts import WRINKLER_SCRIPT
 from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
 from app.core.garden_catalog import GARDEN_CATALOG
 from app.models.garden import (
@@ -2724,12 +2725,19 @@ class CookieClickerBridge:
         # logger.info("[FAIL] Rena detectada mas pop() falhou")
         return False
 
+    def manage_wrinklers(self, free_slots: int, requests: list) -> Optional[Dict[str, Any]]:
+        """Abre vagas e atende pedidos de caixa sem tocar nos Shiny."""
+        options = {"freeSlots": min(12, max(1, int(free_slots))), "requests": requests}
+        return self.execute_js(WRINKLER_SCRIPT.replace("__OPTIONS__", json.dumps(options, allow_nan=False)))
+
     def get_wrinklers(self) -> Optional[List[Dict[str, Any]]]:
         """Retorna a lista de wrinklers com informação básica."""
         return self.execute_js("""(() => {
             if (!Game.wrinklers) return null;
             return Game.wrinklers.map((w, idx) => ({
                 index: idx,
+                phase: w.phase,
+                sucked: w.sucked,
                 type: w.type,
                 hp: w.hp,
                 maxHp: w.maxHp,
@@ -2743,15 +2751,8 @@ class CookieClickerBridge:
             const i = %d;
             if (!Array.isArray(Game.wrinklers) || i < 0 || i >= Game.wrinklers.length) return false;
             const w = Game.wrinklers[i];
-            if (!w || w.hp <= 0 || w.type === 1) return false;
-            if (typeof w.pop === 'function') {
-                w.pop();
-            } else {
-                w.hp = 0;
-                if (typeof Game.recalculateWrinklers === 'function') {
-                    Game.recalculateWrinklers();
-                }
-            }
+            if (!w || w.phase <= 0 || w.hp <= 0.5 || w.type !== 0) return false;
+            w.hp = 0; // O frame nativo faz a coleta e a atualização visual.
             return true;
         })()""" % index
         result = self.execute_js(script)
