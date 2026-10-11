@@ -14,6 +14,7 @@ except ImportError:
 from app.config.settings import app_config
 from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.bridge.visual_sync import GAME_VISUAL_SYNC
+from app.bridge.krumblor_scripts import KRUMBLOR_PET_SCRIPT
 from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
 from app.core.garden_catalog import GARDEN_CATALOG
 from app.models.garden import (
@@ -82,6 +83,14 @@ class CookieClickerBridge:
         self.connected = False
         # pychrome não garante acesso concorrente seguro ao mesmo websocket.
         self._runtime_lock = threading.RLock()
+
+    def collect_krumblor_upgrade(self) -> Dict[str, Any]:
+        """Um carinho, somente se faltar o drop atual; nunca compra upgrades."""
+        result = self.execute_js(KRUMBLOR_PET_SCRIPT)
+        if not isinstance(result, dict) or not isinstance(result.get("reason"), str):
+            return {"reason": "unavailable", "message": "Não foi possível consultar Krumblor.",
+                    "retryAfterMs": 60000, "pet": False, "unlocked": False}
+        return result
 
     def connect(self, tab_id: Optional[str] = None) -> bool:
         """

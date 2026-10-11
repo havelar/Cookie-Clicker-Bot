@@ -73,6 +73,8 @@ class AutomationRunner:
         self.cookie_position: Optional[Tuple[int, int]] = None
         self.input_handler = InputHandler(pid=pid, restore_game=False, cookie_position=None)
         self.wrinkler_seen_at: dict[int, float] = {}
+        self._next_krumblor_check = 0.0
+        self._last_krumblor_state = None
         self._last_grimoire_attempt_at = 0.0
         self._last_grimoire_failure: Optional[tuple] = None
 
@@ -95,6 +97,7 @@ class AutomationRunner:
             self.ensure_clicker_stopped()
         else:
             self.paused.clear()
+            self.reset_krumblor_schedule()
 
     def update_cookie_position(self) -> bool:
         """
@@ -209,6 +212,8 @@ class AutomationRunner:
             if self._exclusive_owner != owner:
                 return False
             self._exclusive_owner = None
+        if owner in {"save_scum", "backup_restore"}:
+            self.reset_krumblor_schedule()
         logger.info("Modo exclusivo liberado por %s", owner)
         return True
 
@@ -242,8 +247,11 @@ class AutomationRunner:
                     if self._exclusive_owner is None and not self.paused.is_set():
                         self._run_detector_cycle()
 
-                # Delay configurável
-                time.sleep(app_config.detect_interval)
+                # Só acelera o polling enquanto o próximo carinho estiver próximo.
+                delay = app_config.detect_interval
+                if automation_config.enable_krumblor_upgrades and self._next_krumblor_check > 0:
+                    delay = min(delay, max(0.01, self._next_krumblor_check - time.monotonic()))
+                self.stop_event.wait(delay)
 
             except Exception as e:
                 logger.error(f"Erro na thread detector: {e}")
@@ -294,6 +302,49 @@ class AutomationRunner:
                     self.wrinkler_seen_at.pop(index, None)
 
         self._run_sugar_lump_cycle()
+        self._run_krumblor_cycle()
+
+    def reset_krumblor_schedule(self):
+        self._next_krumblor_check = 0.0
+        self._last_krumblor_state = None
+
+    def _run_krumblor_cycle(self, now=None):
+        if (self.paused.is_set() or self.stop_event.is_set()
+                or self.exclusive_owner is not None or not automation_config.enable_krumblor_upgrades):
+            return False
+        current = time.monotonic() if now is None else now
+        if current < self._next_krumblor_check:
+            return False
+        # Reserva o prazo antes da chamada, inclusive se a bridge lançar erro.
+        self._next_krumblor_check = current + 60
+        result = self.bridge.collect_krumblor_upgrade()
+        retry = result.get("retryAfterMs", 60000)
+        if not isinstance(retry, (int, float)) or not 0 < retry <= 900000:
+            retry = 60000
+        if result.get("reason") == "petting":
+            interval = min(5.0, max(0.05, automation_config.krumblor_pet_interval_seconds))
+            remaining = result.get("windowRemainingMs", interval * 1000)
+            if not isinstance(remaining, (int, float)) or not 0 < remaining <= 900000:
+                remaining = interval * 1000
+            retry = min(remaining, interval * 1000)
+        completed = time.monotonic() if now is None else current
+        self._next_krumblor_check = completed + max(0.05, retry / 1000)
+        reason = result.get("reason")
+        drop = result.get("drop", "upgrade")
+        state = (reason, drop if reason != "complete" else None, result.get("collected"))
+        if state != self._last_krumblor_state:
+            if result.get("unlocked"):
+                logger.info("Krumblor: %s liberado (%s/4). Não foi comprado. Próxima faixa: %s.",
+                            drop, result.get("collected", "?"), result.get("nextWindow", "—"))
+            elif reason == "waiting_window":
+                logger.info("Krumblor: %s já liberado ou comprado; próxima faixa às %s.",
+                            drop, result.get("nextWindow", "—"))
+            elif reason == "petting":
+                logger.info("Krumblor: coletando %s nesta faixa.", drop)
+            else:
+                logger.info("Krumblor: %s", result.get("message", "Aguardando."))
+            self._last_krumblor_state = state
+        return result.get("unlocked") is True
 
     def _run_sugar_lump_cycle(self):
         if self.paused.is_set() or not automation_config.enable_sugar_lump_harvest:

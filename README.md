@@ -260,3 +260,9 @@ A aba Atividade usa horário, nível e mensagem. Verificações de janela, conex
 O Garden agrupa plantios e colheitas comuns por planta; descobertas de sementes e ações especiais continuam explícitas. Save Scum atualiza o estado em tempo real e registra progresso no máximo a cada cinco segundos, além dos resultados finais. Falhas novas aparecem imediatamente; mensagens idênticas do mesmo ponto do código são limitadas a uma por 30 segundos, com a contagem de repetições no próximo registro.
 
 O histórico não força a rolagem para baixo durante a leitura. Mensagens são exibidas como texto literal e o arquivo usa UTF-8. Os detalhes por ação continuam disponíveis com nível DEBUG.
+
+## Coletar Krumblor Upgrades
+
+A checkbox **Coletar Krumblor Upgrades**, na aba Automações, é persistida. Requer **Pet the dragon** comprado e Krumblor no nível 8 ou superior. Identifica o drop da faixa atual de 15 minutos pelo horário do jogo e pela seed do save; usa uma cópia isolada do sorteio nativo para não alterar o RNG global durante a previsão.
+
+Se o drop já foi liberado ou comprado, não faz carinho nem consulta novamente até a próxima faixa. Quando falta, faz carinhos nativos no intervalo configurado em **Configurações → Automações → Intervalo entre carinhos no Krumblor** (padrão: 0,1 s; mínimo: 0,05 s) e para assim que liberar. Apenas desbloqueia: não compra upgrades, treina o dragão, troca auras, sacrifica prédios ou gasta Sugar Lumps. Restaura o painel anterior após o carinho. Segue Ligar/Desligar bot e as pausas exclusivas de Combo, Save Scum e backups. Os logs registram início da coleta, desbloqueio e espera, sem mensagens por carinho.

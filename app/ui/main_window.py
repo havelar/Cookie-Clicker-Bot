@@ -342,6 +342,11 @@ class MainWindow(QMainWindow):
         self.sugar_lump_checkbox.setChecked(automation_config.enable_sugar_lump_harvest)
         self.sugar_lump_checkbox.stateChanged.connect(self.toggle_sugar_lump_harvest)
         grid.addWidget(self.sugar_lump_checkbox, 2, 1)
+        self.krumblor_checkbox = QCheckBox("Coletar Krumblor Upgrades")
+        self.krumblor_checkbox.setToolTip("Requer Pet the dragon e Krumblor nível 8. Faz carinho para liberar o drop da faixa atual de 15 minutos; não compra upgrades, treina o dragão ou troca auras. Aguarda a próxima faixa se o drop já estiver liberado ou comprado.")
+        self.krumblor_checkbox.setChecked(automation_config.enable_krumblor_upgrades)
+        self.krumblor_checkbox.stateChanged.connect(self.toggle_krumblor_upgrades)
+        grid.addWidget(self.krumblor_checkbox, 3, 0, 1, 2)
         grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
         grid.setHorizontalSpacing(36); grid.setVerticalSpacing(10)
         self.automation_gate_label = QLabel("Bot pausado. Ligue no topo para liberar as automações.")
@@ -1081,7 +1086,7 @@ class MainWindow(QMainWindow):
             for widget in (
                 self.clicker_button, self.golden_checkbox, self.fortune_checkbox,
                 self.reindeer_checkbox, self.wrinkler_checkbox,
-                self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox,
+                self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox, self.krumblor_checkbox,
                 self.garden_thumbcorn_checkbox,
                 self.auto_ascension_toggle,
             ):
@@ -1114,7 +1119,7 @@ class MainWindow(QMainWindow):
                 return False
         widgets = (self.clicker_button, self.backups_button, self.golden_checkbox, self.fortune_checkbox,
                    self.reindeer_checkbox, self.wrinkler_checkbox, self.grimoire_spell_spam_checkbox,
-                   self.sugar_lump_checkbox, self.stock_toggle, self.garden_toggle,
+                   self.sugar_lump_checkbox, self.krumblor_checkbox, self.stock_toggle, self.garden_toggle,
                    self.combo_toggle, self.combo_preview_button, self.simple_farm_toggle,
                    self.simple_farm_preview_button, self.auto_ascension_toggle, self.auto_ascension_preview_button,
                    *self._preserve_checkboxes, self.save_scum_tab.toggle, self.save_scum_tab.preview)
@@ -1382,6 +1387,16 @@ class MainWindow(QMainWindow):
         self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
         self.grimoire_spell_combo.setEnabled(automation_config.enable_grimoire_spell_spam)
         automation_form.addRow("Skill do Grimoire", self.grimoire_spell_combo)
+        self.krumblor_interval_input = ScrollSafeDoubleSpinBox()
+        self.krumblor_interval_input.setRange(0.05, 5.0)
+        self.krumblor_interval_input.setDecimals(2)
+        self.krumblor_interval_input.setSingleStep(0.05)
+        self.krumblor_interval_input.setSuffix(" s")
+        self.krumblor_interval_input.setMaximumWidth(140)
+        self.krumblor_interval_input.setValue(automation_config.krumblor_pet_interval_seconds)
+        self.krumblor_interval_input.setToolTip("Intervalo mínimo entre carinhos enquanto falta o upgrade da faixa atual. 0,1 s permite até 10 por segundo; outras operações do bot podem aumentar o intervalo. Ao liberar o drop, aguarda a próxima faixa de 15 minutos.")
+        self.krumblor_interval_input.valueChanged.connect(self.update_krumblor_interval)
+        automation_form.addRow("Intervalo entre carinhos no Krumblor", self.krumblor_interval_input)
         layout.addWidget(automation_group)
 
         sugar_group = QGroupBox("Sugar Lumps"); sugar_form = QFormLayout(sugar_group)
@@ -2169,6 +2184,18 @@ class MainWindow(QMainWindow):
     def toggle_fortune_detection(self, state): self._save("enable_fortune_cookie", state)
     def toggle_reindeer_detection(self, state): self._save("enable_reindeer", state)
     def toggle_wrinkler_detection(self, state): self._save("enable_wrinkler_popper", state); self.wrinkler_delay_input.setEnabled(bool(state))
+    def update_krumblor_interval(self, value):
+        automation_config.krumblor_pet_interval_seconds = float(value)
+        save_automation_settings()
+        if self.runner:
+            self.runner.reset_krumblor_schedule()
+
+    def toggle_krumblor_upgrades(self, state):
+        self._save("enable_krumblor_upgrades", state)
+        if self.runner:
+            self.runner.reset_krumblor_schedule()
+        logger.info("Krumblor: coleta de upgrades %s.", "ativada" if state else "desativada")
+
     def toggle_grimoire_spell_spam(self, state):
         self._save("enable_grimoire_spell_spam", state)
         self.grimoire_spell_combo.setEnabled(bool(state))

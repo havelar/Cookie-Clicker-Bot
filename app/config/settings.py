@@ -51,6 +51,8 @@ class AutomationConfig:
     enable_fortune_cookie: bool = True
     enable_wrinkler_popper: bool = False
     wrinkler_pop_delay: float = 15.0
+    enable_krumblor_upgrades: bool = False
+    krumblor_pet_interval_seconds: float = 0.1
     enable_grimoire_spell_spam: bool = False
     grimoire_spell_id: int = 0
 
@@ -190,6 +192,12 @@ def load_automation_settings() -> None:
         automation_config.wrinkler_pop_delay,
         type=float,
     )
+    automation_config.enable_krumblor_upgrades = settings.value(
+        "enable_krumblor_upgrades", False, type=bool,
+    )
+    automation_config.krumblor_pet_interval_seconds = min(5.0, max(0.05, settings.value(
+        "krumblor_pet_interval_seconds", 0.1, type=float,
+    )))
     automation_config.enable_grimoire_spell_spam = settings.value(
         "enable_grimoire_spell_spam",
         automation_config.enable_grimoire_spell_spam,
@@ -382,6 +390,8 @@ def save_automation_settings() -> None:
     settings.setValue("enable_reindeer", automation_config.enable_reindeer)
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
     settings.setValue("wrinkler_pop_delay", automation_config.wrinkler_pop_delay)
+    settings.setValue("enable_krumblor_upgrades", automation_config.enable_krumblor_upgrades)
+    settings.setValue("krumblor_pet_interval_seconds", automation_config.krumblor_pet_interval_seconds)
     settings.setValue("enable_grimoire_spell_spam", automation_config.enable_grimoire_spell_spam)
     settings.setValue("grimoire_spell_id", automation_config.grimoire_spell_id)
     settings.setValue("enable_sugar_lump_harvest", automation_config.enable_sugar_lump_harvest)
