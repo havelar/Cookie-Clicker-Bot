@@ -138,6 +138,9 @@ class MainWindow(QMainWindow):
         self.bridge = bridge
         self.log_emitter, self.runner = LogSignalEmitter(), None
         self.backup_manager, self.backup_dialog = BackupManager(), None
+        self._sugar_lump_worker: Optional[StockMarketWorker] = None
+        self._sugar_lump_connected = bool(bridge)
+        self._sugar_lump_connection_epoch = 0
         self._stock_worker: Optional[StockMarketWorker] = None
         self._stock_stop = threading.Event()
         self._stock_stop.set()
@@ -204,6 +207,10 @@ class MainWindow(QMainWindow):
             label.setStyleSheet("color: #aeb8c9;")
             metrics.addWidget(label)
         metrics.addStretch()
+        self.sugar_lump_type_label = QLabel("Sugar Lump: —")
+        self.sugar_lump_type_label.setStyleSheet("color: #aeb8c9;")
+        self.sugar_lump_type_label.setToolTip("Tipo do Sugar Lump que está crescendo atualmente no jogo.")
+        metrics.addWidget(self.sugar_lump_type_label)
         layout.addWidget(summary)
         layout.addLayout(metrics)
 
@@ -2265,6 +2272,11 @@ class MainWindow(QMainWindow):
         self.clicker_button.setText("Desligar clicker" if active else "Ligar clicker"); self.clicker_button.setObjectName("dangerButton" if active else "primaryButton"); self.clicker_button.style().unpolish(self.clicker_button); self.clicker_button.style().polish(self.clicker_button)
         self.clicker_status.setText("Clicker: Ativo" if active else "Clicker: Parado"); self.clicker_status.setStyleSheet(f"color: {'#65d6a5' if active else '#9aa7ba'}; font-weight: 600;")
     def update_bridge_status(self, connected):
+        if bool(connected) != self._sugar_lump_connected:
+            self._sugar_lump_connection_epoch += 1
+        self._sugar_lump_connected = bool(connected)
+        if not connected:
+            self.sugar_lump_type_label.setText("Sugar Lump: —")
         self.bridge_status.setText("Bridge: Conectado" if connected else "Bridge: Desconectado"); self.bridge_status.setStyleSheet(f"color: {'#65d6a5' if connected else '#f07883'}; font-weight: 600;")
     def add_log(self, message):
         message = str(message)
@@ -2294,12 +2306,45 @@ class MainWindow(QMainWindow):
                 cursor.deleteChar()
     def refresh_stats(self):
         self.refresh_bot_control()
+        self._refresh_sugar_lump_type()
         elapsed = int(time.monotonic() - self._session_started_at)
         hours, remainder = divmod(elapsed, 3600)
         minutes, seconds = divmod(remainder, 60)
         self.session_timer_label.setText(f"Sessão: {hours:02}:{minutes:02}:{seconds:02}")
         if not self.runner: return
         self.cookies_clicked_label.setText(f"Cliques: {self.runner.cookies_clicked}"); self.golden_clicked_label.setText(f"Golden: {self.runner.golden_cookies_clicked}"); self.reindeer_popped_label.setText(f"Renas: {self.runner.reindeer_popped}"); self.wrinklers_popped_label.setText(f"Wrinklers: {self.runner.wrinklers_popped}")
+    def _refresh_sugar_lump_type(self):
+        # Apenas leitura, mesmo com o bot pausado, sem bloquear a interface.
+        if not self.bridge or not self._sugar_lump_connected:
+            self.sugar_lump_type_label.setText("Sugar Lump: —")
+            return
+        if self._sugar_lump_worker is not None:
+            return
+        bridge, epoch = self.bridge, self._sugar_lump_connection_epoch
+        worker = StockMarketWorker(lambda: (bridge, epoch, bridge.get_sugar_lump_status()), self)
+        self._sugar_lump_worker = worker
+        worker.completed.connect(self._display_sugar_lump_type)
+        worker.failed.connect(self._sugar_lump_status_failed)
+        worker.finished.connect(self._sugar_lump_status_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _display_sugar_lump_type(self, value):
+        bridge, epoch, status = value
+        if (bridge is not self.bridge or epoch != self._sugar_lump_connection_epoch
+                or not self._sugar_lump_connected):
+            return
+        names = {0: "Normal", 1: "Bifurcado", 2: "Dourado", 3: "Carnudo", 4: "Caramelizado"}
+        lump_type = status.get("type") if isinstance(status, dict) else None
+        name = names.get(lump_type, "—") if type(lump_type) is int else "—"
+        self.sugar_lump_type_label.setText(f"Sugar Lump: {name}")
+
+    def _sugar_lump_status_failed(self, _message):
+        self.sugar_lump_type_label.setText("Sugar Lump: —")
+
+    def _sugar_lump_status_finished(self):
+        self._sugar_lump_worker = None
+
     def open_backup_dialog(self):
         if self.backup_dialog is None:
             self.backup_dialog = BackupDialog(
@@ -2362,6 +2407,12 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if not self.save_scum_tab.shutdown():
+            event.ignore()
+            return
+        self.stats_timer.stop()
+        if (self._sugar_lump_worker and self._sugar_lump_worker.isRunning()
+                and not self._sugar_lump_worker.wait((app_config.connection_timeout + 1) * 1000)):
+            self.stats_timer.start(1000)
             event.ignore()
             return
         self._stock_stop.set()
