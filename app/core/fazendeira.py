@@ -162,9 +162,9 @@ class Fazendeira:
                 extra = sorted(runtime_keys - catalog_keys)
                 details = []
                 if missing:
-                    details.append("ausentes no runtime: " + ", ".join(missing))
+                    details.append("não encontradas no jogo: " + ", ".join(missing))
                 if extra:
-                    details.append("novas no runtime: " + ", ".join(extra))
+                    details.append("não reconhecidas: " + ", ".join(extra))
                 return GardenPlan(
                     None,
                     explanation="Catálogo incompatível com esta versão do jogo; " + "; ".join(details) + ".",
@@ -188,7 +188,7 @@ class Fazendeira:
         goal = self.select_next_goal(snapshot)
         if goal is None:
             explanation = (
-                "Coleção completa: todas as sementes foram confirmadas no snapshot."
+                "Coleção completa: todas as sementes foram desbloqueadas."
                 if snapshot.status.available and not snapshot.missing_seed_keys
                 else snapshot.status.message
             )
@@ -397,14 +397,14 @@ class Fazendeira:
             parent_names=("Thumbcorn",),
             reason="Priorizar Thumbcorn para colher plantas maduras até a conquista ser confirmada pelo jogo.",
             pending_prerequisites=(),
-            success_condition="Game.HasAchiev confirma que Green, aching thumb foi obtida.",
+            success_condition="Obter a conquista Green, aching thumb após colher 1.000 plantas maduras.",
             strategy="colheita_thumbcorn",
         )
         if snapshot.green_aching_thumb_won is True:
             return GardenPlan(
                 goal,
                 explanation=(
-                    "Conquista Green, aching thumb confirmada no runtime; encerrar o modo "
+                    "Conquista Green, aching thumb obtida. Encerrar o modo "
                     "Thumbcorn e retomar o planejamento normal da coleção."
                 ),
                 waiting=True,
@@ -420,7 +420,7 @@ class Fazendeira:
                 goal,
                 explanation=(
                     "Modo Green, aching thumb em pausa: "
-                    f"{snapshot.green_aching_thumb_message} Nenhuma ação especial será enviada."
+                    f"{snapshot.green_aching_thumb_message} Aguardando uma nova leitura do Garden."
                 ),
                 waiting=True,
                 mode="green_aching_thumb",
@@ -443,7 +443,7 @@ class Fazendeira:
                 continue
             replacements.append(GardenAction(
                 "harvest",
-                "Substituir a planta existente por Thumbcorn conforme o plano declarado do modo da conquista.",
+                "Substituir a planta existente por Thumbcorn para avançar na conquista.",
                 x=position[0], y=position[1], seed_key=plant.key, require_mature=False,
             ))
 
@@ -470,7 +470,7 @@ class Fazendeira:
         if replacements or plantings:
             actions = self._prepend_operational_actions(snapshot, actions)
         progress = (
-            f" Progresso informado pelo runtime: {snapshot.green_aching_thumb_progress}/1000."
+            f" Progresso: {snapshot.green_aching_thumb_progress}/1000."
             if snapshot.green_aching_thumb_progress is not None else ""
         )
         explanation = (
@@ -553,7 +553,7 @@ class Fazendeira:
         return tuple(filtered)
 
     def _estrategia_inicial(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
-        return (), "A semente inicial deveria estar desbloqueada; aguarde uma nova leitura do runtime."
+        return (), "A semente inicial não está disponível. Aguardando uma nova leitura do Garden."
 
     def _estrategia_mutacao_adjacente(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_generic_layout(snapshot, recipe)

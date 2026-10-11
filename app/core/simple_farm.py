@@ -60,7 +60,7 @@ class SimpleFarmAutomation:
     def gerar_previa(self) -> RelatorioSimpleFarm:
         snapshot = self.bridge.get_combo_snapshot(require_minigames=False)
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"), stop_clicker=False)
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."), stop_clicker=False)
         self._cash_floor = max(
             self._cash_floor,
             float(snapshot.get("cookies", 0)) * self.configuracao.reserva_caixa,
@@ -68,7 +68,7 @@ class SimpleFarmAutomation:
         plano = self._planejar(snapshot)
         return self._report(
             EstadoSimpleFarm.PREVIA,
-            "Previsão somente leitura; nenhum recurso foi usado.",
+            "Prévia atualizada. Nenhum recurso foi gasto.",
             "Garden e Banco continuam ativos; cliques extras somente nas janelas fortes.",
             snapshot,
             plano,
@@ -96,7 +96,7 @@ class SimpleFarmAutomation:
 
         snapshot = self.bridge.get_combo_snapshot(require_minigames=False)
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"))
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."))
         if snapshot.get("screen") != "game":
             return self._error("O Cookie Clicker não está na tela normal do jogo.")
         self._cash_floor = max(
@@ -170,8 +170,8 @@ class SimpleFarmAutomation:
         if cast_atual > plano.cast_inicial:
             return self._report(
                 EstadoSimpleFarm.ALINHANDO,
-                "O contador de spells mudou; o plano foi descartado.",
-                "Recalculando a seed no próximo ciclo.",
+                "As magias disponíveis mudaram. Atualizando o plano.",
+                "Buscando outra oportunidade.",
                 snapshot,
                 plano,
             )

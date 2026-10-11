@@ -63,7 +63,7 @@ class ComboAutomation:
         remaining = max(0, plano.cast_inicial - int(snapshot.get("spellsCastTotal", 0)))
         return self._report(
             EstadoCombo.PAUSADO,
-            f"Pausa de acompanhamento: faltavam até 3 skips; agora faltam {remaining} para o plano guardado.",
+            f"Combo pausado. Magias de preparação restantes: {remaining} para o plano guardado.",
             "Clique em Retomar combo quando estiver pronto. Nenhuma ação no jogo será executada até lá.",
             snapshot,
             plano,
@@ -73,7 +73,7 @@ class ComboAutomation:
         """Lê e planeja sem alterar o jogo."""
         snapshot = self.bridge.get_combo_snapshot()
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"))
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."))
         plano = self._planejar(snapshot)
         if plano is None:
             return self._error("Nenhuma janela EF + CF + BS foi encontrada no alcance configurado.")
@@ -109,7 +109,7 @@ class ComboAutomation:
 
         snapshot = self.bridge.get_combo_snapshot()
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"))
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."))
         self._latest_snapshot = snapshot
         if snapshot.get("screen") != "game":
             return self._error("O Cookie Clicker não está na tela normal do jogo.")
@@ -170,7 +170,7 @@ class ComboAutomation:
                     return self._report(
                         EstadoCombo.PREPARANDO,
                         "Golden Cookie expirou antes da coleta.",
-                        "Recalculando o runtime sem considerar o shimmer antigo.",
+                        "Buscando outra oportunidade de Golden Cookie.",
                         snapshot,
                         plano,
                     )
@@ -178,7 +178,7 @@ class ComboAutomation:
             return self._report(
                 EstadoCombo.PREPARANDO,
                 "Golden Cookie natural coletado pelo modo Combo.",
-                "Recalculando buffs e plano no próximo snapshot.",
+                "Atualizando os bônus e a próxima oportunidade.",
                 snapshot,
                 plano,
             )
@@ -224,7 +224,7 @@ class ComboAutomation:
             # Outro ator lançou uma spell entre snapshots; não reutilize o plano obsoleto.
             novo = self._planejar(snapshot)
             if novo is None or novo.cast_inicial < cast_atual:
-                return self._error("O contador de spells ultrapassou a janela e não foi possível replanejar.")
+                return self._error("A oportunidade de combo passou e não foi possível encontrar outra.")
             plano = novo
             ready, reason = self._buffs_prontos(snapshot, plano)
 
@@ -283,7 +283,7 @@ class ComboAutomation:
                 return self._report(
                     EstadoCombo.AGUARDANDO_BUFFS,
                     result.get("message", "A pilha mudou antes do disparo."),
-                    "Revalidando sem consumir spells ou lumps.", snapshot, plano,
+                    "Conferindo a oportunidade sem gastar mana ou Sugar Lumps.", snapshot, plano,
                 )
             self._recover_after_quadcast_failure()
             return self._error(result.get("message", "Quadcast não foi confirmado"))
@@ -324,7 +324,7 @@ class ComboAutomation:
     def _preparar_estado_estatico(self, snapshot: dict, plano: PlanoCombo) -> Optional[RelatorioCombo]:
         if snapshot.get("season") != plano.season:
             result = self.bridge.set_combo_season(plano.season)
-            return self._action_report(result, "Season ajustada para o forecast.", snapshot, plano)
+            return self._action_report(result, "Temporada ajustada para preparar o combo.", snapshot, plano)
         if snapshot.get("goldenSwitchOn"):
             result = self.bridge.set_combo_golden_switch(False)
             return self._action_report(result, "Golden Switch desligado durante a busca natural.", snapshot, plano)
@@ -391,7 +391,7 @@ class ComboAutomation:
             )
             return self._action_report(
                 result,
-                f"Spell de alinhamento lançada; faltavam {remaining} skips.",
+                f"Spell de alinhamento lançada; faltavam {remaining} magias de preparação.",
                 snapshot,
                 plano,
                 EstadoCombo.ALINHANDO,
@@ -413,7 +413,7 @@ class ComboAutomation:
             )
         return self._report(
             EstadoCombo.ALINHANDO,
-            f"Aguardando mana máxima; faltam {remaining} spells até a janela recalculada.",
+            f"Aguardando mana máxima; faltam {remaining} magias até a próxima oportunidade.",
             "Sem refill disponível, Haggler's Charm aguarda a barra cheia; com refill disponível, consome a mana antes da recarga.",
             snapshot,
             plano,
@@ -560,7 +560,7 @@ class ComboAutomation:
         return self._report(
             EstadoCombo.CLICANDO,
             ("Meta atingida; " if achieved else "Clicker ativo; ") + f"{remaining:.1f} s de margem planejada.",
-            "Monitorando cookiesEarned e buffs a cada snapshot.",
+            "Acompanhando os cookies acumulados e os bônus ativos.",
             snapshot,
             None,
         )
@@ -601,7 +601,7 @@ class ComboAutomation:
         return self._report(
             state,
             result.get("message") or success_message,
-            "Revalidando o runtime antes da próxima ação.",
+            "Conferindo os recursos antes da próxima ação.",
             snapshot,
             plano,
         )

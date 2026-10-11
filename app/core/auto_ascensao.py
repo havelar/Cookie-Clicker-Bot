@@ -150,10 +150,10 @@ class AutoAscensao:
         snapshot = self.bridge.get_ascension_snapshot()
         self.ultimo_snapshot = snapshot
         self.estado = EstadoAutoAscensao.PREVIA
-        self.ultima_acao = "Snapshot lido; nenhuma alteração foi feita."
+        self.ultima_acao = "Prévia atualizada. O jogo não foi alterado."
         if not snapshot.disponivel:
             self.proximo_passo = snapshot.mensagem
-            self.motivo_parada = "Prévia indisponível; bridge ou runtime inválido."
+            self.motivo_parada = "Não foi possível ler o jogo. Verifique a conexão."
             return self.relatorio()
         self.proximo_passo = self._descrever_plano(snapshot)
         self.motivo_parada = ""
@@ -320,7 +320,7 @@ class AutoAscensao:
             return self._executar_acao(
                 self.bridge.buy_all_normal_upgrades,
                 f"Usar “Comprar todos os upgrades” para {len(upgrades)} opção(ões) acessível(is).",
-                "Atualizar o snapshot antes de decidir outra compra.",
+                "Verificar o saldo antes da próxima compra.",
             )
 
         building_plan = planejar_lote_construcoes(snapshot.construcoes)
@@ -334,11 +334,11 @@ class AutoAscensao:
                     "Comprar até 100 unidade(s) de cada uma das "
                     f"{len(building_plan)} construção(ões), das melhores para as básicas."
                 ),
-                "Atualizar o snapshot e repetir o lote enquanto houver compras possíveis.",
+                "Continuar as compras enquanto houver cookies suficientes.",
             )
 
         self.estado = EstadoAutoAscensao.AGUARDANDO_PRESTIGIO
-        self.ultima_acao = "Nenhuma compra segura disponível neste snapshot."
+        self.ultima_acao = "Nenhuma compra disponível com o saldo atual."
         self.proximo_passo = (
             f"Aguardar ganho de prestígio: {snapshot.ganho_prestigio:,.0f} de "
             f"{self.configuracao.ganho_minimo_prestigio:,.0f}."

@@ -1,5 +1,6 @@
 """Aba Save Scum: tentativas em worker e recuperação explícita de checkpoint."""
 import time
+from pathlib import Path
 from app.utils.logger import logger
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QGroupBox, QCheckBox, QLabel, QPushButton, QTextEdit
@@ -34,7 +35,7 @@ class SaveScumTab(QWidget):
         self._last_log_state = None
         self._last_log_at = 0.0
         layout = QVBoxLayout(self)
-        description = QLabel("Exporta um backup, colhe o lump atual e lê o próximo tipo. Se não for um alvo, restaura e tenta de novo em outro instante. Ao encontrar o alvo, salva e encerra. As outras automações ficam pausadas durante as tentativas.")
+        description = QLabel("Tenta obter um Sugar Lump Dourado ou Caramelizado. Pausa as outras automações durante as tentativas.")
         description.setWordWrap(True)
         layout.addWidget(description)
         group = QGroupBox("Sugar Lumps desejados")
@@ -47,7 +48,7 @@ class SaveScumTab(QWidget):
             checkbox.setToolTip("Encerra as tentativas quando o próximo lump tiver este tipo. Será preservado até a colheita garantida.")
             checkbox.toggled.connect(self.save_settings)
             targets.addWidget(checkbox)
-        form.addRow("Alvos", targets)
+        form.addRow("Tipos desejados", targets)
         self.limit = ScrollSafeSpinBox()
         self.limit.setRange(1, 100000)
         self.limit.setValue(automation_config.save_scum_max_attempts)
@@ -63,10 +64,11 @@ class SaveScumTab(QWidget):
         self.interval.valueChanged.connect(self.save_settings)
         form.addRow("Intervalo", self.interval)
         layout.addWidget(group)
-        note = QLabel("O lump inicial precisa estar maduro. Antes da fase garantida, a colheita tem 50% de chance de render zero. Não edita a seed, o horário ou o tipo do lump. Prefira iniciar longe da colheita automática.")
+        note = QLabel("Comece com o Sugar Lump maduro e pelo menos 30 segundos antes da colheita automática.")
         note.setWordWrap(True)
+        note.setToolTip("Antes da colheita garantida, a coleta tem 50% de chance de não render Sugar Lumps. Se o tipo atual já for um dos desejados, nenhuma tentativa é feita.")
         layout.addWidget(note)
-        self.status = QLabel("Desligada. Consulte o estado antes de iniciar.")
+        self.status = QLabel("Desligada")
         self.status.setWordWrap(True)
         self.backup = QLabel("Backup inicial: —")
         self.backup.setWordWrap(True)
@@ -77,12 +79,14 @@ class SaveScumTab(QWidget):
         layout.addWidget(self.logs, 1)
         controls = QHBoxLayout()
         self.preview = QPushButton("Consultar estado")
+        self.preview.setToolTip("Consulta o tipo do Sugar Lump e se ele já pode ser colhido, sem realizar uma tentativa.")
         self.preview.clicked.connect(self.refresh)
-        self.recover = QPushButton("Restaurar início")
-        self.recover.setToolTip("Recupera o checkpoint se uma falha de conexão deixou a restauração pendente.")
+        self.recover = QPushButton("Restaurar backup inicial")
+        self.recover.setToolTip("Restaura o backup inicial após uma tentativa interrompida. Use se a recuperação estiver pendente.")
         self.recover.setEnabled(False)
         self.recover.clicked.connect(lambda: self.launch(self.automation, 'recover'))
         self.toggle = AutomationControl("Save Scum")
+        self.toggle.setToolTip("Salva o jogo antes de colher. Se o próximo Sugar Lump não for um dos tipos escolhidos, restaura e tenta novamente. Ao encontrar um tipo desejado, salva o resultado e desliga.")
         self.toggle.requested.connect(self.request)
         controls.addWidget(self.preview)
         controls.addWidget(self.recover)
@@ -149,7 +153,8 @@ class SaveScumTab(QWidget):
         self.last_report = report
         text = f"{report.state} | Tentativas: {report.attempts} | {report.message}"
         self.status.setText(text)
-        self.backup.setText("Backup inicial: " + (report.backup_path or "—"))
+        self.backup.setText("Backup inicial: " + (Path(report.backup_path).name if report.backup_path else "—"))
+        self.backup.setToolTip(report.backup_path)
         signature = (report.state, report.attempts, report.message)
         now = time.monotonic()
         if signature == self._last_log_signature:
@@ -187,7 +192,7 @@ class SaveScumTab(QWidget):
         self.window.refresh_bot_control()
 
     def manual_recovery(self):
-        self.display(SaveScumReport("restaurado", "Backup selecionado pelo usuário importado; sessão encerrada."))
+        self.display(SaveScumReport("restaurado", "Backup carregado. Tentativas encerradas."))
         self.finished()
 
     def shutdown(self):

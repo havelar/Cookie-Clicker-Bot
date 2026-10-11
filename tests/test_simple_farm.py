@@ -290,7 +290,7 @@ class SimpleFarmStateMachineTests(unittest.TestCase):
         self.assertEqual(report.magias_executadas, 2)
         self.assertEqual(report.cookies_no_banco, 97800)
         self.assertEqual(report.cast_atual, 12)
-        self.assertIn("Dual Cast", report.plano.resumo)
+        self.assertIn("Duas magias", report.plano.resumo)
         self.assertEqual(report.plano.custo_recompra, 3000)
         self.assertEqual(bridge.execute_simple_farm_spell.call_args.kwargs['cash_floor'], 80000)
         bridge.state['buffs'] = []
@@ -391,7 +391,7 @@ class SimpleFarmUiTests(unittest.TestCase):
         window.stock_toggle.setEnabled(True)
 
         names = [window.combo_mode_tabs.tabText(i) for i in range(window.combo_mode_tabs.count())]
-        self.assertEqual(names, ["Simple Farm", "Endgame 1e72"])
+        self.assertEqual(names, ["Simple Farm", "Combo avançado"])
         self.assertEqual(window.simple_farm_toggle.button.text(), "Ligar")
         self.assertFalse(window.simple_farm_toggle.running)
         window._set_simple_farm_busy(True, preview=False)

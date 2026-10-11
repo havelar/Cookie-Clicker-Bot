@@ -667,7 +667,7 @@ class GardenUiTests(unittest.TestCase):
             window = MainWindow()
             tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
             self.assertIn("Garden", tabs)
-            self.assertEqual(window.garden_simulate_button.text(), "Simular próximo tick")
+            self.assertEqual(window.garden_simulate_button.text(), "Ver próximas ações")
             self.assertEqual(window.garden_toggle.button.text(), "Ligar")
             self.assertEqual(window.garden_thumbcorn_checkbox.text(), "Green, aching thumb")
             self.assertIn("Prioriza Thumbcorn", window.garden_thumbcorn_checkbox.toolTip())
@@ -693,7 +693,7 @@ class GardenUiTests(unittest.TestCase):
         self.assertEqual(window.garden_goal_label.text(), "Thumbcorn")
         self.assertIn("2× Baker's wheat", window.garden_parents_label.text())
         self.assertIn("Libera novas dependências", window.garden_reason_label.text())
-        self.assertIn("Simulação concluída", window.garden_feedback_label.text())
+        self.assertIn("Prévia atualizada", window.garden_feedback_label.text())
         window.close()
 
     def test_budget_wait_is_amber_with_shortfall_and_real_errors_stay_red(self):

@@ -28,7 +28,7 @@ class ConfiguracaoSimpleFarm:
 
     def __post_init__(self) -> None:
         if not 2 <= self.busca_maxima_spells <= 10_000:
-            raise ValueError("A busca deve ficar entre 2 e 10.000 spells")
+            raise ValueError("Analise entre 2 e 10.000 magias futuras.")
         if not 0.1 <= self.intervalo_verificacao <= 10.0:
             raise ValueError("O intervalo deve ficar entre 0,1 e 10 segundos")
         if not 3.0 <= self.duracao_minima_buff <= 60.0:
@@ -55,13 +55,13 @@ class PlanoSimpleFarm:
 
     @property
     def resumo(self) -> str:
-        efeitos = " → ".join(self.resultados)
-        strategy = (
-            f"Dual Cast | torres {self.torres_originais} → {self.torres_temporarias} → {self.torres_originais}"
-            f" | recompra ≤ {self.custo_recompra:.3g}"
-            if len(self.resultados) == 2 else "uma magia, sem venda de torres"
-        )
-        return f"cast {self.cast_inicial} ({self.spells_a_pular} skips): {efeitos} | {strategy}"
+        names = {"click frenzy": "Click Frenzy", "frenzy": "Frenzy",
+                 "building special": "Bônus de construção", "blood frenzy": "Elder Frenzy"}
+        efeitos = " + ".join(names.get(effect, effect) for effect in self.resultados)
+        strategy = "Duas magias" if len(self.resultados) == 2 else "Uma magia"
+        preparation = f"{self.spells_a_pular} magias de preparação" if self.spells_a_pular else "Sequência pronta"
+        return f"{efeitos} · {strategy} · {preparation}"
+
 
 
 @dataclass(frozen=True)

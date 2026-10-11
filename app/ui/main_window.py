@@ -166,9 +166,79 @@ class MainWindow(QMainWindow):
         self.stock_automation = StockMarketAutomation(bridge) if bridge else None
         self.fazendeira = Fazendeira(bridge) if bridge else None
         self.setup_ui()
+        self._configure_user_tooltips()
         self.log_emitter.log_signal.connect(self.add_log)
         self.clicker_state_changed.connect(self.set_clicker_state)
         self.refresh_bot_control()
+
+    @staticmethod
+    def _automation_state_text(state):
+        names = {"ocioso": "Desligada", "erro seguro": "Parada por segurança",
+                 "alinhando FtHoF": "Preparando sequência de magias",
+                 "alinhando spells": "Preparando sequência de magias",
+                 "aguardando buff natural": "Aguardando bônus natural",
+                 "aguardando buffs naturais": "Aguardando bônus naturais",
+                 "executando Quadcast": "Usando as quatro magias do combo",
+                 "janela de cliques": "Aproveitando os bônus de clique"}
+        return names.get(state, state[:1].upper() + state[1:])
+
+    def _configure_user_tooltips(self):
+        tips = {
+            "clicker_button": "Liga ou desliga os cliques no cookie principal. As outras automações seguem a seleção de cada aba.",
+            "golden_checkbox": "Coleta os Golden Cookies assim que aparecem, incluindo os cookies de ira.",
+            "fortune_checkbox": "Clica nas notícias de fortuna quando aparecem no topo do jogo.",
+            "reindeer_checkbox": "Coleta as renas que aparecem durante a temporada de Natal.",
+            "grimoire_spell_spam_checkbox": "Usa a magia escolhida em Configurações quando a mana estiver cheia. Aguarda a recarga para usar novamente.",
+            "garden_refresh_button": "Atualiza as plantas, sementes e próximas ações sem alterar o Garden.",
+            "garden_simulate_button": "Mostra o que a automação faria com as plantas atuais, sem executar as ações.",
+            "garden_toggle": "Busca sementes e cuida das plantas. Se faltarem cookies para replantar, aguarda dinheiro antes de remover as plantas.",
+            "combo_search_input": "Quantidade de resultados futuros de magia a considerar ao buscar um combo. Valores maiores podem aumentar o tempo de análise.",
+            "combo_lumps_input": "Máximo de Sugar Lumps usados para preparar as magias. O Sugar Frenzy, se ativado, tem um gasto separado.",
+            "combo_bs_input": "Quantidade de bônus de construções que precisam estar ativos juntos para iniciar o combo.",
+            "combo_interval_input": "Tempo entre verificações de mana, bônus e oportunidades de combo.",
+            "combo_min_buff_input": "Tempo que os bônus ainda precisam durar para o bot tentar completar o combo.",
+            "combo_sugar_checkbox": "Gasta 1 Sugar Lump para ativar Sugar Frenzy no combo final, quando disponível.",
+            "combo_loans_checkbox": "Ativa os três empréstimos no combo final. Eles aumentam a produção por um período e depois aplicam penalidades.",
+            "combo_toggle": "Prepara e executa o combo avançado. Pausa as outras automações durante a tentativa.",
+            "combo_preview_button": "Mostra a oportunidade de combo prevista para o jogo atual, sem gastar recursos.",
+            "combo_resume_button": "Continua a preparação do combo após a pausa para acompanhamento.",
+            "simple_farm_toggle": "Coleta Golden Cookies, combina bônus e compra melhorias dentro do orçamento. Garden e Banco podem continuar funcionando.",
+            "simple_farm_preview_button": "Mostra a próxima oportunidade de magia e os recursos disponíveis, sem gastar cookies ou mana.",
+            "simple_farm_search_input": "Quantas magias futuras analisar. Prioriza Click Frenzy junto de outro bônus; usa Haggler's Charm para preparar a sequência fora dos bônus ativos.",
+            "simple_farm_interval_input": "Tempo entre verificações do jogo. As compras têm um intervalo separado de 15 segundos.",
+            "simple_farm_min_buff_input": "Tempo que o bônus natural ainda precisa durar para valer a pena adicionar uma magia de Click Frenzy.",
+            "simple_farm_reserve_input": "Percentual do maior saldo visto nesta execução reservado para Garden e Banco. O farm espera se o saldo cair abaixo da reserva e também mantém cookies para Lucky.",
+            "simple_farm_investment_input": "Gasto máximo em upgrades e construções a cada 15 segundos, sem usar a reserva. A recompra de torres para duas magias também precisa preservar essa reserva.",
+            "simple_farm_resources_label": "Magias já usadas no Grimoire, mana disponível, cookies no saldo e reserva mantida pelo farm.",
+            "simple_farm_plan_label": "Bônus previstos e magias necessárias para preparar a próxima oportunidade. Duas magias podem exigir vender e recomprar torres, dentro do orçamento.",
+            "combo_progress_label": "Magias já usadas, mana disponível e Sugar Lumps restantes. Gastos indica quantos Sugar Lumps foram usados nesta tentativa.",
+            "combo_garden_label": "Quantidade de plantas maduras na última leitura. O combo pode iniciar mesmo sem um Garden preparado.",
+            "simple_farm_pantheon_label": "Espíritos equipados no Pantheon. O Simple Farm mantém essa escolha.",
+            "auto_ascension_cycles_input": "Quantidade de ascensões a completar antes de desligar a automação.",
+            "auto_ascension_prestige_input": "Prestígio mínimo a ganhar antes de iniciar a próxima ascensão.",
+            "auto_ascension_interval_input": "Tempo entre verificações de progresso e compras durante cada ascensão.",
+            "auto_ascension_timeout_input": "Tempo máximo para completar uma ascensão. Ao atingir o limite, a automação desliga.",
+            "auto_ascension_toggle": "Começa a sequência a partir da tela de ascensão. Desligar impede novas etapas após a ação em andamento.",
+            "auto_ascension_preview_button": "Mostra a próxima etapa e as compras previstas sem alterar o jogo.",
+            "grimoire_spell_combo": "Magia usada pela opção Usar magia com mana cheia. O modo Combo controla suas próprias magias.",
+            "stock_buy_limit_input": "Preço máximo usado para buscar compras quando não há um limite personalizado ou uma referência por ativo.",
+            "stock_sell_limit_input": "Preço a partir do qual a automação busca uma venda lucrativa, quando não há um limite personalizado ou uma referência por ativo.",
+            "stock_owned_only_checkbox": "No jogo, mostra apenas os ativos que você possui. Não altera a estratégia de compra e venda.",
+            "stock_quantity_input": "Quantidade de unidades para a compra ou venda manual.",
+            "stock_use_max_checkbox": "Compra o máximo permitido pelo saldo e pela capacidade, ou vende todo o estoque do ativo selecionado.",
+            "stock_buy_button": "Compra o ativo selecionado na quantidade escolhida, usando cookies do jogo.",
+            "stock_sell_button": "Vende o ativo selecionado na quantidade escolhida. Esta é uma ordem manual.",
+            "stock_total_profit_label": "Variação do resultado das negociações mais o valor do estoque desde o início desta sessão, em dólares do mercado.",
+            "log_text": "Histórico das ações e avisos. Coletas repetidas são agrupadas. Role até o fim para acompanhar as novas mensagens.",
+        }
+        for name, tip in tips.items():
+            getattr(self, name).setToolTip(tip)
+        for form in self.findChildren(QFormLayout):
+            for row in range(form.rowCount()):
+                field = form.itemAt(row, QFormLayout.FieldRole)
+                label = form.itemAt(row, QFormLayout.LabelRole)
+                if field and label and field.widget() and label.widget():
+                    label.widget().setToolTip(field.widget().toolTip())
 
     def setup_ui(self):
         self.setWindowTitle("Cookie Clicker Bot")
@@ -186,7 +256,7 @@ class MainWindow(QMainWindow):
         self.open_game_button.setMinimumSize(140, 36)
         self.bot_status = QLabel("Jogo fechado")
         self.bot_status.setStyleSheet("color: #aeb8c9;")
-        self.open_game_button.setToolTip("Abre Cookie Clicker com --remote-debugging-port=9222 e conecta o bot. Deixe a Steam aberta. Se o jogo já tiver debugger, apenas conecta.")
+        self.open_game_button.setToolTip("Abre o jogo e conecta o bot automaticamente. Deixe a Steam aberta.")
         self.open_game_button.clicked.connect(lambda: self.open_game_requested.emit())
         self.clicker_button = QPushButton("Ligar clicker"); self.clicker_button.setObjectName("primaryButton"); self.clicker_button.setMinimumHeight(32); self.clicker_button.clicked.connect(self.toggle_clicker)
         self.backups_button = QPushButton("Backups"); self.backups_button.setToolTip("Salvar, carregar e gerenciar backups do jogo"); self.backups_button.clicked.connect(self.open_backup_dialog)
@@ -194,7 +264,7 @@ class MainWindow(QMainWindow):
 
         summary = QWidget(); summary.setObjectName("sessionSummary")
         status_layout = QHBoxLayout(summary); status_layout.setContentsMargins(9, 4, 9, 4); status_layout.setSpacing(10)
-        self.bridge_status, self.clicker_status = QLabel("Bridge: Desconectado"), QLabel("Clicker: Parado")
+        self.bridge_status, self.clicker_status = QLabel("Jogo: desconectado"), QLabel("Clicker: Parado")
         self.session_timer_label = QLabel("Sessão: 00:00:00")
         self.session_timer_label.setStyleSheet("color: #aeb8c9;")
         self.bridge_status.setStyleSheet("color: #f07883; font-weight: 600;"); self.clicker_status.setStyleSheet("color: #9aa7ba; font-weight: 600;")
@@ -264,7 +334,7 @@ class MainWindow(QMainWindow):
         self.open_game_button.setToolTip(
             "Pausa todas as automações após a ação em andamento. O jogo continua aberto." if self._bot_enabled else
             "Libera as automações configuradas. Banco e Garden retomam a seleção; inicie os modos especiais nas abas." if self._game_open else
-            "Abre Cookie Clicker com debugger na porta 9222. Deixe a Steam aberta.")
+            "Abre o jogo e conecta o bot automaticamente. Deixe a Steam aberta.")
         self.automation_gate_label.setVisible(not self._bot_enabled)
         if not self._bot_enabled:
             for widget in (self.clicker_button, self.stock_toggle, self.garden_toggle,
@@ -341,7 +411,7 @@ class MainWindow(QMainWindow):
             "Mantém vagas para procurar Shiny, preserva os Shiny e os normais mais rentáveis. "
             "Pode liberar caixa para ações do Garden/Banco bloqueadas por falta de cookies. "
             "A quantidade de vagas pode ser ajustada em Configurações.")
-        self.grimoire_spell_spam_checkbox = QCheckBox("Spammar Skill")
+        self.grimoire_spell_spam_checkbox = QCheckBox("Usar magia com mana cheia")
         self.grimoire_spell_spam_checkbox.setToolTip(
             "Aguarda a mana chegar ao máximo e usa uma vez a skill configurada"
         )
@@ -354,7 +424,7 @@ class MainWindow(QMainWindow):
         self.sugar_lump_checkbox.stateChanged.connect(self.toggle_sugar_lump_harvest)
         grid.addWidget(self.sugar_lump_checkbox, 2, 1)
         self.krumblor_checkbox = QCheckBox("Coletar Krumblor Upgrades")
-        self.krumblor_checkbox.setToolTip("Requer Pet the dragon e Krumblor nível 8. Faz carinho para liberar o drop da faixa atual de 15 minutos; não compra upgrades, treina o dragão ou troca auras. Aguarda a próxima faixa se o drop já estiver liberado ou comprado.")
+        self.krumblor_checkbox.setToolTip("Faz carinho até liberar o upgrade dos 15 minutos atuais. Depois aguarda a próxima faixa. Requer Pet the dragon e Krumblor nível 8. Os upgrades são liberados, mas não comprados.")
         self.krumblor_checkbox.setChecked(automation_config.enable_krumblor_upgrades)
         self.krumblor_checkbox.stateChanged.connect(self.toggle_krumblor_upgrades)
         grid.addWidget(self.krumblor_checkbox, 3, 0, 1, 2)
@@ -368,15 +438,15 @@ class MainWindow(QMainWindow):
         group_layout.addLayout(grid); layout.addWidget(group); layout.addStretch(); return tab
 
     def _load_grimoire_spells(self):
-        spells = self.bridge.get_grimoire_spells() if self.bridge else []
-        if not spells:
-            spells = [
+        magias = self.bridge.get_grimoire_spells() if self.bridge else []
+        if not magias:
+            magias = [
                 {"id": spell_id, "name": name, "description": ""}
                 for spell_id, name in DEFAULT_GRIMOIRE_SPELLS
             ]
         self.grimoire_spell_combo.blockSignals(True)
         self.grimoire_spell_combo.clear()
-        for spell in spells:
+        for spell in magias:
             self.grimoire_spell_combo.addItem(spell["name"], spell["id"])
             index = self.grimoire_spell_combo.count() - 1
             if spell.get("description"):
@@ -390,7 +460,7 @@ class MainWindow(QMainWindow):
 
     def _activity_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14); group = QGroupBox("Registro de atividades"); group_layout = QVBoxLayout(group)
-        self.log_text = QTextEdit(); self.log_text.setReadOnly(True); self.log_text.setMinimumHeight(230); hint = QLabel("Ações e mudanças de estado. Coletas e falhas repetidas aparecem em resumos; a rolagem acompanha apenas quando você está no fim."); hint.setWordWrap(True); hint.setStyleSheet("color: #aeb8c9;"); group_layout.addWidget(hint); group_layout.addWidget(self.log_text); layout.addWidget(group); return tab
+        self.log_text = QTextEdit(); self.log_text.setReadOnly(True); self.log_text.setMinimumHeight(230); hint = QLabel("Acompanhe as ações e os avisos do bot."); hint.setWordWrap(True); hint.setStyleSheet("color: #aeb8c9;"); group_layout.addWidget(hint); group_layout.addWidget(self.log_text); layout.addWidget(group); return tab
 
     def _garden_tab(self):
         """Cria a visão de progresso, planejamento e execução do Garden."""
@@ -399,9 +469,9 @@ class MainWindow(QMainWindow):
         self.garden_status_label = QLabel("Garden: carregando")
         self.garden_status_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
         self.garden_progress_label = QLabel("Sementes: —")
-        self.garden_refresh_button = QPushButton("Atualizar snapshot")
+        self.garden_refresh_button = QPushButton("Atualizar Garden")
         self.garden_refresh_button.clicked.connect(self.refresh_garden)
-        self.garden_simulate_button = QPushButton("Simular próximo tick")
+        self.garden_simulate_button = QPushButton("Ver próximas ações")
         self.garden_simulate_button.setObjectName("primaryButton")
         self.garden_simulate_button.clicked.connect(self.simulate_garden)
         self.garden_toggle = AutomationControl("Garden")
@@ -427,18 +497,18 @@ class MainWindow(QMainWindow):
         actions.addStretch()
         layout.addLayout(actions)
 
-        goal_group = QGroupBox("Próxima meta prioritária"); goal_layout = QVBoxLayout(goal_group)
-        self.garden_goal_label = QLabel("Aguardando snapshot do Garden.")
+        goal_group = QGroupBox("Próxima semente"); goal_layout = QVBoxLayout(goal_group)
+        self.garden_goal_label = QLabel("Aguardando leitura do Garden.")
         self.garden_goal_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #f4f7fc;")
-        self.garden_parents_label = QLabel("Pais e requisitos: —")
+        self.garden_parents_label = QLabel("Plantas necessárias: —")
         self.garden_reason_label = QLabel("")
         self.garden_reason_label.setWordWrap(True); self.garden_parents_label.setWordWrap(True)
         goal_layout.addWidget(self.garden_goal_label); goal_layout.addWidget(self.garden_parents_label); goal_layout.addWidget(self.garden_reason_label)
         layout.addWidget(goal_group)
 
-        plan_group = QGroupBox("Plano antes da execução"); plan_layout = QVBoxLayout(plan_group)
+        plan_group = QGroupBox("Próximas ações"); plan_layout = QVBoxLayout(plan_group)
         self.garden_plan_text = QTextEdit(); self.garden_plan_text.setReadOnly(True); self.garden_plan_text.setMinimumHeight(130)
-        self.garden_feedback_label = QLabel("A simulação é segura e não altera o jogo.")
+        self.garden_feedback_label = QLabel("Use Ver próximas ações para consultar o plano.")
         self.garden_feedback_label.setWordWrap(True); self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
         plan_layout.addWidget(self.garden_plan_text); plan_layout.addWidget(self.garden_feedback_label)
         layout.addWidget(plan_group, 1)
@@ -459,23 +529,22 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         warning = QLabel(
-            "Ao iniciar, o modo Combo pausa as demais automações, recalcula a seed continuamente "
-            "e pode vender/recomprar prédios e gastar Sugar Lumps. Ele para em estado seguro se "
-            "qualquer precondição mudar."
+            "Este combo pausa as outras automações e pode gastar Sugar Lumps, vender construções "
+            "e recomprá-las."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #e8b766; font-weight: 600;")
         layout.addWidget(warning)
 
-        config_group = QGroupBox("Planejamento on-the-go")
+        config_group = QGroupBox("Preparação do combo")
         form = QFormLayout(config_group)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.combo_search_input = ScrollSafeSpinBox()
         self.combo_search_input.setRange(4, 100_000)
         self.combo_search_input.setValue(automation_config.combo_max_search_ahead)
-        self.combo_search_input.setSuffix(" spells")
+        self.combo_search_input.setSuffix(" magias")
         self.combo_search_input.valueChanged.connect(self._save_combo_settings)
-        form.addRow("Alcance do forecast", self.combo_search_input)
+        form.addRow("Magias futuras analisadas", self.combo_search_input)
 
         self.combo_lumps_input = ScrollSafeSpinBox()
         self.combo_lumps_input.setRange(0, 10_000)
@@ -488,7 +557,7 @@ class MainWindow(QMainWindow):
         self.combo_bs_input.setRange(1, 6)
         self.combo_bs_input.setValue(automation_config.combo_required_building_specials)
         self.combo_bs_input.valueChanged.connect(self._save_combo_settings)
-        form.addRow("Building Specials totais", self.combo_bs_input)
+        form.addRow("Bônus de construções desejados", self.combo_bs_input)
 
         self.combo_interval_input = ScrollSafeDoubleSpinBox()
         self.combo_interval_input.setRange(0.1, 60.0)
@@ -496,7 +565,7 @@ class MainWindow(QMainWindow):
         self.combo_interval_input.setValue(automation_config.combo_poll_interval_seconds)
         self.combo_interval_input.setSuffix(" s")
         self.combo_interval_input.valueChanged.connect(self._save_combo_settings)
-        form.addRow("Intervalo do looper", self.combo_interval_input)
+        form.addRow("Intervalo de verificação", self.combo_interval_input)
 
         self.combo_min_buff_input = ScrollSafeDoubleSpinBox()
         self.combo_min_buff_input.setRange(5.0, 120.0)
@@ -504,14 +573,14 @@ class MainWindow(QMainWindow):
         self.combo_min_buff_input.setValue(automation_config.combo_minimum_buff_seconds)
         self.combo_min_buff_input.setSuffix(" s")
         self.combo_min_buff_input.valueChanged.connect(self._save_combo_settings)
-        form.addRow("Duração mínima dos buffs", self.combo_min_buff_input)
+        form.addRow("Tempo mínimo restante dos bônus", self.combo_min_buff_input)
 
         self.combo_wait_input = ScrollSafeSpinBox()
         self.combo_wait_input.setRange(1, 1440)
         self.combo_wait_input.setValue(automation_config.combo_max_wait_minutes)
         self.combo_wait_input.setSuffix(" min")
         self.combo_wait_input.setToolTip(
-            "Inclui preparação e busca. Ao vencer o prazo, para sem disparar o Quadcast."
+            "Tempo máximo para preparar o combo e aguardar uma oportunidade. Ao atingir o limite, a automação desliga."
         )
         self.combo_wait_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Limite de espera", self.combo_wait_input)
@@ -532,14 +601,14 @@ class MainWindow(QMainWindow):
         self.combo_sugar_checkbox = QCheckBox("Usar Sugar Frenzy na tentativa final")
         self.combo_sugar_checkbox.setChecked(automation_config.combo_use_sugar_frenzy)
         self.combo_sugar_checkbox.stateChanged.connect(self._save_combo_settings)
-        self.combo_loans_checkbox = QCheckBox("Usar os três loans")
+        self.combo_loans_checkbox = QCheckBox("Usar os três empréstimos")
         self.combo_loans_checkbox.setChecked(automation_config.combo_use_loans)
         self.combo_loans_checkbox.stateChanged.connect(self._save_combo_settings)
         boosts.addWidget(self.combo_sugar_checkbox)
         boosts.addWidget(self.combo_loans_checkbox)
         boosts.addStretch()
         form.addRow("Multiplicadores finais", boosts)
-        self.combo_pause_checkbox = QCheckBox("Pausar quando faltarem 3 skips e aguardar Retomar")
+        self.combo_pause_checkbox = QCheckBox("Pausar antes das últimas magias de preparação")
         self.combo_pause_checkbox.setChecked(automation_config.combo_pause_before_last_skips)
         self.combo_pause_checkbox.setToolTip(
             "Pausa uma vez por execução, antes dos últimos 3 skips (ou menos). "
@@ -552,9 +621,9 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("Acompanhamento")
         status_form = QFormLayout(status_group)
         self.combo_state_label = QLabel("Não iniciado")
-        self.combo_plan_label = QLabel("Atualize a prévia para ler a seed atual.")
-        self.combo_progress_label = QLabel("Spells: — | Mana: — | Lumps: —")
-        self.combo_buffs_label = QLabel("Buffs: —")
+        self.combo_plan_label = QLabel("Atualize a prévia para ver a próxima oportunidade.")
+        self.combo_progress_label = QLabel("Magias usadas: — | Mana: — | Sugar Lumps: —")
+        self.combo_buffs_label = QLabel("—")
         self.combo_garden_label = QLabel("Garden: —")
         self.combo_message_label = QLabel("Nenhuma ação executada.")
         self.combo_error_label = QLabel("—")
@@ -564,12 +633,12 @@ class MainWindow(QMainWindow):
         ):
             label.setWordWrap(True)
         status_form.addRow("Estado", self.combo_state_label)
-        status_form.addRow("Plano vivo", self.combo_plan_label)
+        status_form.addRow("Combo previsto", self.combo_plan_label)
         status_form.addRow("Recursos", self.combo_progress_label)
-        status_form.addRow("Buffs", self.combo_buffs_label)
+        status_form.addRow("Bônus ativos", self.combo_buffs_label)
         status_form.addRow("Garden", self.combo_garden_label)
-        status_form.addRow("Última atualização", self.combo_message_label)
-        status_form.addRow("Bloqueio/erro", self.combo_error_label)
+        status_form.addRow("Mensagem", self.combo_message_label)
+        status_form.addRow("Aviso", self.combo_error_label)
         layout.addWidget(status_group, 1)
 
         controls = QHBoxLayout()
@@ -589,7 +658,7 @@ class MainWindow(QMainWindow):
         self.combo_scroll_area = scroll
         self.combo_mode_tabs = QTabWidget()
         self.combo_mode_tabs.addTab(self._simple_farm_panel(), "Simple Farm")
-        self.combo_mode_tabs.addTab(scroll, "Endgame 1e72")
+        self.combo_mode_tabs.addTab(scroll, "Combo avançado")
         outer_layout.addWidget(self.combo_mode_tabs)
         return tab
 
@@ -605,10 +674,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         guarantee = QLabel(
-            "Farm de apoio: Garden e Banco continuam ativos. Preserva a maior parte do caixa, "
-            "prioriza upgrades de produção em % e compra construções por retorno de CpS. "
-            "Usa Dual Cast quando a recompra das torres cabe no orçamento, sem gastar Sugar Lumps, usar loans "
-            "ou alterar Garden e Pantheon. Passe o mouse nas opções para ver a explicação."
+            "Acumula cookies junto com Garden e Banco, respeitando a reserva de caixa escolhida."
         )
         guarantee.setWordWrap(True)
         guarantee.setStyleSheet("color: #65d6a5; font-weight: 600;")
@@ -620,7 +686,7 @@ class MainWindow(QMainWindow):
         self.simple_farm_search_input = ScrollSafeSpinBox()
         self.simple_farm_search_input.setRange(2, 10_000)
         self.simple_farm_search_input.setValue(automation_config.simple_farm_max_search_ahead)
-        self.simple_farm_search_input.setSuffix(" spells")
+        self.simple_farm_search_input.setSuffix(" magias")
         self.simple_farm_search_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Magias futuras analisadas", self.simple_farm_search_input)
         self.simple_farm_interval_input = ScrollSafeDoubleSpinBox()
@@ -637,7 +703,7 @@ class MainWindow(QMainWindow):
         self.simple_farm_min_buff_input.setValue(automation_config.simple_farm_minimum_buff_seconds)
         self.simple_farm_min_buff_input.setSuffix(" s")
         self.simple_farm_min_buff_input.valueChanged.connect(self._save_simple_farm_settings)
-        form.addRow("Tempo mínimo restante do buff", self.simple_farm_min_buff_input)
+        form.addRow("Tempo mínimo restante do bônus", self.simple_farm_min_buff_input)
         self.simple_farm_reserve_input = ScrollSafeDoubleSpinBox()
         self.simple_farm_reserve_input.setRange(15.0, 99.0)
         self.simple_farm_reserve_input.setDecimals(0)
@@ -652,16 +718,6 @@ class MainWindow(QMainWindow):
         self.simple_farm_investment_input.setSuffix(" %")
         self.simple_farm_investment_input.valueChanged.connect(self._save_simple_farm_settings)
         form.addRow("Compra máxima a cada 15 s", self.simple_farm_investment_input)
-        tips = {
-            self.simple_farm_search_input: "Quantas magias futuras prever sem gastar recursos. Prioriza Click Frenzy junto de outro multiplicador e só usa Click Frenzy isolado quando não encontra um par viável. Dual Cast vende só as torres necessárias e recompra todas antes de abrir os cookies; não repete Click Frenzy. Para avançar até o par, usa Haggler's Charm só com mana cheia e fora dos buffs. Sem previsão, o farm segue coletando e comprando.",
-            self.simple_farm_interval_input: "Frequência de leitura do jogo, em segundos. 0,2 s reage rápido aos Golden Cookies. Compras têm intervalo separado de 15 s; esta opção não aumenta o orçamento.",
-            self.simple_farm_min_buff_input: "Tempo que um multiplicador de produção natural ainda precisa durar para receber um Click Frenzy de magia. Não lança outro se Click Frenzy ou Dragonflight já estiver ativo.",
-            self.simple_farm_reserve_input: "Parte do maior saldo observado nesta execução que o Simple Farm não gasta (padrão: 80%; mínimo: 15%). Garden e Banco podem usar essa reserva. Se gastarem, o farm espera o caixa se recuperar. Também preserva 6.000 vezes o CpS para Lucky. O valor escolhido é salvo automaticamente.",
-            self.simple_farm_investment_input: "Limite de gasto a cada 15 segundos para upgrades e construções (padrão: 5% do saldo atual), sempre abaixo do excedente da reserva. Até metade vai para um upgrade; o restante pode comprar até 25 construções. Não é uma meta de gasto; durante buffs, compras de produção aguardam. A recompra de torres do Dual Cast tem regra própria: pode usar o excedente inteiro, mas precisa manter toda a reserva de caixa e o valor de Lucky.",
-        }
-        for field, tip in tips.items():
-            field.setToolTip(tip)
-            form.labelForField(field).setToolTip(tip)
         for field in (
             self.simple_farm_search_input,
             self.simple_farm_interval_input,
@@ -675,11 +731,11 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("Acompanhamento")
         status_form = QFormLayout(status_group)
         self.simple_farm_state_label = QLabel("Não iniciado")
-        self.simple_farm_plan_label = QLabel("Atualize a prévia para ler a seed atual.")
-        self.simple_farm_resources_label = QLabel("Spells: — | Mana: — | Cookies: —")
-        self.simple_farm_buffs_label = QLabel("Buffs: —")
-        self.simple_farm_counter_label = QLabel("GC naturais: 0 | Magias: 0")
-        self.simple_farm_pantheon_label = QLabel("Pantheon: será apenas lido")
+        self.simple_farm_plan_label = QLabel("Atualize a prévia para ver a próxima oportunidade.")
+        self.simple_farm_resources_label = QLabel("Magias usadas: — | Mana: — | Cookies: —")
+        self.simple_farm_buffs_label = QLabel("—")
+        self.simple_farm_counter_label = QLabel("Golden Cookies: 0 | Magias: 0")
+        self.simple_farm_pantheon_label = QLabel("—")
         self.simple_farm_message_label = QLabel("Nenhuma ação executada.")
         self.simple_farm_error_label = QLabel("—")
         for label in (
@@ -692,11 +748,11 @@ class MainWindow(QMainWindow):
         status_form.addRow("Estado", self.simple_farm_state_label)
         status_form.addRow("Próxima oportunidade", self.simple_farm_plan_label)
         status_form.addRow("Recursos", self.simple_farm_resources_label)
-        status_form.addRow("Buffs", self.simple_farm_buffs_label)
+        status_form.addRow("Bônus ativos", self.simple_farm_buffs_label)
         status_form.addRow("Contadores", self.simple_farm_counter_label)
         status_form.addRow("Pantheon", self.simple_farm_pantheon_label)
-        status_form.addRow("Última atualização", self.simple_farm_message_label)
-        status_form.addRow("Bloqueio/erro", self.simple_farm_error_label)
+        status_form.addRow("Mensagem", self.simple_farm_message_label)
+        status_form.addRow("Aviso", self.simple_farm_error_label)
         layout.addWidget(status_group, 1)
 
         controls = QHBoxLayout()
@@ -764,7 +820,7 @@ class MainWindow(QMainWindow):
             self._simple_farm_failed("Aguarde a Auto Ascensão terminar antes de iniciar o farm.")
             return
         if not self.runner.acquire_simple_farm():
-            self._simple_farm_failed("Outra automação controla o Grimoire ou está em modo exclusivo.")
+            self._simple_farm_failed("Outra automação controla o Grimoire ou está em automação em andamento.")
             return
         try:
             save_data = self.bridge.get_game_save()
@@ -813,28 +869,28 @@ class MainWindow(QMainWindow):
     def _display_simple_farm_report(self, value: object):
         if not isinstance(value, RelatorioSimpleFarm):
             return
-        self.simple_farm_state_label.setText(value.estado.value)
+        self.simple_farm_state_label.setText(self._automation_state_text(value.estado.value))
         opportunity = value.plano.resumo if value.plano else "—"
-        if value.plano and value.plano.decisao:
-            opportunity += f" — {value.plano.decisao}"
         self.simple_farm_plan_label.setText(opportunity)
         self.simple_farm_plan_label.setToolTip(value.plano.decisao if value.plano else "")
         mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
         self.simple_farm_resources_label.setText(
-            f"Spells: {value.cast_atual if value.cast_atual is not None else '—'} | "
-            f"Mana: {mana} | Banco: {self._format_number(value.cookies_no_banco)} | "
+            f"Magias usadas: {value.cast_atual if value.cast_atual is not None else '—'} | "
+            f"Mana: {mana} | Cookies: {self._format_number(value.cookies_no_banco)} | "
             f"Caixa protegido: {self._format_number(value.caixa_reservado)}"
         )
         self.simple_farm_buffs_label.setText(
             ", ".join(value.buffs_ativos) if value.buffs_ativos else "nenhum"
         )
         self.simple_farm_counter_label.setText(
-            f"GC naturais: {value.golden_cookies_coletados} | Magias: {value.magias_executadas} | "
+            f"Golden Cookies: {value.golden_cookies_coletados} | Magias: {value.magias_executadas} | "
             f"Upgrades: {value.upgrades_comprados} | Construções: {value.construcoes_compradas}"
         )
         slots = value.pantheon_slots
-        pantheon = "Godzamok / Mokalsium / Muridal" if slots == (2, 8, 6) else str(slots or "—")
-        self.simple_farm_pantheon_label.setText(f"{pantheon} (somente leitura)")
+        gods = ("Holobore", "Vomitrax", "Godzamok", "Cyclius", "Selebrak", "Dotjeiess",
+                "Muridal", "Jeremy", "Mokalsium", "Skruuia", "Rigidel")
+        pantheon = " / ".join(gods[slot] if 0 <= slot < len(gods) else "Vazio" for slot in slots) if slots else "—"
+        self.simple_farm_pantheon_label.setText(pantheon)
         self.simple_farm_message_label.setText(
             value.mensagem + (f" Próximo: {value.proximo_passo}" if value.proximo_passo else "")
         )
@@ -844,7 +900,7 @@ class MainWindow(QMainWindow):
         )
 
     def _simple_farm_failed(self, message: str):
-        self.simple_farm_state_label.setText("erro seguro")
+        self.simple_farm_state_label.setText("Parada por segurança")
         self.simple_farm_error_label.setText(message)
         self.simple_farm_error_label.setStyleSheet("color: #f07883;")
         logger.error("Simple Farm: %s", message)
@@ -1021,7 +1077,7 @@ class MainWindow(QMainWindow):
     def _display_combo_report(self, value: object):
         if not isinstance(value, RelatorioCombo):
             return
-        self.combo_state_label.setText(value.estado.value)
+        self.combo_state_label.setText(self._automation_state_text(value.estado.value))
         self.combo_resume_button.setEnabled(
             value.estado == EstadoCombo.PAUSADO
             and self._combo_worker is not None
@@ -1030,17 +1086,17 @@ class MainWindow(QMainWindow):
         self.combo_plan_label.setText(value.plano.resumo if value.plano else "—")
         mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
         self.combo_progress_label.setText(
-            f"Spells: {value.cast_atual if value.cast_atual is not None else '—'} | "
-            f"Mana: {mana} | Lumps: {value.lumps if value.lumps is not None else '—'} "
+            f"Magias usadas: {value.cast_atual if value.cast_atual is not None else '—'} | "
+            f"Mana: {mana} | Sugar Lumps: {value.lumps if value.lumps is not None else '—'} "
             f"(gastos: {value.lumps_gastos}) | Cookies: {self._format_number(value.cookies_assados)}"
         )
         self.combo_buffs_label.setText(
-            "Buffs: " + (", ".join(value.buffs_ativos) if value.buffs_ativos else "nenhum")
-            + f" | BS: {value.building_specials_ativos}"
+            (", ".join(value.buffs_ativos) if value.buffs_ativos else "nenhum")
+            + f" | Bônus de construções: {value.building_specials_ativos}"
         )
         self.combo_garden_label.setText(
-            f"Maduras na última leitura: {value.garden_maduras}/{value.garden_total} | Garden opcional para o combo"
-            if value.garden_total else "Garden opcional: não bloqueia o disparo do combo."
+            f"Maduras na última leitura: {value.garden_maduras}/{value.garden_total}"
+            if value.garden_total else "Nenhuma planta no Garden."
         )
         self.combo_message_label.setText(
             value.mensagem + (f" Próximo: {value.proximo_passo}" if value.proximo_passo else "")
@@ -1174,21 +1230,20 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         warning = QLabel(
-            "A ascensão altera permanentemente o save. A execução real só começa "
-            "na tela de ascensão. Use Ligar para começar e Desligar para encerrar."
+            "Comece na tela de ascensão. A automação compra melhorias e repete as ascensões escolhidas."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #e8b766; font-weight: 600;")
         layout.addWidget(warning)
 
-        config_group = QGroupBox("Configuração do ciclo")
+        config_group = QGroupBox("Ascensões")
         form = QFormLayout(config_group)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.auto_ascension_cycles_input = ScrollSafeSpinBox()
         self.auto_ascension_cycles_input.setRange(1, 10_000)
         self.auto_ascension_cycles_input.setValue(automation_config.auto_ascension_target_cycles)
         self.auto_ascension_cycles_input.valueChanged.connect(self._save_auto_ascension_settings)
-        form.addRow("Quantidade alvo de ciclos", self.auto_ascension_cycles_input)
+        form.addRow("Quantidade de ascensões", self.auto_ascension_cycles_input)
 
         self.auto_ascension_prestige_input = ScrollSafeDoubleSpinBox()
         self.auto_ascension_prestige_input.setRange(0.0, 1e300)
@@ -1233,7 +1288,7 @@ class MainWindow(QMainWindow):
             self.auto_ascension_stop_reason_label,
         ):
             label.setWordWrap(True)
-        status_form.addRow("Estado atual", self.auto_ascension_state_label)
+        status_form.addRow("Estado", self.auto_ascension_state_label)
         status_form.addRow("Ciclo atual / total", self.auto_ascension_cycle_label)
         status_form.addRow("Última ação", self.auto_ascension_last_action_label)
         status_form.addRow("Próximo passo", self.auto_ascension_next_step_label)
@@ -1305,7 +1360,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.warning(
             self,
             "Confirmar Auto Ascensão",
-            "A execução real pode comprar itens, reincarnar e ascender. "
+            "A automação pode comprar itens, reincarnar e ascender. "
             "Ascender altera permanentemente o save.\n\n"
             "Confirma o início a partir da tela de ascensão?",
             QMessageBox.Yes | QMessageBox.No,
@@ -1347,7 +1402,7 @@ class MainWindow(QMainWindow):
         if not isinstance(value, RelatorioAutoAscensao):
             self._auto_ascension_failed("Relatório inválido recebido da automação.")
             return
-        self.auto_ascension_state_label.setText(value.estado.value)
+        self.auto_ascension_state_label.setText(self._automation_state_text(value.estado.value))
         self.auto_ascension_cycle_label.setText(f"{value.ciclo_atual} / {value.ciclos_alvo}")
         self.auto_ascension_last_action_label.setText(value.ultima_acao)
         self.auto_ascension_next_step_label.setText(value.proximo_passo)
@@ -1356,7 +1411,7 @@ class MainWindow(QMainWindow):
         self.auto_ascension_state_label.setStyleSheet(f"color: {color}; font-weight: 700;")
 
     def _auto_ascension_failed(self, message: str):
-        self.auto_ascension_state_label.setText("Erro seguro")
+        self.auto_ascension_state_label.setText("Parada por segurança")
         self.auto_ascension_state_label.setStyleSheet("color: #f07883; font-weight: 700;")
         self.auto_ascension_stop_reason_label.setText(message)
         logger.error(f"Auto Ascensão: {message}")
@@ -1408,7 +1463,7 @@ class MainWindow(QMainWindow):
         self._load_grimoire_spells()
         self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
         self.grimoire_spell_combo.setEnabled(automation_config.enable_grimoire_spell_spam)
-        automation_form.addRow("Skill do Grimoire", self.grimoire_spell_combo)
+        automation_form.addRow("Magia automática do Grimoire", self.grimoire_spell_combo)
         self.krumblor_interval_input = ScrollSafeDoubleSpinBox()
         self.krumblor_interval_input.setRange(0.05, 5.0)
         self.krumblor_interval_input.setDecimals(2)
@@ -1416,7 +1471,7 @@ class MainWindow(QMainWindow):
         self.krumblor_interval_input.setSuffix(" s")
         self.krumblor_interval_input.setMaximumWidth(140)
         self.krumblor_interval_input.setValue(automation_config.krumblor_pet_interval_seconds)
-        self.krumblor_interval_input.setToolTip("Intervalo mínimo entre carinhos enquanto falta o upgrade da faixa atual. 0,1 s permite até 10 por segundo; outras operações do bot podem aumentar o intervalo. Ao liberar o drop, aguarda a próxima faixa de 15 minutos.")
+        self.krumblor_interval_input.setToolTip("Tempo mínimo entre carinhos. Um valor menor tenta liberar o upgrade mais rápido. Após liberá-lo, aguarda a próxima faixa de 15 minutos.")
         self.krumblor_interval_input.valueChanged.connect(self.update_krumblor_interval)
         automation_form.addRow("Intervalo entre carinhos no Krumblor", self.krumblor_interval_input)
         layout.addWidget(automation_group)
@@ -1425,11 +1480,8 @@ class MainWindow(QMainWindow):
         preserve_grid = QGridLayout(); entries = (("Normal", 0), ("Bifurcado", 1), ("Dourado", 2), ("Carnudo", 3), ("Caramelizado", 4)); self._preserve_checkboxes = []
         for index, (text, number) in enumerate(entries):
             checkbox = QCheckBox(text); checkbox.setChecked(getattr(automation_config, f"preserve_sugar_lump_type_{number}")); checkbox.stateChanged.connect(lambda state, n=number: self._set_sugar_lump_type(n, state)); preserve_grid.addWidget(checkbox, index // 3, index % 3); self._preserve_checkboxes.append(checkbox)
-        sugar_hint = QLabel("Tipos marcados aguardam a colheita garantida. Os demais são colhidos ao maturar, com 50% de chance de render zero.")
-        sugar_hint.setWordWrap(True)
-        sugar_form.addRow(sugar_hint)
         for checkbox in self._preserve_checkboxes:
-            checkbox.setToolTip("Preservar significa esperar a fase garantida, não deixar de colher. Também protege o tipo encontrado pelo Save Scum.")
+            checkbox.setToolTip("Para este tipo, aguarda a colheita com rendimento garantido. Os tipos desmarcados são colhidos mais cedo, com 50% de chance de não render Sugar Lumps.")
         sugar_form.addRow("Aguardar colheita garantida", preserve_grid)
         layout.addWidget(sugar_group)
         self.set_sugar_lump_preserve_enabled(automation_config.enable_sugar_lump_harvest)
@@ -1440,10 +1492,10 @@ class MainWindow(QMainWindow):
         stock_form.addRow("Limite geral de compra", self.stock_buy_limit_input)
         self.stock_sell_limit_input = ScrollSafeDoubleSpinBox(); self.stock_sell_limit_input.setRange(0.01, 1_000_000_000.0); self.stock_sell_limit_input.setDecimals(2); self.stock_sell_limit_input.setPrefix("$ "); self.stock_sell_limit_input.setMaximumWidth(150); self.stock_sell_limit_input.setValue(automation_config.stock_market_sell_price_limit); self.stock_sell_limit_input.valueChanged.connect(self._update_stock_sell_limit)
         stock_form.addRow("Limite geral de venda", self.stock_sell_limit_input)
-        self.stock_trend_ticks_input = ScrollSafeSpinBox(); self.stock_trend_ticks_input.setRange(2, 64); self.stock_trend_ticks_input.setSuffix(" ticks"); self.stock_trend_ticks_input.setMaximumWidth(120); self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks); self.stock_trend_ticks_input.setToolTip("Quantidade de ticks usada para validar a tendência"); self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
-        stock_form.addRow("Janela de análise", self.stock_trend_ticks_input)
-        self.stock_reversal_percent_input = ScrollSafeDoubleSpinBox(); self.stock_reversal_percent_input.setRange(0.01, 100.0); self.stock_reversal_percent_input.setDecimals(2); self.stock_reversal_percent_input.setSuffix(" %"); self.stock_reversal_percent_input.setMaximumWidth(120); self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent); self.stock_reversal_percent_input.setToolTip("Alta mínima em um tick para confirmar que uma queda terminou"); self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
-        stock_form.addRow("Confirmação de reversão", self.stock_reversal_percent_input)
+        self.stock_trend_ticks_input = ScrollSafeSpinBox(); self.stock_trend_ticks_input.setRange(2, 64); self.stock_trend_ticks_input.setSuffix(" ticks"); self.stock_trend_ticks_input.setMaximumWidth(120); self.stock_trend_ticks_input.setValue(automation_config.stock_market_trend_ticks); self.stock_trend_ticks_input.setToolTip("Quantidade de atualizações de preço usadas para identificar se um ativo está subindo ou caindo."); self.stock_trend_ticks_input.valueChanged.connect(self._update_stock_trend_ticks)
+        stock_form.addRow("Histórico de preços analisado", self.stock_trend_ticks_input)
+        self.stock_reversal_percent_input = ScrollSafeDoubleSpinBox(); self.stock_reversal_percent_input.setRange(0.01, 100.0); self.stock_reversal_percent_input.setDecimals(2); self.stock_reversal_percent_input.setSuffix(" %"); self.stock_reversal_percent_input.setMaximumWidth(120); self.stock_reversal_percent_input.setValue(automation_config.stock_market_reversal_percent); self.stock_reversal_percent_input.setToolTip("Quanto o preço precisa subir em uma atualização para confirmar uma recuperação após uma queda."); self.stock_reversal_percent_input.valueChanged.connect(self._update_stock_reversal_percent)
+        stock_form.addRow("Alta mínima após uma queda", self.stock_reversal_percent_input)
         self.stock_owned_only_checkbox = QCheckBox("Mostrar no jogo apenas ativos em estoque")
         self.stock_owned_only_checkbox.setChecked(automation_config.enable_stock_market_owned_only_view)
         self.stock_owned_only_checkbox.stateChanged.connect(self._toggle_stock_owned_only_view)
@@ -1452,21 +1504,18 @@ class MainWindow(QMainWindow):
         self.stock_limits_button.clicked.connect(self._configure_stock_limits)
         self.stock_limits_button.setEnabled(False)
         stock_form.addRow("Limites por ativo", self.stock_limits_button)
-        stock_hint = QLabel("A estratégia é única: compra abaixo do limite após estabilização e vende com lucro após reversão ou queda de 10% do pico.")
-        stock_hint.setWordWrap(True); stock_hint.setStyleSheet("color: #9aa7ba;")
-        stock_form.addRow(stock_hint)
+        self.stock_limits_button.setToolTip("Defina os preços para cada ativo. As compras aguardam uma recuperação; as vendas precisam dar lucro e podem ocorrer após uma queda de 10% do maior preço observado.")
         layout.addWidget(stock_group)
 
         garden_group = QGroupBox("Garden"); garden_form = QFormLayout(garden_group)
         garden_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.garden_interval_input = ScrollSafeSpinBox(); self.garden_interval_input.setRange(30, 3600); self.garden_interval_input.setSuffix(" s"); self.garden_interval_input.setMaximumWidth(140)
         self.garden_interval_input.setValue(automation_config.garden_poll_interval_seconds)
-        self.garden_interval_input.setToolTip("Intervalo de fallback quando o próximo tick não puder ser lido do jogo")
+        self.garden_interval_input.setToolTip("Tempo entre consultas quando não for possível saber quando as plantas vão crescer novamente.")
         self.garden_interval_input.valueChanged.connect(self._update_garden_interval)
-        garden_form.addRow("Fallback de consulta", self.garden_interval_input)
-        garden_hint = QLabel("A automação inicia desativada. Quando ligada, sincroniza com M.nextStep e reconcilia o layout inteiro uma vez por tick.")
-        garden_hint.setWordWrap(True); garden_hint.setStyleSheet("color: #9aa7ba;")
-        garden_form.addRow(garden_hint); layout.addWidget(garden_group)
+        garden_form.addRow("Intervalo alternativo de consulta", self.garden_interval_input)
+        self.garden_interval_input.setToolTip(self.garden_interval_input.toolTip() + " As ações normalmente acompanham o crescimento das plantas.")
+        layout.addWidget(garden_group)
 
         interface_group = QGroupBox("Interface"); interface_layout = QHBoxLayout(interface_group)
         interface_layout.addWidget(QLabel("Máximo de linhas no registro")); interface_layout.addStretch()
@@ -1544,7 +1593,7 @@ class MainWindow(QMainWindow):
         if self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.bridge:
-            self._show_stock_unavailable("Bridge não está disponível")
+            self._show_stock_unavailable("Jogo desconectado. Abra o jogo e aguarde a conexão.")
             logger.warning("Stock Market: bridge não está disponível para atualização")
             return
         if not automatic:
@@ -1613,7 +1662,7 @@ class MainWindow(QMainWindow):
             return
         if enabled:
             if self._combo_exclusive or self._save_scum_exclusive or not self.bridge or not self.stock_automation:
-                self._show_stock_feedback(False, "Não foi possível ligar: conecte a bridge e aguarde o Combo terminar.")
+                self._show_stock_feedback(False, "Não foi possível ligar: conecte o jogo e aguarde o Combo terminar.")
                 return
             self._stock_stop = threading.Event()
             self.stock_toggle.set_running(True)
@@ -1709,7 +1758,7 @@ class MainWindow(QMainWindow):
     def _stock_task_failed(self, message: str):
         if self.stock_toggle.running:
             self._toggle_stock_auto_trade(False)
-        logger.error(f"Stock Market: falha inesperada no worker: {message}")
+        logger.error(f"Stock Market: não foi possível concluir a operação: {message}")
         self._show_stock_feedback(False, f"Falha inesperada: {message}")
 
     def _stock_task_finished(self):
@@ -1726,7 +1775,7 @@ class MainWindow(QMainWindow):
     def _display_stock_snapshot(self, value: object):
         if not isinstance(value, StockMarketSnapshot):
             self._show_stock_unavailable("Resposta inesperada do bridge")
-            logger.error("Stock Market: worker retornou snapshot inválido")
+            logger.error("Stock Market: não foi possível ler os preços.")
             return
         snapshot = value
         self._stock_snapshot = snapshot
@@ -1776,7 +1825,7 @@ class MainWindow(QMainWindow):
                 item = SortableTableWidgetItem(text, sort_value)
                 if column == 0:
                     item.setData(Qt.UserRole, asset.asset_id)
-                    item.setToolTip(f"Compra < ${buy_limit:.2f} | Modo venda ≥ ${sell_limit:.2f}")
+                    item.setToolTip(f"Comprar abaixo de ${buy_limit:.2f} | Preço de referência para vender: ${sell_limit:.2f}")
                 if column == 2 and asset.price_change_percent is not None:
                     item.setForeground(Qt.green if asset.price_change_percent >= 0 else Qt.red)
                 if column in (3, 5) and sort_value is not None:
@@ -1865,7 +1914,7 @@ class MainWindow(QMainWindow):
     def _garden_task_failed(self, message: str):
         if self.garden_toggle.running:
             self._toggle_garden_automation(False)
-        logger.error(f"Garden: falha inesperada no worker: {message}")
+        logger.error(f"Garden: não foi possível concluir a operação: {message}")
         self._show_garden_feedback(False, f"Falha inesperada: {message}")
         self._schedule_next_garden_tick(None)
 
@@ -1882,7 +1931,7 @@ class MainWindow(QMainWindow):
     def _display_garden_result(self, value: object):
         if not isinstance(value, GardenCycleResult):
             self._show_garden_feedback(False, "Resposta inesperada do ciclo do Garden.")
-            logger.error("Garden: worker retornou resultado inválido")
+            logger.error("Garden: não foi possível confirmar o resultado da operação.")
             return
         if self.runner:
             waits = [r.required_cookies for r in value.action_results
@@ -1929,17 +1978,17 @@ class MainWindow(QMainWindow):
             return
         if plan.goal is None:
             incompatible = plan.explanation.startswith("Catálogo incompatível")
-            self.garden_goal_label.setText("Catálogo incompatível" if incompatible else "Coleção completa")
+            self.garden_goal_label.setText("Garden não reconhecido" if incompatible else "Coleção completa")
             self.garden_parents_label.setText(
-                "A automação foi bloqueada até que as receitas sejam revisadas."
-                if incompatible else "Todas as sementes foram confirmadas no snapshot do jogo."
+                "Garden não reconhecido. A automação está pausada para proteger suas plantas."
+                if incompatible else "Todas as sementes foram desbloqueadas."
             )
             self.garden_reason_label.setText(plan.explanation)
         else:
             goal = plan.goal
             self.garden_goal_label.setText(goal.target_name)
             parents = ", ".join(goal.parent_names) if goal.parent_names else "nenhum (condição especial)"
-            self.garden_parents_label.setText(f"Pais e requisitos: {parents}")
+            self.garden_parents_label.setText(f"Plantas necessárias: {parents}")
             pending = f" Pendentes: {', '.join(goal.pending_prerequisites)}." if goal.pending_prerequisites else ""
             self.garden_reason_label.setText(
                 f"{goal.reason}{pending} Condição de sucesso: {goal.success_condition}"
@@ -1949,12 +1998,12 @@ class MainWindow(QMainWindow):
         if action_lines:
             plan_text += "\n\n" + "\n".join(action_lines)
         else:
-            plan_text += "\n\nNenhuma mutação será enviada neste tick."
+            plan_text += "\n\nNenhuma ação necessária por enquanto."
         self.garden_plan_text.setPlainText(plan_text)
         if achievement_completed:
             self._show_garden_feedback(
                 True,
-                "Conquista Green, aching thumb obtida no runtime; modo Thumbcorn desativado e coleção normal retomada.",
+                "Conquista Green, aching thumb obtida. Retomando a busca por sementes.",
             )
         elif value.action_results:
             successes = sum(result.success for result in value.action_results)
@@ -1978,12 +2027,12 @@ class MainWindow(QMainWindow):
                 details = "; ".join(result.message for result in value.action_results)
                 self._show_garden_feedback(
                     not errors and not waits,
-                    f"Execução real: {successes}/{len(value.action_results)} ações confirmadas. {details}",
+                    f"Resultado: {successes}/{len(value.action_results)} ações confirmadas. {details}",
                 )
         elif value.dry_run:
-            self._show_garden_feedback(True, "Simulação concluída; o estado do jogo não foi alterado.")
+            self._show_garden_feedback(True, "Prévia atualizada. O jogo não foi alterado.")
         else:
-            self._show_garden_feedback(True, "Ciclo real concluído sem nova ação necessária.")
+            self._show_garden_feedback(True, "Nenhuma ação necessária por enquanto.")
 
     @staticmethod
     def _format_garden_action(index, action) -> str:
@@ -1994,7 +2043,11 @@ class MainWindow(QMainWindow):
         if action.kind == "harvest" and not action.require_mature:
             labels["harvest"] = "Remover"
         position = f" em ({action.x}, {action.y})" if action.x is not None and action.y is not None else ""
-        subject = action.seed_key or action.soil_key or "Garden"
+        from app.core.garden_catalog import GARDEN_CATALOG
+        recipe = GARDEN_CATALOG.get(action.seed_key)
+        soils = {"dirt": "Dirt", "fertilizer": "Fertilizer", "clay": "Clay",
+                 "pebbles": "Pebbles", "woodchips": "Wood Chips"}
+        subject = recipe.name if recipe else soils.get(action.soil_key, action.seed_key or action.soil_key or "Garden")
         return f"{index}. {labels.get(action.kind, action.kind)} {subject}{position} — {action.reason}"
 
     def _show_garden_feedback(self, success: bool, message: str):
@@ -2007,7 +2060,7 @@ class MainWindow(QMainWindow):
         self.garden_simulate_button.setEnabled(not busy)
         self.garden_thumbcorn_checkbox.setEnabled(not busy)
         if busy:
-            self.garden_feedback_label.setText("Consultando o runtime do Garden em segundo plano...")
+            self.garden_feedback_label.setText("Atualizando Garden…")
             self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
 
     def _toggle_garden_automation(self, enabled: bool):
@@ -2016,7 +2069,7 @@ class MainWindow(QMainWindow):
             return
         if enabled:
             if self._combo_exclusive or self._save_scum_exclusive or not self.bridge or not self.fazendeira:
-                self._show_garden_feedback(False, "Não foi possível ligar: conecte a bridge e aguarde o Combo terminar.")
+                self._show_garden_feedback(False, "Não foi possível ligar: conecte o jogo e aguarde o Combo terminar.")
                 return
             self._garden_stop = threading.Event()
             self.garden_toggle.set_running(True)
@@ -2113,7 +2166,7 @@ class MainWindow(QMainWindow):
     def _display_stock_automation_result(self, value: object):
         if not isinstance(value, StockMarketAutomationResult):
             self._show_stock_feedback(False, "Resposta inesperada do ciclo automático.")
-            logger.error("Stock Market: worker retornou ciclo automático inválido")
+            logger.error("Stock Market: não foi possível confirmar o resultado das negociações.")
             return
         if self.runner and value.tick_changed:
             snapshot = value.snapshot
@@ -2139,7 +2192,7 @@ class MainWindow(QMainWindow):
             successful = sum(order.success for order in value.orders)
             self._show_stock_feedback(
                 successful == len(value.orders),
-                f"Automação: {successful}/{len(value.orders)} ordens MAX executadas.",
+                f"Automação: {successful}/{len(value.orders)} ordens concluídas.",
             )
 
     def _update_stock_candidates(self):
@@ -2157,7 +2210,7 @@ class MainWindow(QMainWindow):
     def _display_stock_trade_result(self, value: object):
         if not isinstance(value, StockTradeResult):
             self._show_stock_feedback(False, "Resposta inesperada da ordem.")
-            logger.error("Stock Market: worker retornou resultado de ordem inválido")
+            logger.error("Stock Market: não foi possível confirmar a ordem.")
             return
         action = "Compra" if value.side == "buy" else "Venda"
         requested = "máximo" if value.is_maximum_order else str(value.requested_quantity)
@@ -2186,7 +2239,7 @@ class MainWindow(QMainWindow):
         self.stock_use_max_checkbox.setEnabled(not busy and self._stock_available)
         self._update_stock_actions(busy)
         if busy:
-            self.stock_feedback_label.setText("Consultando o runtime do jogo...")
+            self.stock_feedback_label.setText("Atualizando mercado…")
             self.stock_feedback_label.setStyleSheet("color: #9aa7ba;")
 
     def _update_stock_actions(self, busy: Optional[bool] = None):
@@ -2277,7 +2330,7 @@ class MainWindow(QMainWindow):
         self._sugar_lump_connected = bool(connected)
         if not connected:
             self.sugar_lump_type_label.setText("Sugar Lump: —")
-        self.bridge_status.setText("Bridge: Conectado" if connected else "Bridge: Desconectado"); self.bridge_status.setStyleSheet(f"color: {'#65d6a5' if connected else '#f07883'}; font-weight: 600;")
+        self.bridge_status.setText("Jogo: conectado" if connected else "Jogo: desconectado"); self.bridge_status.setStyleSheet(f"color: {'#65d6a5' if connected else '#f07883'}; font-weight: 600;")
     def add_log(self, message):
         message = str(message)
         if not re.match(r"^(?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}:\d{2} - (?:DEBUG|INFO|WARNING|ERROR|CRITICAL) - ", message):

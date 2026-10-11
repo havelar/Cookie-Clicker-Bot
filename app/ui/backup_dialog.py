@@ -35,16 +35,17 @@ class BackupDialog(QDialog):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        hint = QLabel('Salve o jogo aberto em um clique. Para carregar, selecione um backup da lista. O estado atual é salvo antes de cada carga.')
+        hint = QLabel('Salve uma cópia do jogo ou carregue um backup.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         create = QHBoxLayout()
         self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText('Nome opcional — padrão: Backup + data e hora')
+        self.name_input.setPlaceholderText('Nome do backup (opcional)')
+        self.name_input.setToolTip('Deixe vazio para usar um nome com a data e a hora do backup.')
         self.name_input.returnPressed.connect(self.on_create_backup)
         self.create_btn = QPushButton('Salvar jogo agora')
         self.create_btn.setObjectName('primaryButton')
-        self.create_btn.setToolTip('Captura o save diretamente do jogo; não usa o clipboard.')
+        self.create_btn.setToolTip('Salva o jogo atual. Sem nome, usa a data e a hora automaticamente.')
         self.create_btn.clicked.connect(self.on_create_backup)
         create.addWidget(self.name_input, 1)
         create.addWidget(self.create_btn)
@@ -65,14 +66,17 @@ class BackupDialog(QDialog):
         self.restore_btn.setObjectName('primaryButton')
         self.restore_btn.setToolTip('Carrega o backup selecionado. Antes, salva o estado atual para permitir desfazer.')
         self.restore_btn.clicked.connect(self.on_restore_backup)
-        self.undo_btn = QPushButton('Desfazer carga')
+        self.undo_btn = QPushButton('Desfazer carregamento')
+        self.undo_btn.setToolTip('Volta ao estado do jogo salvo antes do último carregamento.')
         self.undo_btn.clicked.connect(self.on_undo_restore)
         self.delete_btn = QPushButton('Excluir')
+        self.delete_btn.setToolTip('Exclui o backup selecionado do computador. Não altera o jogo aberto.')
         self.delete_btn.clicked.connect(self.on_delete_backup)
         self.refresh_btn = QPushButton('Atualizar')
+        self.refresh_btn.setToolTip('Atualiza a lista de backups salvos no computador.')
         self.refresh_btn.clicked.connect(self.refresh_backup_list)
         self.import_btn = QPushButton('Adicionar arquivo…')
-        self.import_btn.setToolTip('Adiciona um arquivo de save existente à lista, sem copiar ou colar texto.')
+        self.import_btn.setToolTip('Adiciona à lista um arquivo de jogo salvo no computador.')
         self.import_btn.clicked.connect(self.on_import_file)
         for button in (self.restore_btn, self.undo_btn, self.delete_btn, self.import_btn, self.refresh_btn):
             actions.addWidget(button)
@@ -152,13 +156,13 @@ class BackupDialog(QDialog):
         self.worker.finished.connect(self.operation_finished)
         for widget in (self.name_input, self.create_btn, self.search_input, self.backup_list, self.restore_btn, self.undo_btn, self.delete_btn, self.import_btn, self.refresh_btn):
             widget.setEnabled(False)
-        self.set_status('Carregando e verificando o save…' if kind == 'restore' else 'Salvando backup…')
+        self.set_status('Carregando backup…' if kind == 'restore' else 'Salvando backup…')
         self.worker.start()
 
     def service(self):
         bridge = self.get_bridge()
         if not bridge:
-            self.set_status('Jogo desconectado. Conecte a bridge antes de salvar ou carregar.', True)
+            self.set_status('Jogo desconectado. Abra o jogo e aguarde a conexão para salvar ou carregar.', True)
             return None
         return BackupService(bridge, self.backup_manager)
 
@@ -185,7 +189,7 @@ class BackupDialog(QDialog):
     def on_import_file(self):
         if self.worker:
             return
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Adicionar save à lista', '', 'Saves (*.txt);;Todos os arquivos (*)')
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Importar jogo salvo', '', 'Jogos salvos (*.txt);;Todos os arquivos (*)')
         if file_path:
             service = BackupService(self.get_bridge(), self.backup_manager)
             name = self.name_input.text().strip()

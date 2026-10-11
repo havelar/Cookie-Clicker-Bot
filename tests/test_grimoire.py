@@ -109,7 +109,7 @@ class GrimoireUiTests(unittest.TestCase):
             if window.tabs.tabText(index) == "Configurações"
         ))
 
-        self.assertEqual(window.grimoire_spell_spam_checkbox.text(), "Spammar Skill")
+        self.assertEqual(window.grimoire_spell_spam_checkbox.text(), "Usar magia com mana cheia")
         self.assertEqual(window.grimoire_spell_combo.count(), 9)
         self.assertEqual(window.grimoire_spell_combo.isEnabled(),
                          automation_config.enable_grimoire_spell_spam)

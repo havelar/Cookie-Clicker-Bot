@@ -41,7 +41,7 @@ class ConfiguracaoCombo:
         if self.alvo_cookies <= 0:
             raise ValueError("O alvo de cookies deve ser positivo")
         if not 4 <= self.busca_maxima_spells <= 100_000:
-            raise ValueError("A busca deve ficar entre 4 e 100.000 spells")
+            raise ValueError("Analise entre 4 e 100.000 magias futuras.")
         if not 0 <= self.maximo_lumps_alinhamento <= 10_000:
             raise ValueError("O limite de lumps é inválido")
         if not 1 <= self.building_specials_totais <= 6:
@@ -71,11 +71,12 @@ class PlanoCombo:
 
     @property
     def resumo(self) -> str:
-        efeitos = " → ".join(self.resultados)
-        return (
-            f"cast {self.cast_inicial} ({self.spells_a_pular} skips), "
-            f"{self.season}: {efeitos}"
-        )
+        names = {"click frenzy": "Click Frenzy", "frenzy": "Frenzy",
+                 "building special": "Bônus de construção", "blood frenzy": "Elder Frenzy"}
+        efeitos = " + ".join(names.get(effect, effect) for effect in self.resultados)
+        preparation = f"{self.spells_a_pular} magias de preparação" if self.spells_a_pular else "Sequência pronta"
+        return f"{efeitos} · {preparation}"
+
 
 
 @dataclass(frozen=True)

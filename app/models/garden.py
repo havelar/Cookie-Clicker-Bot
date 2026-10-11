@@ -82,7 +82,7 @@ class GardenSnapshot:
     soils: Tuple[GardenSoil, ...] = field(default_factory=tuple)
     green_aching_thumb_won: Optional[bool] = None
     green_aching_thumb_progress: Optional[int] = None
-    green_aching_thumb_message: str = "Estado da conquista Green, aching thumb indisponível no runtime."
+    green_aching_thumb_message: str = "Não foi possível consultar a conquista Green, aching thumb."
 
     cookies: Optional[float] = None
     sugar_lumps: Optional[float] = None

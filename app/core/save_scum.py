@@ -55,7 +55,7 @@ class SaveScumAutomation:
     def _restore(self):
         result = self.bridge.restore_sugar_lump_checkpoint(self.checkpoint)
         if not result.get('ok'):
-            raise RuntimeError(result.get('message', 'Falha ao restaurar o checkpoint'))
+            raise RuntimeError(result.get('message', 'Não foi possível restaurar o backup inicial.'))
         self.dirty = False
 
     def recuperar(self):
@@ -73,7 +73,7 @@ class SaveScumAutomation:
                 raise ValueError("Limite e intervalo inválidos.")
             self.checkpoint = self.bridge.get_sugar_lump_checkpoint()
             if not self.checkpoint:
-                raise RuntimeError("Não foi possível exportar um checkpoint válido.")
+                raise RuntimeError("Não foi possível salvar o jogo antes das tentativas. Verifique a conexão.")
             status = self.checkpoint['status']
             if status['type'] in self.config.targets:
                 return self._report("alvo encontrado", "O lump atual já é um alvo; nenhuma tentativa necessária.", status['type'])
@@ -119,5 +119,5 @@ class SaveScumAutomation:
                 try:
                     self._restore()
                 except Exception as restore_error:
-                    return self._report("restauração pendente", f"{error}. {restore_error}. Use Restaurar início ou o backup em disco.", safe=False)
+                    return self._report("restauração pendente", f"{error}. {restore_error}. Use Restaurar backup inicial ou carregue um backup pela tela Backups.", safe=False)
             return self._report("erro", str(error))

@@ -51,19 +51,19 @@ class StockLimitsDialog(QDialog):
         layout.setSpacing(8)
 
         self.reference_checkbox = QCheckBox(
-            "Limites pela referência (compra 50%, venda 100%)"
+            "Usar preços de referência"
         )
         self.reference_checkbox.setChecked(self.use_reference_prices)
         self.reference_checkbox.setToolTip(
-            "Sugestão inicial: comprar abaixo de metade da referência e iniciar "
-            "o modo de venda na referência. Ela não garante recuperação do preço. "
+            "Sugere comprar abaixo de metade do preço de referência e buscar "
+            "vendas a partir desse preço. Não garante lucro ou recuperação. "
             "Limites personalizados têm prioridade; sem referência, valem os limites gerais."
         )
         layout.addWidget(self.reference_checkbox)
 
         self.table = QTableWidget(len(snapshot.assets), 4)
         self.table.setHorizontalHeaderLabels(
-            ["Ativo", "Referência", "Comprar < $", "Modo venda ≥ $"]
+            ["Ativo", "Referência", "Comprar < $", "Vender a partir de $"]
         )
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -106,6 +106,7 @@ class StockLimitsDialog(QDialog):
         buttons.button(QDialogButtonBox.Save).setText("Salvar")
         buttons.button(QDialogButtonBox.Cancel).setText("Cancelar")
         self.restore_button = QPushButton("Restaurar sugestões")
+        self.restore_button.setToolTip("Remove os preços personalizados e volta às sugestões por referência. Clique em Salvar para aplicar.")
         buttons.addButton(self.restore_button, QDialogButtonBox.ResetRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -142,12 +143,14 @@ class StockLimitsDialog(QDialog):
             defaults = self._suggested_limits(key)
             override = self._draft_overrides.get(key)
             values = (override["buy"], override["sell"]) if override else defaults
-            for control, value in zip((buy_input, sell_input), values):
+            for index, (control, value) in enumerate(zip((buy_input, sell_input), values)):
                 control.blockSignals(True)
                 control.setValue(value)
                 control.blockSignals(False)
                 control.setToolTip(
-                    "Limite personalizado." if override else "Limite sugerido; pode ser editado."
+                    ("Busca compras abaixo deste preço, após uma recuperação." if index == 0 else
+                     "Busca vendas lucrativas a partir deste preço; também acompanha quedas após um pico.")
+                    + (" Preço definido por você." if override else " Preço sugerido; você pode alterá-lo.")
                 )
 
     def _record_override(self, key: str):
