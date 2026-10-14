@@ -1614,10 +1614,14 @@ class CookieClickerBridge:
             if (!ready) return unavailable(true, 'Garden desbloqueado, mas ainda não carregado');
             const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
             const unlockedTiles = [];
+            const growthMultipliers = [];
+            const dragonBoost=1+0.05*(typeof Game.auraMult==='function'?Game.auraMult('Supreme Intellect'):0);
             const plants = [];
             for (let y=0; y<6; y++) for (let x=0; x<6; x++) {
                 if (!M.isTileUnlocked(x,y)) continue;
                 unlockedTiles.push([x,y]);
+                const tileBoost=finiteOrNull(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0]);
+                if (tileBoost !== null) growthMultipliers.push([x,y,tileBoost]);
                 const tile = M.plot[y] && M.plot[y][x];
                 if (!Array.isArray(tile) || Number(tile[0]) < 1) continue;
                 const seed = M.plantsById[Number(tile[0])-1];
@@ -1625,7 +1629,6 @@ class CookieClickerBridge:
                 const age = Number(tile[1]);
                 const matureAge = Number(seed.mature);
                 const growthBoost=Number(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0]);
-                const dragonBoost=1+0.05*(typeof Game.auraMult==='function'?Game.auraMult('Supreme Intellect'):0);
                 plants.push({
                     x,y, seedId:Number(seed.id), key:String(seed.key || ''),
                     name:String(seed.name || seed.key || ''), age:finiteOrNull(age),
@@ -1675,12 +1678,14 @@ class CookieClickerBridge:
                 greenAchingThumbMessage,
                 plotWidth:xs.length ? Math.max(...xs)-Math.min(...xs)+1 : 0,
                 plotHeight:ys.length ? Math.max(...ys)-Math.min(...ys)+1 : 0,
-                unlockedTiles,
+                unlockedTiles, growthMultipliers,
                 cookies:finiteOrNull(Game.cookies),
                 seeds:M.plantsById.map(seed=>({
                     id:Number(seed.id), key:String(seed.key || ''),
                     name:String(seed.name || seed.key || ''), unlocked:!!seed.unlocked,
                     plantable:seed.plantable !== false, matureAge:finiteOrNull(seed.mature),
+                    averageGrowth:finiteOrNull((Number(seed.ageTick)+Number(seed.ageTickR)/2)*dragonBoost),
+                    maximumGrowth:finiteOrNull(Math.ceil((Number(seed.ageTick)+Number(seed.ageTickR))*dragonBoost)),
                     cost:typeof M.getCost==='function' ? finiteOrNull(M.getCost(seed)) : null,
                     weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
                 })),
@@ -2265,6 +2270,8 @@ class CookieClickerBridge:
                 bool(raw.get("plantable", True)), mature_age, bool(raw.get("weed")),
                 bool(raw.get("fungus")), bool(raw.get("immortal")),
                 cost=self._optional_float(raw.get("cost")),
+                average_growth=self._optional_float(raw.get("averageGrowth")),
+                maximum_growth=self._optional_float(raw.get("maximumGrowth")),
             ))
         if not seeds:
             return GardenSnapshot(GardenStatus(False, True, "Catálogo de sementes ausente ou inválido no runtime"))
@@ -2312,8 +2319,19 @@ class CookieClickerBridge:
             if x is not None and y is not None and self._valid_garden_position(x, y):
                 unlocked_tiles.append((x, y))
 
+        growth_multipliers = []
+        for raw in payload.get("growthMultipliers", ()):
+            if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+                continue
+            x, y = self._optional_int(raw[0]), self._optional_int(raw[1])
+            multiplier = self._optional_float(raw[2])
+            if (x is not None and y is not None and self._valid_garden_position(x, y)
+                    and multiplier is not None and multiplier > 0):
+                growth_multipliers.append((x, y, multiplier))
+
         return GardenSnapshot(
             status=status,
+            growth_multipliers=tuple(growth_multipliers),
             cookies=self._optional_float(payload.get("cookies")),
             sugar_lumps=self._optional_float(payload.get("sugarLumps")),
             can_refill_lump=payload.get("canRefillLump") if isinstance(payload.get("canRefillLump"), bool) else None,

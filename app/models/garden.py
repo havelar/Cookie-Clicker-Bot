@@ -26,6 +26,8 @@ class GardenSeed:
     fungus: bool = False
     immortal: bool = False
     cost: Optional[float] = None
+    average_growth: Optional[float] = None
+    maximum_growth: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,7 @@ class GardenSnapshot:
     sugar_lumps: Optional[float] = None
     can_refill_lump: Optional[bool] = None
     lump_refill_seconds: Optional[float] = None
+    growth_multipliers: Tuple[Tuple[int, int, float], ...] = field(default_factory=tuple)
 
     @property
     def unlocked_seed_keys(self) -> frozenset[str]:

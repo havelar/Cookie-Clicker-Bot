@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
+from PyQt5.QtWidgets import (QAbstractItemView, QSizePolicy, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox, QTextEdit, QLabel, QGroupBox, QStatusBar, QGridLayout, QFormLayout, QTabWidget, QHeaderView, QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox)
 
 from app.bridge.js_bridge import CookieClickerBridge, DEFAULT_GRIMOIRE_SPELLS
 from app.config.settings import CLICKER_HOTKEYS, app_config, automation_config, save_app_settings, save_automation_settings
@@ -29,6 +29,7 @@ from app.ui.backup_dialog import BackupDialog
 from app.ui.save_scum_tab import SaveScumTab
 from app.ui.automation_control import AutomationControl
 from app.ui.hotkey_capture import HotkeyCapture
+from app.ui.garden_presentation import current_state, grouped_actions, pending_actions, result_summary, short_message
 from app.ui.number_inputs import ScrollSafeComboBox, ScrollSafeDoubleSpinBox, ScrollSafeSpinBox
 from app.ui.stock_limits_dialog import StockLimitsDialog
 from app.ui.theme import DARK_STYLESHEET, enable_dark_title_bars, set_windows_app_id
@@ -200,7 +201,7 @@ class MainWindow(QMainWindow):
             "grimoire_spell_spam_checkbox": "Usa a magia escolhida em Configurações quando a mana estiver cheia. Aguarda a recarga para usar novamente.",
             "garden_refresh_button": "Atualiza as plantas, sementes e próximas ações sem alterar o Garden.",
             "garden_simulate_button": "Mostra o que a automação faria com as plantas atuais, sem executar as ações.",
-            "garden_toggle": "Busca sementes e cuida das plantas. Se faltarem cookies para replantar, aguarda dinheiro antes de remover as plantas.",
+            "garden_toggle": "Busca sementes e ajusta o plantio dos pais para ficarem maduros juntos. As esperas aparecem na prévia e são recalculadas conforme o crescimento. Se faltarem cookies, aguarda antes de remover plantas.",
             "combo_search_input": "Quantidade de resultados futuros de magia a considerar ao buscar um combo. Valores maiores podem aumentar o tempo de análise.",
             "combo_lumps_input": "Máximo de Sugar Lumps usados para preparar as magias. O Sugar Frenzy, se ativado, tem um gasto separado.",
             "combo_bs_input": "Quantidade de bônus de construções que precisam estar ativos juntos para iniciar o combo.",
@@ -560,7 +561,17 @@ class MainWindow(QMainWindow):
 
     def _garden_tab(self):
         """Cria a visão de progresso, planejamento e execução do Garden."""
-        tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 14, 14, 14); layout.setSpacing(10)
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.garden_scroll = QScrollArea()
+        self.garden_scroll.setWidgetResizable(True)
+        self.garden_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.garden_scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
         toolbar = QHBoxLayout()
         self.garden_status_label = QLabel("Garden: carregando")
         self.garden_status_label.setStyleSheet("color: #9aa7ba; font-weight: 600;")
@@ -593,21 +604,56 @@ class MainWindow(QMainWindow):
         actions.addStretch()
         layout.addLayout(actions)
 
-        goal_group = QGroupBox("Próxima semente"); goal_layout = QVBoxLayout(goal_group)
+        goal_group = QGroupBox("Objetivo atual"); goal_layout = QVBoxLayout(goal_group)
         self.garden_goal_label = QLabel("Aguardando leitura do Garden.")
         self.garden_goal_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #f4f7fc;")
         self.garden_parents_label = QLabel("Plantas necessárias: —")
         self.garden_reason_label = QLabel("")
-        self.garden_reason_label.setWordWrap(True); self.garden_parents_label.setWordWrap(True)
-        goal_layout.addWidget(self.garden_goal_label); goal_layout.addWidget(self.garden_parents_label); goal_layout.addWidget(self.garden_reason_label)
+        self.garden_reason_label.setStyleSheet("color: #9aa7ba;")
+        goal_layout.addWidget(self.garden_goal_label)
+        goal_layout.addWidget(self.garden_parents_label)
+        self.garden_reason_label.hide()
         layout.addWidget(goal_group)
 
-        plan_group = QGroupBox("Próximas ações"); plan_layout = QVBoxLayout(plan_group)
-        self.garden_plan_text = QTextEdit(); self.garden_plan_text.setReadOnly(True); self.garden_plan_text.setMinimumHeight(130)
-        self.garden_feedback_label = QLabel("Use Ver próximas ações para consultar o plano.")
-        self.garden_feedback_label.setWordWrap(True); self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
-        plan_layout.addWidget(self.garden_plan_text); plan_layout.addWidget(self.garden_feedback_label)
-        layout.addWidget(plan_group, 1)
+        state_group = QGroupBox("Agora"); state_layout = QVBoxLayout(state_group)
+        self.garden_state_label = QLabel("Aguardando leitura")
+        self.garden_state_label.setStyleSheet("font-size: 14px; font-weight: 600;")
+        self.garden_state_detail = QLabel("Consulte o Garden para acompanhar o plantio.")
+        self.garden_feedback_label = QLabel("")
+        self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
+        state_layout.addWidget(self.garden_state_label)
+        state_layout.addWidget(self.garden_state_detail)
+        state_layout.addWidget(self.garden_feedback_label)
+        layout.addWidget(state_group)
+
+        self.garden_plan_group = QGroupBox("Próximas ações")
+        plan_layout = QVBoxLayout(self.garden_plan_group)
+        self.garden_plan_text = QTextEdit()
+        self.garden_plan_text.setReadOnly(True)
+        self.garden_plan_text.setFixedHeight(72)
+        self.garden_plan_text.setStyleSheet("font-family: 'Segoe UI'; font-size: 12px;")
+        self.garden_plan_text.setPlainText("Aguardando leitura do Garden.")
+        self.garden_plan_text.setToolTip("Ações agrupadas por planta. Ações já confirmadas não aparecem como próximas.")
+        self.garden_details_toggle = QCheckBox("Mostrar detalhes do último ciclo")
+        self.garden_details_toggle.setToolTip("Mostra o motivo do plano, as posições e o resultado completo de cada ação.")
+        self.garden_details_text = QTextEdit()
+        self.garden_details_text.setReadOnly(True)
+        self.garden_details_text.setMinimumHeight(180)
+        self.garden_details_text.setMaximumHeight(240)
+        self.garden_details_text.hide()
+        self.garden_details_toggle.toggled.connect(self._toggle_garden_details)
+        plan_layout.addWidget(self.garden_plan_text)
+        plan_layout.addWidget(self.garden_details_toggle)
+        plan_layout.addWidget(self.garden_details_text)
+        layout.addWidget(self.garden_plan_group)
+        for label in (self.garden_goal_label, self.garden_parents_label, self.garden_reason_label,
+                      self.garden_state_label, self.garden_state_detail, self.garden_feedback_label):
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.PlainText)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout.addStretch()
+        self.garden_scroll.setWidget(content)
+        outer_layout.addWidget(self.garden_scroll)
         return tab
 
     def _combo_tab(self):
@@ -2079,7 +2125,10 @@ class MainWindow(QMainWindow):
             self.garden_goal_label.setText("Garden indisponível")
             self.garden_parents_label.setText("Pais e requisitos: —")
             self.garden_reason_label.setText(snapshot.status.message)
-            self.garden_plan_text.setPlainText("Nenhuma ação foi planejada.")
+            self.garden_state_label.setText("Garden indisponível")
+            self.garden_state_detail.setText(short_message(snapshot.status.message))
+            self.garden_plan_text.setPlainText("Aguardar a conexão com o Garden.")
+            self.garden_details_text.setPlainText(snapshot.status.message)
             self._show_garden_feedback(False, snapshot.status.message)
             return
         if plan.goal is None:
@@ -2094,51 +2143,88 @@ class MainWindow(QMainWindow):
             goal = plan.goal
             self.garden_goal_label.setText(goal.target_name)
             parents = ", ".join(goal.parent_names) if goal.parent_names else "nenhum (condição especial)"
-            self.garden_parents_label.setText(f"Plantas necessárias: {parents}")
+            self.garden_parents_label.setText(f"{'Planta de origem' if goal.strategy == 'derivado_erva' else 'Pais por espaço de mutação'}: {parents}")
             pending = f" Pendentes: {', '.join(goal.pending_prerequisites)}." if goal.pending_prerequisites else ""
             self.garden_reason_label.setText(
-                f"{goal.reason}{pending} Condição de sucesso: {goal.success_condition}"
+                short_message(f"{goal.reason}{pending}", 100)
             )
+        self.garden_goal_label.setToolTip(f"{plan.goal.reason} {plan.goal.success_condition}" if plan.goal else plan.explanation)
+        self.garden_reason_label.setToolTip(plan.explanation)
+        state, state_detail = current_state(snapshot, plan)
+        self.garden_state_label.setText(state)
+        self.garden_state_detail.setText(state_detail)
+        self.garden_state_detail.setToolTip(state_detail)
+        remaining = pending_actions(plan, value.action_results)
+        plan_text = grouped_actions(remaining)
+        if not plan_text:
+            plan_text = ("Ações confirmadas. Aguardar a próxima leitura do Garden." if value.action_results else
+                         "Colher a nova planta quando estiver madura." if state == "Esperando a nova planta amadurecer" else
+                         "Plantar os pais quando chegar o momento indicado acima." if state == "Alinhando a maturação dos pais" else
+                         "Manter os espaços livres e aguardar a mutação." if state == "Esperando a mutação aparecer" else
+                         "Nenhuma ação: coleção de sementes completa." if state == "Coleção completa" else
+                         "Aguardar o crescimento dos pais.")
+        self._set_garden_report_text(self.garden_plan_text, plan_text)
+        self.garden_plan_text.setFixedHeight(max(56, min(120, 24 + 18*len(plan_text.splitlines()))))
+        details = plan.explanation
         action_lines = [self._format_garden_action(index, action) for index, action in enumerate(plan.actions, 1)]
-        plan_text = plan.explanation
         if action_lines:
-            plan_text += "\n\n" + "\n".join(action_lines)
-        else:
-            plan_text += "\n\nNenhuma ação necessária por enquanto."
-        self.garden_plan_text.setPlainText(plan_text)
+            details += "\n\nPlano deste ciclo\n" + "\n".join(action_lines)
+        if value.action_results:
+            details += "\n\nResultados\n" + "\n".join(
+                ("Confirmado: " if r.success else "Aguardando: " if r.waiting else "Falhou: ") + r.message
+                for r in value.action_results)
+        self._set_garden_report_text(self.garden_details_text, details)
+        self.garden_details_toggle.setText("Mostrar detalhes da prévia" if value.dry_run else "Mostrar detalhes do último ciclo")
         if achievement_completed:
-            self._show_garden_feedback(
-                True,
-                "Conquista Green, aching thumb obtida. Retomando a busca por sementes.",
-            )
+            self._show_garden_feedback(True, "Green, aching thumb obtida. Busca por sementes retomada.")
         elif value.action_results:
-            successes = sum(result.success for result in value.action_results)
             waits = [result for result in value.action_results if result.waiting]
             errors = [result for result in value.action_results if not result.success and not result.waiting]
             if waits and not errors:
                 waiting = waits[0]
-                message = waiting.message
+                message = "Plantio aguardando cookies."
+                budget = waiting.message
                 if waiting.required_cookies is not None and waiting.available_cookies is not None:
                     missing = max(0.0, waiting.required_cookies - waiting.available_cookies)
-                    message += (f" Custo: {self._format_number(waiting.required_cookies)}; "
-                                f"saldo: {self._format_number(waiting.available_cookies)}; "
-                                f"faltam: {self._format_number(missing)} cookies.")
-                message += " Tentará novamente no próximo tick."
-                self.garden_status_label.setText("Garden: aguardando dinheiro")
-                self.garden_status_label.setStyleSheet("color: #e8b766; font-weight: 600;")
-                self.garden_feedback_label.setText(message)
-                self.garden_feedback_label.setStyleSheet("color: #e8b766;")
-                self.status_bar.showMessage(message, 7000)
+                    message = f"Para replantar, faltam {self._format_number(missing)} cookies."
+                    budget = (f"Necessário: {self._format_number(waiting.required_cookies)} cookies. "
+                              f"Disponível: {self._format_number(waiting.available_cookies)}.")
+                if waiting.reason == "insufficient_funds":
+                    self.garden_status_label.setText("Garden: aguardando dinheiro")
+                    self.garden_state_label.setText("Esperando cookies para replantar")
+                    self.garden_state_detail.setText(budget)
+                    self.garden_status_label.setStyleSheet("color: #e8b766; font-weight: 600;")
+                else:
+                    message = "Uma ação está aguardando. Consulte os detalhes."
+                self._show_garden_feedback(True, message, tone="waiting")
+                self.garden_feedback_label.setToolTip(waiting.message)
+            elif errors:
+                self.garden_state_label.setText("Uma ação precisa de atenção")
+                self.garden_state_detail.setText(short_message(errors[0].message))
+                self.garden_state_detail.setToolTip(errors[0].message)
+                self._show_garden_feedback(False, f"{len(errors)} {'ação não concluída' if len(errors) == 1 else 'ações não concluídas'}. Veja os detalhes.")
             else:
-                details = "; ".join(result.message for result in value.action_results)
-                self._show_garden_feedback(
-                    not errors and not waits,
-                    f"Resultado: {successes}/{len(value.action_results)} ações confirmadas. {details}",
-                )
+                self._show_garden_feedback(True, result_summary(value.action_results))
+                if not remaining and any(r.action in {"plant", "harvest"} for r in value.action_results):
+                    self.garden_state_label.setText("Canteiro atualizado")
+                    self.garden_state_detail.setText("O próximo plano será calculado a partir de uma nova leitura do Garden.")
         elif value.dry_run:
-            self._show_garden_feedback(True, "Prévia atualizada. O jogo não foi alterado.")
+            self._show_garden_feedback(True, "Prévia atualizada. Nenhuma ação executada.", tone="neutral")
         else:
-            self._show_garden_feedback(True, "Nenhuma ação necessária por enquanto.")
+            self._show_garden_feedback(True, "Estado atualizado. Aguardando o próximo tick.", tone="neutral")
+
+    def _toggle_garden_details(self, visible):
+        self.garden_details_text.setVisible(visible)
+        target = self.garden_details_text if visible else self.garden_plan_text
+        QTimer.singleShot(0, lambda: self.garden_scroll.ensureWidgetVisible(target, 0, 12))
+
+    @staticmethod
+    def _set_garden_report_text(widget, text):
+        if widget.toPlainText() == text:
+            return
+        scroll = widget.verticalScrollBar().value()
+        widget.setPlainText(text)
+        widget.verticalScrollBar().setValue(scroll)
 
     @staticmethod
     def _format_garden_action(index, action) -> str:
@@ -2156,18 +2242,22 @@ class MainWindow(QMainWindow):
         subject = recipe.name if recipe else soils.get(action.soil_key, action.seed_key or action.soil_key or "Garden")
         return f"{index}. {labels.get(action.kind, action.kind)} {subject}{position} — {action.reason}"
 
-    def _show_garden_feedback(self, success: bool, message: str):
-        self.garden_feedback_label.setText(message)
-        self.garden_feedback_label.setStyleSheet(f"color: {'#65d6a5' if success else '#f07883'};")
-        self.status_bar.showMessage(message, 7000)
+    def _show_garden_feedback(self, success: bool, message: str, *, tone=None):
+        summary = short_message(message)
+        self.garden_feedback_label.setText(summary)
+        self.garden_feedback_label.setVisible(tone != "neutral")
+        self.garden_feedback_label.setToolTip(message)
+        if summary != message and message not in self.garden_details_text.toPlainText():
+            self._set_garden_report_text(self.garden_details_text, self.garden_details_text.toPlainText() + "\n\nAviso\n" + message)
+        color = '#9aa7ba' if tone == 'neutral' else '#e8b766' if tone == 'waiting' else '#65d6a5' if success else '#f07883'
+        self.garden_feedback_label.setStyleSheet(f'color: {color};')
+        self.status_bar.showMessage(summary, 7000)
 
     def _set_garden_busy(self, busy: bool):
         self.garden_refresh_button.setEnabled(not busy)
         self.garden_simulate_button.setEnabled(not busy)
         self.garden_thumbcorn_checkbox.setEnabled(not busy)
-        if busy:
-            self.garden_feedback_label.setText("Atualizando Garden…")
-            self.garden_feedback_label.setStyleSheet("color: #9aa7ba;")
+
 
     def _toggle_garden_automation(self, enabled: bool):
         if enabled and not self._bot_enabled:

@@ -182,7 +182,7 @@ class FazendeiraPlanningTests(unittest.TestCase):
         self.assertEqual({action.seed_key for action in plants}, {"queenbeet"})
         self.assertIn("anel", plan.explanation)
 
-    def test_shriekbulb_prefers_three_duketaters_of_any_age(self):
+    def test_shriekbulb_distributes_duketaters_across_the_whole_plot(self):
         six_by_six = tuple((x, y) for y in range(6) for x in range(6))
         unlocked = set(TARGET_SEED_KEYS) - {"shriekbulb"}
         current = snapshot(unlocked, tiles=six_by_six)
@@ -190,8 +190,12 @@ class FazendeiraPlanningTests(unittest.TestCase):
         plants = [action for action in plan.actions if action.kind == "plant"]
 
         self.assertEqual(plan.goal.target_key, "shriekbulb")
-        self.assertEqual(len(plants), 3)
+        self.assertGreater(len(plants), 3)
         self.assertEqual({action.seed_key for action in plants}, {"duketater"})
+        layout = {(a.x,a.y): a.seed_key for a in plants}
+        recipe = GARDEN_CATALOG["shriekbulb"]
+        centers = [p for p in six_by_six if p not in layout and Fazendeira(FakeGardenBridge(current))._intended_tile_matches(p,layout,{},recipe)]
+        self.assertGreaterEqual(len(centers), 16)
         self.assertEqual(plan.goal.parent_names, ("3× Duketater",))
 
     def test_golden_clover_uses_optimized_maximum_garden_layout(self):
@@ -227,16 +231,16 @@ class FazendeiraPlanningTests(unittest.TestCase):
             for position in mutation_tiles
         ))
 
-    def test_golden_clover_falls_back_to_local_ring_on_smaller_garden(self):
+    def test_golden_clover_uses_all_available_area_on_smaller_garden(self):
         unlocked = set(TARGET_SEED_KEYS) - {"goldenClover"}
         current = snapshot(unlocked)
         plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
         plants = [action for action in plan.actions if action.kind == "plant"]
 
         self.assertEqual(plan.goal.target_key, "goldenClover")
-        self.assertEqual(len(plants), 4)
+        self.assertGreater(len(plants), 4)
         self.assertEqual({action.seed_key for action in plants}, {"clover"})
-        self.assertIn("anel", plan.explanation)
+        self.assertIn("layout distribuído", plan.explanation)
 
     def test_mature_golden_clover_layout_switches_to_woodchips(self):
         six_by_six = tuple((x, y) for y in range(6) for x in range(6))
