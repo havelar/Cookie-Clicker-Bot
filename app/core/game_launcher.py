@@ -22,6 +22,7 @@ class GameLaunchResult:
     pid: int | None = None
     executable: str = ''
     reason: str = ''
+    snapshot: dict | None = None
 
 
 def steam_roots():
@@ -114,11 +115,15 @@ class GameLauncher:
         bridge = self.bridge_factory(timeout=2)
         try:
             if bridge.connect(tab_id=tab_id) and bridge.execute_js("!!(globalThis.Game && Game.ready && Game.Objects && typeof Game.WriteSave==='function')") is True:
+                snapshot = bridge.get_connection_snapshot()
+                if not isinstance(snapshot, dict) or not isinstance(snapshot.get('identity'), str):
+                    bridge.disconnect()
+                    return None
                 if self.cancel.is_set():
                     bridge.disconnect()
                     return None
                 self.connected_bridge = bridge
-                return GameLaunchResult(True, 'Jogo conectado ao debugger.', bridge, pid)
+                return GameLaunchResult(True, 'Jogo conectado ao debugger.', bridge, pid, snapshot=snapshot)
         except Exception:
             pass
         bridge.disconnect()

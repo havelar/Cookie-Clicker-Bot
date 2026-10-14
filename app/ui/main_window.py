@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
         self._bot_enabled = False
         self._game_open = bool(bridge)
         self._connection_busy = False
+        self._connection_recovering = False
+        self._connection_resume_pending = False
         self._bot_stopping = False
         self._resume_clicker = False
         self._resume_mouse_clicker = False
@@ -325,11 +327,29 @@ class MainWindow(QMainWindow):
 
     def refresh_bot_control(self):
         """Um único botão representa o próximo passo, sem ligar ações por conexão."""
+        self.automation_gate_label.setVisible(not self._bot_enabled)
+        if not self._bot_enabled:
+            for widget in (self.clicker_button, self.mouse_clicker_button, self.stock_toggle, self.garden_toggle,
+                           self.simple_farm_toggle, self.combo_toggle, self.combo_resume_button,
+                           self.auto_ascension_toggle, self.save_scum_tab.toggle):
+                widget.setEnabled(False)
+            self.stock_toggle.set_paused(True, "bot")
+            self.garden_toggle.set_paused(True, "bot")
+        self.automation_gate_label.setText(
+            "Ações pausadas enquanto a conexão é recuperada." if self._connection_recovering else
+            "Bot pausado. Ligue no topo para liberar as automações.")
         if self._connection_busy:
             return
         stopping = self._bot_stopping and self._bot_workers_running()
         if not stopping:
             self._bot_stopping = False
+        if self._connection_recovering and self._game_open:
+            self.open_game_button.setText("Manter pausado" if self._connection_resume_pending else "Reconectando…")
+            self.open_game_button.setEnabled(self._connection_resume_pending)
+            self.open_game_button.setToolTip("Cancela a retomada automática. A conexão continuará sendo recuperada.")
+            self.bot_status.setText("Reconectando ao jogo")
+            self.bot_status.setStyleSheet("color: #e8b766;")
+            return
         self.open_game_button.setText("Desligar bot" if self._bot_enabled else
                                       "Pausando…" if stopping else
                                       "Ligar bot" if self._game_open else "Abrir jogo")
@@ -345,17 +365,9 @@ class MainWindow(QMainWindow):
             "Pausa todas as automações após a ação em andamento. O jogo continua aberto." if self._bot_enabled else
             "Libera as automações configuradas. Banco e Garden retomam a seleção; inicie os modos especiais nas abas." if self._game_open else
             "Abre o jogo e conecta o bot automaticamente. Deixe a Steam aberta.")
-        self.automation_gate_label.setVisible(not self._bot_enabled)
-        if not self._bot_enabled:
-            for widget in (self.clicker_button, self.mouse_clicker_button, self.stock_toggle, self.garden_toggle,
-                           self.simple_farm_toggle, self.combo_toggle, self.combo_resume_button,
-                           self.auto_ascension_toggle, self.save_scum_tab.toggle):
-                widget.setEnabled(False)
-            self.stock_toggle.set_paused(True, "bot")
-            self.garden_toggle.set_paused(True, "bot")
 
     def set_bot_enabled(self, enabled):
-        if enabled and (not self.bridge or not self.runner or self._bot_stopping
+        if enabled and (self._connection_recovering or not self.bridge or not self.runner or self._bot_stopping
                         or self._save_scum_exclusive or self._combo_exclusive):
             self.add_log("Aguarde a conexão e o encerramento/recuperação das ações antes de ligar o bot.")
             return
@@ -405,6 +417,7 @@ class MainWindow(QMainWindow):
             runner.hotkey_capture_active.set()
         self._game_open = True
         self._resume_mouse_clicker = False
+        self._resume_clicker = False
         self._bot_enabled = False
         runner.set_paused(True)
         self.stock_automation = StockMarketAutomation(bridge)
@@ -416,6 +429,18 @@ class MainWindow(QMainWindow):
         self.stock_refresh_timer.start(5000)
         QTimer.singleShot(0, self._on_stock_market_timer)
         QTimer.singleShot(0, self.refresh_garden)
+
+    def set_connection_recovery(self, active, resume=False):
+        self._connection_recovering = active
+        self._connection_resume_pending = active and resume
+        if active:
+            self._stock_stop.set()
+            self._garden_stop.set()
+            self.stock_refresh_timer.stop()
+            self.garden_refresh_timer.stop()
+            self.bridge_status.setText("Jogo: reconectando" if self._game_open else "Jogo: desconectado")
+            self.bridge_status.setStyleSheet("color: #e8b766; font-weight: 600;")
+        self.refresh_bot_control()
 
     def _automation_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); layout.setContentsMargins(14, 16, 14, 14)
@@ -1814,6 +1839,8 @@ class MainWindow(QMainWindow):
         self._run_stock_task(task, self._display_stock_trade_result)
 
     def _run_stock_task(self, operation: Callable[[], object], handler: Callable[[object], None]):
+        if self._connection_recovering or (self.bridge and self.bridge.connected is False):
+            return
         if self._stock_worker and self._stock_worker.isRunning():
             self._show_stock_feedback(False, "Aguarde a operação atual terminar.")
             return
@@ -1827,6 +1854,9 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _stock_task_failed(self, message: str):
+        if self._connection_recovering or (self.bridge and self.bridge.connected is False):
+            self._show_stock_feedback(False, "Conexão perdida. Automação aguardando reconexão.")
+            return
         if self.stock_toggle.running:
             self._toggle_stock_auto_trade(False)
         logger.error(f"Stock Market: não foi possível concluir a operação: {message}")
@@ -1970,6 +2000,8 @@ class MainWindow(QMainWindow):
         )
 
     def _run_garden_task(self, operation: Callable[[], object], handler: Callable[[object], None]):
+        if self._connection_recovering or (self.bridge and self.bridge.connected is False):
+            return
         if self._garden_worker and self._garden_worker.isRunning():
             self._show_garden_feedback(False, "Aguarde a consulta atual do Garden terminar.")
             return
@@ -1983,6 +2015,9 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _garden_task_failed(self, message: str):
+        if self._connection_recovering or (self.bridge and self.bridge.connected is False):
+            self._show_garden_feedback(False, "Conexão perdida. Automação aguardando reconexão.")
+            return
         if self.garden_toggle.running:
             self._toggle_garden_automation(False)
         logger.error(f"Garden: não foi possível concluir a operação: {message}")

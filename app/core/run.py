@@ -65,6 +65,7 @@ class AutomationRunner:
         self.mouse_clicks = 0
         self.mouse_clicker_over_game = False
         self.hotkey_capture_active = threading.Event()
+        self.require_fresh_hotkeys = False
         self.stop_event = threading.Event()
         self.paused = threading.Event()
         self._collection_summary = ActivitySummary(logger)
@@ -277,14 +278,14 @@ class AutomationRunner:
 
         while not self.stop_event.is_set():
             try:
-                if self.paused.is_set() or self.exclusive_owner is not None:
+                if self.paused.is_set() or self.bridge.connected is False or self.exclusive_owner is not None:
                     # O dono exclusivo usa a mesma bridge e decide quais ações
                     # são seguras; o detector comum permanece totalmente passivo.
                     time.sleep(app_config.detect_interval)
                     continue
                 # A exclusividade aguarda todo o ciclo de ações em andamento.
                 with self._exclusive_lock:
-                    if self._exclusive_owner is None and not self.paused.is_set():
+                    if self._exclusive_owner is None and not self.paused.is_set() and self.bridge.connected is not False:
                         self._run_detector_cycle()
 
                 # Só acelera o polling enquanto o próximo carinho estiver próximo.
@@ -456,6 +457,8 @@ class AutomationRunner:
         previous_keys = {"cookie": app_config.toggle_key, "mouse": app_config.mouse_toggle_key}
         previous_modes = {"cookie": app_config.clicker_mode, "mouse": app_config.mouse_clicker_mode}
         held = {"cookie": False, "mouse": False}
+        if self.require_fresh_hotkeys:
+            held = {mode: self.input_handler.is_key_pressed(key) for mode, key in previous_keys.items()}
         hold_started = {"cookie": False, "mouse": False}
         while not self.stop_event.is_set():
             try:
@@ -468,7 +471,7 @@ class AutomationRunner:
                         previous_modes[mode] = modes[mode]
                         hold_started[mode] = False
                     manual_allowed = (not self.paused.is_set() and not self.hotkey_capture_active.is_set()
-                                      and self._exclusive_owner is None)
+                                      and self.bridge.connected is not False and self._exclusive_owner is None)
                     if not down or not manual_allowed:
                         hold_started[mode] = False
                     if down and not held[mode] and manual_allowed:
@@ -481,7 +484,8 @@ class AutomationRunner:
                     held[mode] = down
                 # Uma única fila envia down/up completos de cada clique.
                 now = time.monotonic()
-                allowed = not self.paused.is_set() and not self.hotkey_capture_active.is_set()
+                allowed = (not self.paused.is_set() and not self.hotkey_capture_active.is_set()
+                           and self.bridge.connected is not False)
                 active = {"cookie": (self.is_running or self.cookie_hold_active) and allowed,
                           "mouse": (self.mouse_clicker_running or self.mouse_hold_active) and allowed and self._exclusive_owner is None}
                 for mode, enabled in active.items():
@@ -490,6 +494,8 @@ class AutomationRunner:
                         continue
                     if now < deadlines[mode]:continue
                     if mode == "cookie":
+                        if self.bridge.connected is False or self.paused.is_set():
+                            continue
                         self.input_handler.click_cookie()
                         self.cookies_clicked += 1
                         interval = app_config.click_interval
@@ -500,6 +506,7 @@ class AutomationRunner:
                         if acquired:
                             try:
                                 if (self._exclusive_owner is None and (self.mouse_clicker_running or self.mouse_hold_active)
+                                        and self.bridge.connected is not False
                                         and not self.paused.is_set() and not self.hotkey_capture_active.is_set()):
                                     self.mouse_clicker_over_game = self.input_handler.click_at_cursor()
                                     if self.mouse_clicker_over_game:self.mouse_clicks += 1

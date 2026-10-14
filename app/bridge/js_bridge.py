@@ -82,6 +82,7 @@ class CookieClickerBridge:
         self.browser: Optional[pychrome.Browser] = None
         self.tab: Optional[pychrome.Tab] = None
         self.connected = False
+        self.managed_connection = False
         # pychrome não garante acesso concorrente seguro ao mesmo websocket.
         self._runtime_lock = threading.RLock()
 
@@ -103,7 +104,7 @@ class CookieClickerBridge:
         with self._runtime_lock:
             try:
                 self.browser = pychrome.Browser(url=f"http://{self.host}:{self.port}")
-                tabs = self.browser.list_tab()
+                tabs = self.browser.list_tab(timeout=self.timeout)
                 if not tabs:
                     logger.error("Nenhuma aba encontrada no remote debugging")
                     return False
@@ -149,12 +150,14 @@ class CookieClickerBridge:
         """
         with self._runtime_lock:
             if not self.connected or not self.tab:
+                if self.managed_connection:
+                    return None
                 logger.warning("Bridge não conectado. Tentando reconectar...")
                 if not self.connect():
                     return None
 
             try:
-                result = self.tab.Runtime.evaluate(expression=code, returnByValue=True)
+                result = self.tab.Runtime.evaluate(expression=code, returnByValue=True, _timeout=self.timeout)
                 if 'result' in result and 'value' in result['result']:
                     return result['result']['value']
                 elif result.get('result', {}).get('type') == 'undefined':
@@ -173,8 +176,19 @@ class CookieClickerBridge:
                     return None
             except Exception as e:
                 logger.error(f"Erro ao executar JS: {e}")
-                self.connected = False  # Marcar como desconectado para tentar reconectar
+                self.connected = False  # O supervisor pausa e valida o jogo antes de retomar.
                 return None
+
+    def get_connection_snapshot(self):
+        """Consulta identidade e prontidão sem alterar o save ou repetir ações."""
+        return self.execute_js("""(() => {
+            if (!globalThis.Game || !Game.ready || !Game.Objects
+                || typeof Game.WriteSave !== 'function') return null;
+            return {identity: String(Game.fullDate) + ':' + String(Game.seed),
+                    ascending: !!Game.OnAscend,
+                    cookies: Game.cookies, lumps: Game.lumps,
+                    buildings: Game.BuildingsOwned, upgrades: Game.UpgradesOwned};
+        })()""")
 
     def _execute_game_action(self, code: str) -> Optional[Any]:
         """Executa uma ação uma vez e sincroniza a UI, inclusive após falha parcial."""
