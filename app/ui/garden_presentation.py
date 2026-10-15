@@ -66,6 +66,16 @@ def _mutation_ready(snapshot, recipe):
 def current_state(snapshot, plan):
     if not snapshot.status.available:
         return 'Garden indisponível', short_message(snapshot.status.message)
+    if plan.mode == 'golden_cookies' and plan.goal:
+        if plan.goal.pending_prerequisites:
+            return 'Esperando sementes necessárias', ', '.join(plan.goal.pending_prerequisites)
+        if snapshot.frozen:
+            return 'Retomando o crescimento', 'Descongelar o Garden para manter os trevos e as tulipas.'
+        if any(a.kind in {'plant','harvest'} for a in plan.actions):
+            return 'Preparando os trevos e as tulipas', 'Preencher e manter o canteiro para aumentar a frequência de Golden Cookies.'
+        counts = Counter(p.key for p in snapshot.plants if p.mature)
+        detail = f"{counts['goldenClover']} Golden Clover e {counts['nursetulip']} Nursetulip maduras."
+        return ('Aproveitando o bônus dos trevos' if snapshot.soil_key=='clay' else 'Crescendo trevos e tulipas'), detail
     if plan.goal is None:
         if snapshot.missing_seed_keys:
             return 'Automação aguardando', short_message(plan.explanation)

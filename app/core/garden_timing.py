@@ -111,7 +111,20 @@ def schedule_parent_plantings(snapshot, recipe, desired, centers, actions):
             alignment = sum(min((abs(new_windows[pos].ready+delay-t) for t in other_ready), default=0)
                             for pos in group if math.isfinite(new_windows[pos].expires))
             return score, -alignment if score else 0, -delay
-        delay = max(candidates, key=evaluate)
+        # Um pai imortal já disponível permite várias gerações do pai rápido.
+        # Não perder tentativas agora para alinhar com outros imortais mais jovens.
+        group_keys = {new_windows[p].key for p in group}
+        other_keys = set(requirements) - group_keys
+        immediate = {p:w for p,w in forecasts.items() if p not in new_windows or p in group}
+        immediate.update((p,new_windows[p]) for p in group)
+        ready_at = max(new_windows[p].ready for p in group)
+        can_start_now = (
+            other_keys and all(seeds[key].immortal for key in other_keys)
+            and all(math.isfinite(new_windows[p].expires) for p in group)
+            and any(start <= ready_at < end for center in local_centers
+                    for start,end in _windows(recipe, center, immediate, horizon))
+        )
+        delay = 0 if can_start_now else max(candidates, key=evaluate)
         for position in group:
             base = new_windows[position]
             delays[position] = delay

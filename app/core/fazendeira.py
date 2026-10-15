@@ -8,6 +8,7 @@ from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 from app.core.garden_timing import schedule_parent_plantings
 from app.core.garden_layouts import full_plot_layout
+from app.core.garden_golden import golden_layout, golden_soil, GOLDEN, NURSE
 from app.core.garden_catalog import GARDEN_CATALOG, TARGET_SEED_KEYS, GardenRecipe
 from app.models.garden import (
     GardenAction,
@@ -65,7 +66,7 @@ class Fazendeira:
         "shriekbulb": "_estrategia_anel",
         "tidygrass": "_estrategia_mutacao_adjacente",
         "everdaisy": "_estrategia_anel",
-        "ichorpuff": "_estrategia_mutacao_adjacente",
+        "ichorpuff": "_estrategia_ichorpuff",
     }
 
     # Layouts de referência que não podem ser reduzidos ao padrão genérico
@@ -154,6 +155,7 @@ class Fazendeira:
 
     def build_plan(
         self, snapshot: GardenSnapshot, *, green_aching_thumb_enabled: bool = False,
+        golden_cookies_enabled: bool = False,
     ) -> GardenPlan:
         """Gera o plano completo antes de qualquer chamada mutável."""
         if snapshot.status.available:
@@ -172,6 +174,8 @@ class Fazendeira:
                     explanation="Catálogo incompatível com esta versão do jogo; " + "; ".join(details) + ".",
                     waiting=True,
                 )
+        if golden_cookies_enabled and snapshot.status.available:
+            return self._build_golden_cookies_plan(snapshot)
         if green_aching_thumb_enabled:
             thumbcorn_plan = self._build_green_aching_thumb_plan(snapshot)
             if thumbcorn_plan is not None:
@@ -304,6 +308,7 @@ class Fazendeira:
         dry_run: bool = True,
         automation_enabled: bool = False,
         green_aching_thumb_enabled: bool = False,
+        golden_cookies_enabled: bool = False,
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> GardenCycleResult:
         """Simula ou executa um ciclo; sem autorização, jamais muta o jogo."""
@@ -311,6 +316,7 @@ class Fazendeira:
         snapshot = self.capture_snapshot()
         plan = self.build_plan(
             snapshot, green_aching_thumb_enabled=green_aching_thumb_enabled,
+            golden_cookies_enabled=golden_cookies_enabled,
         )
         if dry_run or not automation_enabled:
             costs = {seed.key: seed.cost for seed in snapshot.seeds}
@@ -326,7 +332,7 @@ class Fazendeira:
 
         # ``M.nextStep`` muda somente quando o Garden processa um tick. Ele é
         # usado como token para impedir duas reconciliações reais no mesmo tick.
-        tick_token = snapshot.next_tick_at
+        tick_token = (snapshot.next_tick_at, plan.mode) if snapshot.next_tick_at is not None else None
         if tick_token is not None and tick_token == self._last_real_tick_token:
             return GardenCycleResult(snapshot, plan, False, ())
         if tick_token is not None:
@@ -385,6 +391,45 @@ class Fazendeira:
             plan = replace(plan, waiting=True, explanation=plan.explanation + " " + detail +
                            " Nova avaliação no próximo tick do Garden.")
         return GardenCycleResult(snapshot, plan, False, tuple(results))
+
+    def _build_golden_cookies_plan(self, snapshot: GardenSnapshot) -> GardenPlan:
+        missing = tuple(key for key in (GOLDEN,NURSE) if key not in snapshot.unlocked_seed_keys)
+        goal = GardenGoal(
+            GOLDEN, "Mais Golden Cookies", (GOLDEN,NURSE), ("Golden Clover", "Nursetulip"),
+            "Golden Clover aumenta a frequência; Nursetulip amplifica as plantas vizinhas.",
+            tuple(GARDEN_CATALOG[key].name for key in missing),
+            "Manter o canteiro produzindo o maior bônus de frequência possível.", "golden_cookies",
+        )
+        if missing:
+            return GardenPlan(goal, explanation="Desbloqueie as sementes: " + ", ".join(goal.pending_prerequisites) + ".",
+                              waiting=True,mode="golden_cookies")
+        protected = tuple((p.x,p.y) for p in snapshot.plants
+                          if p.key not in GARDEN_CATALOG or p.key not in snapshot.unlocked_seed_keys)
+        desired = dict(golden_layout(tuple(sorted(snapshot.unlocked_tiles)),tuple(sorted(protected))))
+        actions = list(self._reconcile_layout(snapshot,desired))
+        soil,current,peak = golden_soil(snapshot,desired)
+        available = {s.key for s in snapshot.soils if s.available}
+        if soil not in available:
+            soil = 'fertilizer' if 'fertilizer' in available else snapshot.soil_key
+        if snapshot.frozen:
+            actions.insert(0,GardenAction('set_freeze','Retomar o crescimento dos trevos e tulipas.',freeze=False))
+        elif soil and soil!=snapshot.soil_key and (
+                snapshot.next_soil_at is None or snapshot.next_soil_at<=self._clock()):
+            actions.insert(0,GardenAction('change_soil',
+                'Prolongar e ampliar o bônus dos trevos.' if soil=='clay' else 'Recuperar o crescimento do canteiro.',
+                soil_key=soil))
+        counts = Counter(desired.values())
+        explanation = (
+            f"{counts[GOLDEN]} Golden Clover e {counts[NURSE]} Nursetulip. "
+            f"Potencial no Clay: +{peak*100:.1f}% de frequência. "
+            f"Força atual do conjunto: {current/peak*100 if peak else 0:.0f}% do potencial. "
+            + ("Manter Clay para aproveitar o bônus." if soil=='clay' else "Usar Fertilizer para recuperar o crescimento.")
+            + " Repor plantas que morrerem; manter as saudáveis. Nursetulip reduz o CpS."
+        )
+        if protected:explanation += f" {len(protected)} planta(s) protegida(s) preservada(s)."
+        if soil!=snapshot.soil_key and snapshot.next_soil_at and snapshot.next_soil_at>self._clock():
+            explanation += " A troca de solo aguarda o tempo de recarga."
+        return GardenPlan(goal,tuple(actions),explanation,waiting=not actions,mode="golden_cookies")
 
     def _build_green_aching_thumb_plan(
         self, snapshot: GardenSnapshot,
@@ -563,6 +608,19 @@ class Fazendeira:
 
     def _estrategia_mutacao_adjacente(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_generic_layout(snapshot, recipe)
+
+    def _estrategia_ichorpuff(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
+        parent_keys = {parent.key for parent in recipe.parents}
+        layout = full_plot_layout(snapshot, recipe, preserve_parent_keys=parent_keys)
+        if layout is None:
+            return self._growth_actions(snapshot), (
+                "Preservar Elderwort e Crumbspore existentes; aguardando espaço livre para Ichorpuff."
+            )
+        desired, centers = layout
+        return self._plan_mutation_layout(
+            snapshot, recipe, desired, centers,
+            f"setup de Ichorpuff aproveitando os pais existentes ({len(centers)} espaços de mutação)",
+        )
 
     def _estrategia_anel(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_parent_layout(snapshot, recipe)

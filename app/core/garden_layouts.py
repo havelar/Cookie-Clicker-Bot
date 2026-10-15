@@ -215,15 +215,21 @@ def _solve(tiles, requirements, limits, fixed, preferred, baseline):
     return best if best_score[0] else ((),())
 
 
-def full_plot_layout(snapshot, recipe, baseline=None):
+def full_plot_layout(snapshot, recipe, baseline=None, *, preserve_parent_keys=()):
     """Retorna pais e espaços de mutação em todo o Garden, sem mover protegidas."""
     tiles = tuple(sorted(snapshot.unlocked_tiles))
     if not tiles or not recipe.parents:return None
-    fixed = tuple(sorted(((p.x,p.y),p.key) for p in snapshot.plants
-                         if (p.key not in GARDEN_CATALOG or p.key not in snapshot.unlocked_seed_keys) and (p.x,p.y) in tiles))
     parent_keys = {r.key for r in recipe.parents}
+    preserved = set(preserve_parent_keys) & parent_keys
+    fixed = tuple(sorted(((p.x,p.y),p.key) for p in snapshot.plants
+                         if (p.key not in GARDEN_CATALOG or p.key not in snapshot.unlocked_seed_keys
+                             or p.key in preserved) and (p.x,p.y) in tiles))
     preferred = tuple(sorted(((p.x,p.y),p.key) for p in snapshot.plants
                              if p.key in parent_keys and (p.x,p.y) in tiles and ((p.x,p.y),p.key) not in fixed))
     desired, centers = _solve(tiles,tuple((r.key,r.count) for r in recipe.parents),
                              recipe.maximum_neighbors,fixed,preferred,tuple(sorted((baseline or {}).items())))
-    return (dict(desired),centers) if centers else None
+    if not centers:return None
+    desired = dict(desired)
+    desired.update((pos,key) for pos,key in fixed
+                   if key in preserved and key in snapshot.unlocked_seed_keys)
+    return desired,centers

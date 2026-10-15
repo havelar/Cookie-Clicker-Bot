@@ -12,6 +12,67 @@ FULL = tuple((x,y) for y in range(6) for x in range(6))
 
 
 class FullGardenLayoutTests(unittest.TestCase):
+    def ichorpuff_transition(self, *, mature=False):
+        elders = {(5,1), *((x,2) for x in range(6)), (5,3), *((x,5) for x in range(5))}
+        plants = [GardenPlant(x,y,7,'elderwort','Elderwort',90,85.5,True,immortal=True)
+                  for x,y in elders]
+        plants.extend((
+            GardenPlant(1,1,32,'everdaisy','Everdaisy',80 if mature else 10,50,mature),
+            GardenPlant(0,0,31,'tidygrass','Tidygrass',60,40,True),
+            GardenPlant(3,3,23,'crumbspore','Crumbspore',55,50,True),
+            GardenPlant(4,4,999,'unknown','Unknown',10,50,False),
+        ))
+        return snapshot(set(TARGET_SEED_KEYS)-{'everdaisy','ichorpuff'},plants,tiles=FULL),elders
+
+    def test_ichorpuff_preserves_existing_parents_and_immature_everdaisy(self):
+        current,elders = self.ichorpuff_transition()
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        self.assertEqual(plan.goal.target_key,'everdaisy')
+        self.assertFalse(any((a.x,a.y) in elders | {(1,1),(3,3),(4,4)}
+                             for a in plan.actions if a.kind in {'plant','harvest'}))
+        self.assertTrue(any(a.kind=='plant' and a.seed_key=='crumbspore' for a in plan.actions))
+        self.assertIn('aproveitando os pais existentes',plan.explanation)
+
+    def test_mature_everdaisy_is_harvested_without_removing_existing_parents(self):
+        current,elders = self.ichorpuff_transition(mature=True)
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        harvests = [a for a in plan.actions if a.kind=='harvest' and (a.x,a.y)==(1,1)]
+        self.assertEqual(len(harvests),1)
+        self.assertTrue(harvests[0].require_mature)
+        self.assertFalse(any((a.x,a.y) in elders | {(3,3),(4,4)}
+                             for a in plan.actions if a.kind in {'plant','harvest'}))
+
+    def test_ichorpuff_parent_preservation_survives_replanning_and_fungus_death(self):
+        current,elders = self.ichorpuff_transition()
+        recipe = GARDEN_CATALOG['ichorpuff']
+        desired,centers = full_plot_layout(current,recipe,preserve_parent_keys={'elderwort','crumbspore'})
+        self.assertGreater(len(centers),1)
+        self.assertTrue(elders <= set(desired))
+        self.assertFalse({(1,1),(4,4)} & (set(desired)|set(centers)))
+        for center in centers:
+            neighbors = Counter(desired[p] for p in Fazendeira._neighbors(center) if p in desired)
+            self.assertGreaterEqual(neighbors['elderwort'],1)
+            self.assertGreaterEqual(neighbors['crumbspore'],1)
+        protected = tuple(p for p in current.plants if p.key in {'everdaisy','unknown'})
+        for cycle in range(3):
+            # Uma Crumbspore expira; todos os pais restantes devem ficar onde estão.
+            existing = tuple(GardenPlant(x,y,0,key,key,30,50,False)
+                             for (x,y),key in desired.items() if not (key=='crumbspore' and x==cycle))
+            current = replace(current,plants=existing+protected)
+            plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+            positions = {(p.x,p.y) for p in current.plants}
+            self.assertFalse(any((a.x,a.y) in positions for a in plan.actions if a.kind in {'plant','harvest'}))
+            desired,centers = full_plot_layout(current,recipe,preserve_parent_keys={'elderwort','crumbspore'})
+
+    def test_ichorpuff_preserves_parents_after_everdaisy_unlock(self):
+        current,elders = self.ichorpuff_transition()
+        current = replace(current,plants=tuple(p for p in current.plants if p.key!='everdaisy'),
+                          seeds=tuple(replace(s,unlocked=True) if s.key=='everdaisy' else s for s in current.seeds))
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        self.assertEqual(plan.goal.target_key,'ichorpuff')
+        self.assertFalse(any((a.x,a.y) in elders | {(3,3),(4,4)}
+                             for a in plan.actions if a.kind in {'plant','harvest'}))
+
     def current(self, *, plants=(), tiles=FULL):
         return snapshot(set(TARGET_SEED_KEYS),plants,tiles=tiles)
 

@@ -96,6 +96,7 @@ class AutomationConfig:
 
     # Garden: seguro por padrão; intervalo usado somente se M.nextStep faltar.
     enable_green_aching_thumb: bool = False
+    enable_garden_golden_cookies: bool = False
     garden_poll_interval_seconds: int = 60
 
     # Auto Ascensão: sempre desativada por padrão e confirmada a cada execução real.
@@ -308,6 +309,11 @@ def load_automation_settings() -> None:
     automation_config.enable_green_aching_thumb = settings.value(
         "enable_green_aching_thumb", False, type=bool,
     )
+    automation_config.enable_garden_golden_cookies = settings.value(
+        "enable_garden_golden_cookies", False, type=bool,
+    )
+    if automation_config.enable_garden_golden_cookies:
+        automation_config.enable_green_aching_thumb = False
     automation_config.garden_poll_interval_seconds = min(3600, max(30, settings.value(
         "garden_poll_interval_seconds",
         automation_config.garden_poll_interval_seconds,
@@ -437,6 +443,7 @@ def save_automation_settings() -> None:
     settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
     settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
     settings.setValue("enable_green_aching_thumb", automation_config.enable_green_aching_thumb)
+    settings.setValue("enable_garden_golden_cookies", automation_config.enable_garden_golden_cookies)
     settings.setValue("garden_poll_interval_seconds", automation_config.garden_poll_interval_seconds)
     settings.setValue("auto_ascension_target_cycles", automation_config.auto_ascension_target_cycles)
     settings.setValue(

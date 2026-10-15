@@ -10,6 +10,28 @@ from tests.test_garden import snapshot, FakeGardenBridge
 
 
 class TimingTests(unittest.TestCase):
+    def test_fast_parent_uses_mature_immortal_without_waiting_for_young_anchors(self):
+        current = snapshot({'elderwort','crumbspore'},tiles=tuple((x,y) for y in range(4) for x in range(4)))
+        current = replace(current,seeds=tuple(replace(s,mature_age=50,
+                          average_growth=1 if s.key=='elderwort' else 10,
+                          immortal=s.key=='elderwort') for s in current.seeds),
+                          plants=(GardenPlant(0,0,7,'elderwort','Elderwort',0,50,False,
+                                              immortal=True,average_growth=1),
+                                  GardenPlant(1,2,7,'elderwort','Elderwort',80,50,True,
+                                              immortal=True,average_growth=1)))
+        desired = {(0,0):'elderwort',(1,2):'elderwort',(1,1):'crumbspore'}
+        farm = Fazendeira(FakeGardenBridge(current))
+        actions,message = schedule_parent_plantings(current,GARDEN_CATALOG['ichorpuff'],desired,
+                         ((0,1),(1,0),(2,1),(2,2)),farm._reconcile_layout(current,desired))
+        self.assertEqual([(a.kind,a.seed_key,a.x,a.y) for a in actions],[('plant','crumbspore',1,1)])
+        self.assertEqual(message,'')
+        current = replace(current,plants=current.plants[:1])
+        desired.pop((1,2))
+        actions,message = schedule_parent_plantings(current,GARDEN_CATALOG['ichorpuff'],desired,
+                         ((0,1),(1,0)),farm._reconcile_layout(current,desired))
+        self.assertFalse(any(a.kind=='plant' for a in actions))
+        self.assertIn('aguardar',message)
+
     def setup_pair(self, *, slow_age=None, fast_age=None, slow_rate=1, fast_rate=10):
         self.recipe = GardenRecipe('foolBolete', "Fool's bolete",
                                    (ParentRequirement('doughshroom'), ParentRequirement('greenRot')))
