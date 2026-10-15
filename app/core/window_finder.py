@@ -44,7 +44,10 @@ def find_cookie_window() -> Optional[int]:
     def callback(hwnd, pids):
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd)
-            if "Cookie Clicker" in title and "Cookie Clicker Bot" not in title:
+            normalized = title.casefold()
+            # Business Day muda document.title para Cookie Baker, sem trocar o jogo.
+            if (any(name in normalized for name in ("cookie clicker", "cookie baker"))
+                    and "cookie clicker bot" not in normalized):
                 try:
                     _, pid = win32process.GetWindowThreadProcessId(hwnd)
                     if not is_cookie_process(pid):
