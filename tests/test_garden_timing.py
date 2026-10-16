@@ -108,6 +108,20 @@ class TimingTests(unittest.TestCase):
         self.assertEqual([a.seed_key for a in actions], ['elderwort']*3)
         self.assertIn('135 min', message)
 
+    def test_receita_especial_everdaisy_preserva_o_agendamento_existente(self):
+        atual = self.setup_pair()
+        receita = GARDEN_CATALOG["everdaisy"]
+        posicoes = [(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2)]
+        desejado = {pos: "elderwort" if i < 3 else "tidygrass" for i, pos in enumerate(posicoes)}
+        atual = replace(atual, seeds=tuple(replace(semente, mature_age=50,
+                         average_growth=1 if semente.key == "elderwort" else 10,
+                         immortal=semente.key == "elderwort") for semente in atual.seeds))
+        acoes, explicacao = Fazendeira(FakeGardenBridge(atual))._plan_mutation_layout(
+            atual, receita, desejado, ((1, 1),), "receita especial de Everdaisy")
+        self.assertEqual([acao.seed_key for acao in acoes if acao.kind == "plant"], ["elderwort"] * 3)
+        self.assertIn("135 min", explicacao)
+        self.assertIn("aguardar para plantar", explicacao)
+
     def test_unavailable_growth_data_falls_back_without_inventing_wait(self):
         current = self.setup_pair()
         current = replace(current, seeds=tuple(replace(s, average_growth=None) for s in current.seeds))
@@ -158,12 +172,13 @@ class TimingTests(unittest.TestCase):
                 result, _ = schedule_parent_plantings(current, recipe, desired, (center,), actions)
                 self.assertTrue(all(a.seed_key in GARDEN_CATALOG for a in result if a.kind=='plant'))
 
-    def test_plan_explains_wait_instead_of_claiming_layout_is_complete(self):
+    def test_plano_planta_pai_rapido_sem_mensagem_de_sincronizacao(self):
         current = self.setup_pair(slow_age=40)
         farm = Fazendeira(FakeGardenBridge(current))
         actions, explanation = farm._plan_mutation_layout(current, self.recipe, self.desired, (self.center,), 'layout de teste')
-        self.assertFalse(any(a.kind=='plant' for a in actions))
-        self.assertIn('aguardar para plantar Green rot', explanation)
+        self.assertEqual([a.seed_key for a in actions if a.kind=='plant'], ['greenRot'])
+        self.assertIn('plantar imediatamente', explanation)
+        self.assertNotIn('aguardar para plantar', explanation)
 
     def test_live_recipe_doughshroom_green_rot_waits_for_current_slow_parents(self):
         current = self.setup_pair(slow_age=55, slow_rate=2.1, fast_rate=19.425)
@@ -212,7 +227,7 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(len(actions), 2)
         self.assertEqual(message, '')
 
-    def test_wait_is_visible_while_a_discovery_grows_and_next_recipe_is_prepared(self):
+    def test_proxima_receita_planta_todos_os_pais_enquanto_descoberta_cresce(self):
         current = self.setup_pair(slow_rate=1, fast_rate=10)
         current = replace(current, unlocked_tiles=tuple((x,y) for y in range(6) for x in range(6)),
                           seeds=tuple(replace(s, unlocked=s.key in set(TARGET_SEED_KEYS)-{'thumbcorn','foolBolete'})
@@ -220,6 +235,7 @@ class TimingTests(unittest.TestCase):
                           plants=(GardenPlant(3,3,1,'thumbcorn','Thumbcorn',1,50,False,average_growth=10),))
         plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
         self.assertEqual(plan.goal.target_key, 'thumbcorn')
-        self.assertIn('Green rot', plan.explanation)
-        self.assertIn('aguardar para plantar', plan.explanation)
+        self.assertEqual({a.seed_key for a in plan.actions if a.kind=='plant'}, {'doughshroom','greenRot'})
+        self.assertIn('plantar imediatamente', plan.explanation)
+        self.assertNotIn('aguardar para plantar', plan.explanation)
         self.assertFalse(any(a.kind=='harvest' and (a.x,a.y)==(3,3) for a in plan.actions))

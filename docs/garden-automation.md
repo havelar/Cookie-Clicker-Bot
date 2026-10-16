@@ -34,6 +34,28 @@ A estratégia funciona como reconciliação de estado:
   automaticamente, pois isso pode matar Cheapcaps;
 - não sacrifica o Garden, não compra upgrades e não altera saves.
 
+## Plantio imediato na coleção normal
+
+Na estratégia **Todas as Plantas** (`plants`), as receitas comuns de mutação
+adjacente, sem limites especiais de vizinhança, incluem todos os pais no mesmo
+plano assim que suas sementes estão desbloqueadas e as casas do layout
+estão disponíveis. Não se adiam plantios para alinhar maturidade ou tempo de
+vida. A prioridade é iniciar o cultivo e as tentativas de mutação o quanto antes;
+as exigências de maturidade e de vizinhança de cada receita continuam valendo.
+
+As casas reservadas para receber mutações permanecem vazias de propósito.
+Descobertas ainda não desbloqueadas e espécies fora do catálogo continuam
+protegidas. Essa prioridade também vale para os pais do próximo setup preparado
+enquanto uma descoberta amadurece. A execução depende do saldo para o lote
+inteiro, validado atomicamente antes de qualquer limpeza ou plantio.
+
+As receitas comuns não usam o agendamento de plantios de `garden_timing.py`.
+Receitas especiais do catálogo, como Everdaisy, Golden clover e as que limitam
+vizinhos, mantêm seu planejamento próprio, inclusive o agendamento quando aplicável.
+Os modos Upgrades do Garden, Golden Clovers e Green Thumb mantêm seus próprios
+planejadores. A Juicy queenbeet conserva a renovação dos círculos e a decisão de
+aguardar ou acelerar tentativas, descritas a seguir.
+
 ## Círculos de Juicy queenbeet
 
 Para Juicy queenbeet, cada centro precisa estar vazio e cercado por **oito
@@ -75,6 +97,19 @@ A bridge revalida o solo, as oito plantas maduras, margem de vida, saldo e
 cooldown antes do débito. O tick extra é cancelado se houver espécie fora do
 catálogo ou se ele puder matar uma descoberta ainda não desbloqueada. As
 decisões de espera e cada gasto aparecem no acompanhamento e no log.
+
+## Replantio no modo Upgrades do Garden
+
+As colheitas maduras e os plantios nas casas liberadas são previstos no mesmo
+ciclo. Depois de cada colheita, o bot confirma se algum upgrade foi liberado.
+Se nenhum drop sair, executa o lote de replantio sem esperar outro tick,
+incluindo casas que já estavam vazias. As plantas pendentes ainda em crescimento
+permanecem no lugar.
+
+Se um upgrade for liberado, o restante do plano antigo é cancelado e o objetivo
+é recalculado. Uma falha na consulta dos upgrades também cancela o replantio.
+O lote continua sujeito à validação atômica de saldo e canteiros pela bridge;
+as colheitas maduras não dependem de dinheiro para replantar.
 
 ## Saldo insuficiente e retomada
 

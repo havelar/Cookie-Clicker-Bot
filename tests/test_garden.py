@@ -85,6 +85,68 @@ class FakeGardenBridge:
         return GardenActionResult(True, "set_freeze", "Estado confirmado")
 
 
+class PlantioImediatoColecaoTests(unittest.TestCase):
+    def cenario(self, *, pai_existente=False, substituicao=False):
+        plantas = []
+        if pai_existente:
+            plantas.append(GardenPlant(0, 1, 0, "doughshroom", "Doughshroom", 55, 80.75, False,
+                                       average_growth=2.1))
+        if substituicao:
+            plantas.append(GardenPlant(1, 1, 0, "bakerWheat", "Baker's wheat", 10, 35, False))
+        atual = snapshot(set(TARGET_SEED_KEYS) - {"foolBolete"}, plantas, soil="fertilizer",
+                         tiles=tuple((x, y) for y in range(6) for x in range(6)), next_tick_at=1234.5)
+        sementes = tuple(replace(s, mature_age=80.75, average_growth=2.1) if s.key == "doughshroom" else
+                         replace(s, mature_age=61.75, average_growth=19.425) if s.key == "greenRot" else s
+                         for s in atual.seeds)
+        return replace(atual, seeds=sementes)
+
+    def test_pais_lento_e_rapido_entram_juntos_sem_ocupar_espacos_de_mutacao(self):
+        atual = self.cenario()
+        fazendeira = Fazendeira(FakeGardenBridge(atual))
+        plano = fazendeira.build_plan(atual, strategy="plants")
+        desejado, centros, _ = fazendeira._find_generic_layout(atual, GARDEN_CATALOG["foolBolete"])
+        plantios = {(a.x, a.y): a.seed_key for a in plano.actions if a.kind == "plant"}
+        self.assertEqual(plantios, desejado)
+        self.assertEqual(len(plantios), 10)
+        self.assertEqual(len(centros), 26)
+        self.assertFalse(set(plantios) & set(centros))
+        self.assertEqual(set(plantios.values()), {"doughshroom", "greenRot"})
+        self.assertIn("plantar imediatamente", plano.explanation)
+        self.assertNotIn("Sincronizar os pais", plano.explanation)
+
+    def test_pai_lento_em_crescimento_nao_adia_substituicao_e_plantio_do_rapido(self):
+        atual = self.cenario(pai_existente=True, substituicao=True)
+        plano = Fazendeira(FakeGardenBridge(atual)).build_plan(atual, strategy="plants")
+        self.assertTrue(any(a.kind == "harvest" and (a.x, a.y) == (1, 1) and not a.require_mature
+                            for a in plano.actions))
+        self.assertTrue(any(a.kind == "plant" and (a.x, a.y) == (1, 1) and a.seed_key == "greenRot"
+                            for a in plano.actions))
+        self.assertFalse(any((a.x, a.y) == (0, 1) for a in plano.actions))
+        self.assertEqual(sum(a.kind == "plant" for a in plano.actions), 9)
+
+    def test_mesmo_ciclo_envia_todos_os_pais_em_um_lote_e_nao_repete_o_tick(self):
+        bridge = FakeGardenBridge(self.cenario())
+        bridge.execute_garden_layout = Mock(wraps=bridge.execute_garden_layout)
+        fazendeira = Fazendeira(bridge)
+        resultado = fazendeira.run_cycle(dry_run=False, automation_enabled=True, strategy="plants")
+        lote = bridge.execute_garden_layout.call_args.args[0]
+        self.assertEqual(sum(a.kind == "plant" for a in lote), 10)
+        self.assertEqual({a.seed_key for a in lote if a.kind == "plant"}, {"doughshroom", "greenRot"})
+        self.assertTrue(all(r.success for r in resultado.action_results))
+        repetido = fazendeira.run_cycle(dry_run=False, automation_enabled=True, strategy="plants")
+        self.assertEqual(repetido.action_results, ())
+        bridge.execute_garden_layout.assert_called_once()
+
+    def test_simulacao_planeja_os_dois_pais_sem_chamadas_mutaveis(self):
+        bridge = FakeGardenBridge(self.cenario())
+        fazendeira = Fazendeira(bridge)
+        for simular, habilitada in ((True, True), (False, False)):
+            resultado = fazendeira.run_cycle(dry_run=simular, automation_enabled=habilitada, strategy="plants")
+            self.assertEqual({a.seed_key for a in resultado.plan.actions if a.kind == "plant"},
+                             {"doughshroom", "greenRot"})
+            self.assertTrue(resultado.dry_run)
+        self.assertEqual(bridge.mutable_calls, [])
+
 class GardenCatalogTests(unittest.TestCase):
     def test_catalog_has_all_runtime_plants_and_valid_dependencies(self):
         self.assertEqual(len(GARDEN_CATALOG), 34)

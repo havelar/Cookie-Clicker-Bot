@@ -459,15 +459,16 @@ class Fazendeira:
                        parent_keys=(target.plant_key,),parent_names=(plant_name,))
         pending_keys = {u.plant_key for u in available}
         mature = [p for p in self._sorted_plants(snapshot) if p.key in pending_keys and p.mature]
-        if mature:
-            actions = tuple(GardenAction('harvest',
-                'Colher madura para tentar liberar o upgrade que falta.',x=p.x,y=p.y,seed_key=p.key)
-                for p in mature)
-        else:
-            desired = {pos:target.plant_key for pos in snapshot.unlocked_tiles}
-            # Aproveitar também plantas em crescimento de outros drops pendentes.
-            desired.update(((p.x,p.y),p.key) for p in snapshot.plants if p.key in pending_keys)
-            actions = self._reconcile_layout(snapshot,desired)
+        harvests = tuple(GardenAction('harvest',
+            'Colher madura para tentar liberar o upgrade que falta.',x=p.x,y=p.y,seed_key=p.key)
+            for p in mature)
+        mature_positions = {(p.x,p.y) for p in mature}
+        after_harvest = replace(snapshot,plants=tuple(
+            p for p in snapshot.plants if (p.x,p.y) not in mature_positions))
+        desired = {pos:target.plant_key for pos in snapshot.unlocked_tiles}
+        # Preservar culturas pendentes em crescimento e preencher as casas colhidas.
+        desired.update(((p.x,p.y),p.key) for p in after_harvest.plants if p.key in pending_keys)
+        actions = harvests + self._reconcile_layout(after_harvest,desired)
         actions = self._growth_actions(snapshot) + actions
         growing_other = Counter(p.key for p in snapshot.plants
                                 if p.key in pending_keys and p.key != target.plant_key)
@@ -476,6 +477,7 @@ class Fazendeira:
         explanation = (progress+f"Pendentes: {', '.join(u.name for u in pending)}. "
                        + f"Cultivar {plant_name} e colher madura até liberar {target.name}. "
                        "Upgrades já disponíveis na loja não precisam ser cultivados novamente. "
+                       "Sem drop, repor as casas vazias no mesmo ciclo, após validar o saldo do lote. "
                        "Não compra upgrades nem usa Sugar Lumps." + reuse)
         return GardenPlan(goal,tuple(actions),explanation,waiting=not actions,mode='garden_upgrades')
 
@@ -787,15 +789,19 @@ class Fazendeira:
         if recipe.key == "queenbeetLump":
             actions, ring_status = self._synchronize_queenbeet_rings(snapshot, desired, mutation_tiles, actions)
             return self._plan_juicy_boost(snapshot, mutation_tiles, actions, ring_status)
-        actions, timing = schedule_parent_plantings(snapshot, recipe, desired, mutation_tiles, actions)
+        timing = ""
+        specialized = recipe.strategy != "mutacao_adjacente" or bool(recipe.maximum_neighbors)
+        if specialized:
+            actions, timing = schedule_parent_plantings(snapshot, recipe, desired, mutation_tiles, actions)
         if actions:
             removals = sum(action.kind == "harvest" for action in actions)
             plantings = sum(action.kind == "plant" for action in actions)
+            planting = "plantar" if specialized else "plantar imediatamente"
             return actions, (
                 f"Reconciliar o {description}: remover {removals} "
-                f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar "
-                f"{len(mutation_tiles)} espaços para a mutação. {timing}"
-            )
+                f"planta(s) divergente(s), {planting} {plantings} pai(s) e manter "
+                f"{len(mutation_tiles)} espaços livres de propósito para receber a mutação. {timing}"
+            ).strip()
 
         ready_tiles = tuple(
             position for position in mutation_tiles
@@ -805,7 +811,8 @@ class Fazendeira:
             return self._growth_actions(snapshot), (
                 f"{description.capitalize()}: aguardando oito pais maduros e centro livre. {ring_status}"
                 if recipe.key == "queenbeetLump" else
-                timing or f"{description.capitalize()} completo; aguardando a maturidade dos pais."
+                timing or (f"{description.capitalize()} completo; aguardando a maturidade dos pais. "
+                           "Os espaços de mutação permanecem livres de propósito.")
             )
         woodchips = next(
             (soil for soil in snapshot.soils if soil.key == "woodchips" and soil.available), None

@@ -1,5 +1,9 @@
 """Drops, proteção do canteiro e parada dos objetivos finitos."""
 import copy
+import json
+from pathlib import Path
+import shutil
+import subprocess
 import os
 import unittest
 from dataclasses import replace
@@ -73,7 +77,11 @@ class GardenUpgradesTests(unittest.TestCase):
         plants=(GardenPlant(0,0,0,'greenRot','Green rot',30,65,False),
                 GardenPlant(1,0,0,'greenRot','Green rot',70,65,True))
         plan=self.plan(current(plants=plants))
-        self.assertEqual([(a.kind,a.x,a.y,a.require_mature) for a in plan.actions],[('harvest',1,0,True)])
+        self.assertEqual([(a.kind,a.x,a.y,a.require_mature) for a in plan.actions if a.kind=='harvest'],
+                         [('harvest',1,0,True)])
+        self.assertFalse(any((a.x,a.y)==(0,0) for a in plan.actions))
+        self.assertEqual(sum(a.kind=='plant' for a in plan.actions),35)
+        self.assertTrue(any(a.kind=='plant' and (a.x,a.y)==(1,0) for a in plan.actions))
 
     def test_incidental_bakeberry_does_not_skip_missing_wheat_slims(self):
         plants=(GardenPlant(0,0,8,'bakeberry','Bakeberry',10,47.5,False),)
@@ -128,12 +136,27 @@ class GardenUpgradesTests(unittest.TestCase):
         self.assertEqual(len(bridge.mutable_calls),1)
         self.assertIn('confirmação',result.plan.explanation)
 
-    def test_without_drop_all_mature_plants_are_tried_and_retry_is_needed(self):
+    def test_sem_drop_colhe_e_replanta_no_mesmo_ciclo(self):
         plants=tuple(GardenPlant(x,0,0,'greenRot','Green rot',70,65,True) for x in range(3))
         bridge=DropBridge(current(plants=plants),drop=False)
         result=Fazendeira(bridge).run_cycle(dry_run=False,automation_enabled=True,strategy='garden_upgrades')
         self.assertFalse(result.plan.completed)
-        self.assertEqual(len(bridge.mutable_calls),3)
+        self.assertEqual([call[0] for call in bridge.mutable_calls[:3]],["harvest"]*3)
+        self.assertEqual([call[0] for call in bridge.mutable_calls[3:]],["plant"]*36)
+
+    def test_pausa_durante_colheita_impede_replantio(self):
+        plantas=(GardenPlant(0,0,0,"greenRot","Green rot",70,65,True),)
+        bridge=DropBridge(current(plants=plantas),drop=False)
+        parada=[False]
+        colher=bridge.harvest_garden_tile
+        def colher_e_pausar(x,y,**opcoes):
+            resultado=colher(x,y,**opcoes)
+            parada[0]=True
+            return resultado
+        bridge.harvest_garden_tile=colher_e_pausar
+        Fazendeira(bridge).run_cycle(dry_run=False,automation_enabled=True,strategy="garden_upgrades",
+                                    should_stop=lambda:parada[0])
+        self.assertEqual([chamada[0] for chamada in bridge.mutable_calls],["harvest"])
 
     def test_metadata_parser_rejects_missing_or_ambiguous_upgrade_status(self):
         payload=[dict(name=name,available=True,unlocked=False,bought=False) for name in GARDEN_DROPS]
@@ -184,6 +207,48 @@ class GardenUpgradesTests(unittest.TestCase):
         value=replace(value,green_aching_thumb_won=True)
         self.assertTrue(Fazendeira(FakeGardenBridge(value)).build_plan(value,strategy='green_aching_thumb').completed)
         self.assertFalse(Fazendeira(FakeGardenBridge(value)).build_plan(value,strategy='golden_cookies').completed)
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js necessário para o teste isolado de replantio")
+class ReplantioUpgradesRuntimeTests(unittest.TestCase):
+    def executar(self, saldo, *, nova_planta=False):
+        planta=GardenPlant(0,0,0,"bakerWheat","Baker's wheat",60,50,True)
+        atual=replace(current(pending=("Wheat slims",),plants=(planta,)),unlocked_tiles=((0,0),(1,0)))
+        plano=Fazendeira(FakeGardenBridge(atual)).build_plan(atual,strategy="garden_upgrades")
+        class Captura(CookieClickerBridge):
+            def __init__(self):pass
+            def execute_js(self,codigo):self.codigo=codigo;return []
+        bridge=Captura()
+        bridge.harvest_garden_tile(0,0,expected_key="bakerWheat")
+        colheita=bridge.codigo
+        bridge.execute_garden_layout(tuple(a for a in plano.actions if a.kind=="plant"))
+        lote=bridge.codigo
+        modelo=Path(__file__).with_name("fixtures").joinpath("garden_budget_runtime.js").read_text(encoding="utf-8")
+        modelo=modelo.replace("OPTIONS",json.dumps({"cookies":saldo,"spawn":nova_planta}))
+        fonte=modelo+"\nM.plot[0][0][1]=60;M.nextStep=1234;const colheita="+colheita+";const lote="+lote
+        fonte+=";console.log(JSON.stringify({colheita,lote,events,cookies:Game.cookies,plot:M.plot,tick:M.nextStep}));"
+        resultado=subprocess.run([shutil.which("node"),"-e",fonte],capture_output=True,text=True,check=True)
+        return json.loads(resultado.stdout)
+
+    def test_saldo_insuficiente_colhe_madura_sem_plantar_lote_parcial(self):
+        dados=self.executar(150)
+        self.assertEqual(dados["events"],[["harvest",0,0]])
+        self.assertTrue(dados["lote"][0]["waiting"])
+        self.assertEqual(dados["lote"][0]["requiredCookies"],200)
+        self.assertEqual(dados["cookies"],150)
+
+    def test_saldo_suficiente_replanta_todas_as_casas_sem_avancar_tick(self):
+        dados=self.executar(200)
+        self.assertEqual(dados["events"],[["harvest",0,0],["plant","bakerWheat",0,0],["plant","bakerWheat",1,0]])
+        self.assertTrue(all(acao["ok"] for acao in dados["lote"]))
+        self.assertEqual(dados["cookies"],0)
+        self.assertEqual(dados["tick"],1234)
+
+    def test_planta_inesperada_apos_colheita_cancela_replantio_sem_limpeza_extra(self):
+        dados=self.executar(200,nova_planta=True)
+        self.assertEqual(dados["events"],[["harvest",0,0]])
+        self.assertFalse(dados["lote"][0]["ok"])
+        self.assertEqual(dados["plot"][0][0],[2,0])
 
 
 class GardenCompletionUiTests(unittest.TestCase):
