@@ -15,6 +15,8 @@ from app.config.settings import app_config
 from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.bridge.visual_sync import GAME_VISUAL_SYNC
 from app.bridge.krumblor_scripts import KRUMBLOR_PET_SCRIPT
+from app.bridge.season_scripts import AUTO_SEASON_SCRIPT
+from app.core.seasons import SEASONS
 from app.bridge.wrinkler_scripts import WRINKLER_SCRIPT
 from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
 from app.core.garden_catalog import GARDEN_CATALOG
@@ -87,6 +89,15 @@ class CookieClickerBridge:
         self.managed_connection = False
         # pychrome não garante acesso concorrente seguro ao mesmo websocket.
         self._runtime_lock = threading.RLock()
+
+    def maintain_season(self, season: str) -> Dict[str, Any]:
+        """Ativa a temporada escolhida apenas quando ela não está ativa."""
+        if season not in SEASONS:
+            return {"reason": "invalid", "message": "Escolha uma temporada válida.", "retryAfterMs": 60000}
+        result = self._execute_game_action(AUTO_SEASON_SCRIPT.replace("__SEASON__", json.dumps(season)))
+        if not isinstance(result, dict) or not isinstance(result.get("reason"), str):
+            return {"reason": "unavailable", "message": "Não foi possível consultar a temporada.", "retryAfterMs": 60000}
+        return result
 
     def collect_krumblor_upgrade(self) -> Dict[str, Any]:
         """Um carinho, somente se faltar o drop atual; nunca compra upgrades."""

@@ -2,6 +2,7 @@
 Configurações centralizadas do Cookie Clicker Bot.
 """
 from app.core.garden_strategies import GARDEN_STRATEGIES
+from app.core.seasons import SEASONS
 from dataclasses import dataclass, field
 import json
 from typing import Optional
@@ -61,6 +62,8 @@ class AutomationConfig:
     enable_wrinkler_popper: bool = False
     wrinkler_free_slots: int = 1
     enable_krumblor_upgrades: bool = False
+    enable_auto_season: bool = False
+    auto_season: str = "christmas"
     krumblor_pet_interval_seconds: float = 0.1
     enable_grimoire_spell_spam: bool = False
     grimoire_spell_id: int = 0
@@ -220,6 +223,9 @@ def load_automation_settings() -> None:
     automation_config.wrinkler_free_slots = min(12, max(1, settings.value(
         "wrinkler_free_slots", 1, type=int,
     )))
+    automation_config.enable_auto_season = settings.value("enable_auto_season", False, type=bool)
+    season = settings.value("auto_season", "christmas", type=str)
+    automation_config.auto_season = season if season in SEASONS else "christmas"
     automation_config.enable_krumblor_upgrades = settings.value(
         "enable_krumblor_upgrades", False, type=bool,
     )
@@ -421,6 +427,8 @@ def save_automation_settings() -> None:
     settings.setValue("enable_wrinkler_popper", automation_config.enable_wrinkler_popper)
     settings.setValue("wrinkler_free_slots", automation_config.wrinkler_free_slots)
     settings.setValue("enable_krumblor_upgrades", automation_config.enable_krumblor_upgrades)
+    settings.setValue("enable_auto_season", automation_config.enable_auto_season)
+    settings.setValue("auto_season", automation_config.auto_season)
     settings.setValue("krumblor_pet_interval_seconds", automation_config.krumblor_pet_interval_seconds)
     settings.setValue("enable_grimoire_spell_spam", automation_config.enable_grimoire_spell_spam)
     settings.setValue("grimoire_spell_id", automation_config.grimoire_spell_id)

@@ -19,6 +19,7 @@ from app.core.combo import ComboAutomation
 from app.core.simple_farm import SimpleFarmAutomation
 from app.core.fazendeira import Fazendeira
 from app.core.garden_strategies import GARDEN_STRATEGIES
+from app.core.seasons import SEASONS
 from app.core.stock_market import StockMarketAutomation
 from app.core.stock_policy import asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
@@ -471,6 +472,11 @@ class MainWindow(QMainWindow):
         self.krumblor_checkbox.setChecked(automation_config.enable_krumblor_upgrades)
         self.krumblor_checkbox.stateChanged.connect(self.toggle_krumblor_upgrades)
         grid.addWidget(self.krumblor_checkbox, 3, 0, 1, 2)
+        self.auto_season_checkbox = QCheckBox("Manter temporada ativa")
+        self.auto_season_checkbox.setToolTip("Ativa a temporada escolhida nas Configurações e renova quando terminar. Compra o biscoito da temporada com cookies; o preço aumenta a cada ativação. Requer Season switcher.")
+        self.auto_season_checkbox.setChecked(automation_config.enable_auto_season)
+        self.auto_season_checkbox.stateChanged.connect(self.toggle_auto_season)
+        grid.addWidget(self.auto_season_checkbox, 4, 0, 1, 2)
         grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
         grid.setHorizontalSpacing(36); grid.setVerticalSpacing(3)
         self.automation_gate_label = QLabel("Bot pausado. Ligue no topo para liberar as automações.")
@@ -1310,6 +1316,7 @@ class MainWindow(QMainWindow):
                 self.clicker_button, self.mouse_clicker_button, self.golden_checkbox, self.fortune_checkbox,
                 self.reindeer_checkbox, self.wrinkler_checkbox,
                 self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox, self.krumblor_checkbox,
+                self.auto_season_checkbox, self.auto_season_combo,
                 self.garden_strategy_combo,
                 self.auto_ascension_toggle,
             ):
@@ -1342,7 +1349,8 @@ class MainWindow(QMainWindow):
                 return False
         widgets = (self.clicker_button, self.mouse_clicker_button, self.backups_button, self.golden_checkbox, self.fortune_checkbox,
                    self.reindeer_checkbox, self.wrinkler_checkbox, self.grimoire_spell_spam_checkbox,
-                   self.sugar_lump_checkbox, self.krumblor_checkbox, self.stock_toggle, self.garden_toggle,
+                   self.sugar_lump_checkbox, self.krumblor_checkbox, self.auto_season_checkbox,
+                   self.auto_season_combo, self.stock_toggle, self.garden_toggle,
                    self.combo_toggle, self.combo_preview_button, self.simple_farm_toggle,
                    self.simple_farm_preview_button, self.auto_ascension_toggle, self.auto_ascension_preview_button,
                    *self._preserve_checkboxes, self.save_scum_tab.toggle, self.save_scum_tab.preview)
@@ -1615,7 +1623,7 @@ class MainWindow(QMainWindow):
         self.wrinkler_free_slots_input.valueChanged.connect(self.update_wrinkler_free_slots)
         self.wrinkler_free_slots_input.setEnabled(automation_config.enable_wrinkler_popper)
         automation_form.addRow("Vagas mínimas para Shiny", self.wrinkler_free_slots_input)
-        self.grimoire_spell_combo = QComboBox(); self.grimoire_spell_combo.setMinimumWidth(230)
+        self.grimoire_spell_combo = ScrollSafeComboBox()
         self._load_grimoire_spells()
         self.grimoire_spell_combo.currentIndexChanged.connect(self.update_grimoire_spell)
         self.grimoire_spell_combo.setEnabled(automation_config.enable_grimoire_spell_spam)
@@ -1630,6 +1638,25 @@ class MainWindow(QMainWindow):
         self.krumblor_interval_input.setToolTip("Tempo mínimo entre carinhos. Um valor menor tenta liberar o upgrade mais rápido. Após liberá-lo, aguarda a próxima faixa de 15 minutos.")
         self.krumblor_interval_input.valueChanged.connect(self.update_krumblor_interval)
         automation_form.addRow("Intervalo entre carinhos no Krumblor", self.krumblor_interval_input)
+        self.auto_season_combo = ScrollSafeComboBox()
+        for key, label in SEASONS.items():
+            self.auto_season_combo.addItem(label, key)
+        self.auto_season_combo.setCurrentIndex(self.auto_season_combo.findData(automation_config.auto_season))
+        self.auto_season_combo.setToolTip("Temporada mantida pela opção Manter temporada ativa. Ao trocar a seleção com a automação ligada, a nova temporada será ativada na próxima verificação. Sem saldo, aguarda sem comprar.")
+        self.auto_season_combo.currentIndexChanged.connect(self.update_auto_season)
+        automation_form.addRow("Temporada automática", self.auto_season_combo)
+        for combo in (self.grimoire_spell_combo, self.auto_season_combo):
+            combo.setFixedWidth(260)
+            combo.setMinimumHeight(30)
+            combo.setStyleSheet(
+                "QComboBox { background: #171b21; border: 1px solid #37404e; "
+                "border-radius: 6px; padding: 4px 26px 4px 8px; }"
+                "QComboBox:hover, QComboBox:focus { border-color: #5799ef; }"
+                "QComboBox:disabled { color: #778093; background: #20242b; }"
+                "QComboBox::drop-down { width: 24px; border: none; }"
+                "QComboBox QAbstractItemView { background: #20252e; "
+                "selection-background-color: #2d5f9f; border: 1px solid #37404e; }"
+            )
         layout.addWidget(automation_group)
 
         sugar_group = QGroupBox("Sugar Lumps"); sugar_form = QFormLayout(sugar_group)
@@ -2490,6 +2517,21 @@ class MainWindow(QMainWindow):
         save_automation_settings()
         if self.runner:
             self.runner.reset_krumblor_schedule()
+
+    def toggle_auto_season(self, state):
+        self._save("enable_auto_season", state)
+        if self.runner:
+            self.runner.reset_season_schedule()
+        logger.info("Temporadas: renovação automática %s.", "ligada" if state else "desligada")
+
+    def update_auto_season(self, index):
+        season = self.auto_season_combo.itemData(index)
+        if season not in SEASONS:
+            return
+        automation_config.auto_season = season
+        save_automation_settings()
+        if self.runner:
+            self.runner.reset_season_schedule()
 
     def toggle_krumblor_upgrades(self, state):
         self._save("enable_krumblor_upgrades", state)

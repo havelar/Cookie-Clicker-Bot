@@ -9,6 +9,7 @@ from app.automation.input import InputHandler
 from app.bridge.js_bridge import CookieClickerBridge
 from app.config.settings import app_config, automation_config
 from app.core.window_finder import find_cookie_window
+from app.core.seasons import SEASONS
 from app.utils.logger import logger, ActivitySummary
 
 
@@ -85,6 +86,8 @@ class AutomationRunner:
         self._cash_request_lock = threading.RLock()
         self._next_krumblor_check = 0.0
         self._last_krumblor_state = None
+        self._next_season_check = 0.0
+        self._last_season_state = None
         self._last_grimoire_attempt_at = 0.0
         self._last_grimoire_failure: Optional[tuple] = None
 
@@ -111,6 +114,7 @@ class AutomationRunner:
             self.ensure_clicker_stopped()
         else:
             self.paused.clear()
+            self.reset_season_schedule()
             self.reset_krumblor_schedule()
             self._next_wrinkler_check = 0.0
 
@@ -251,6 +255,7 @@ class AutomationRunner:
                 return False
             self._exclusive_owner = None
         if owner in {"save_scum", "backup_restore"}:
+            self.reset_season_schedule()
             self.reset_krumblor_schedule()
             self._next_wrinkler_check = 0.0
             with self._cash_request_lock:
@@ -322,6 +327,37 @@ class AutomationRunner:
 
         self._run_sugar_lump_cycle()
         self._run_krumblor_cycle()
+        self._run_season_cycle()
+
+    def reset_season_schedule(self):
+        """Reavalia a temporada ao ligar ou alterar a preferência."""
+        self._next_season_check = 0.0
+        self._last_season_state = None
+
+    def _run_season_cycle(self, now=None):
+        with self._exclusive_lock:
+            if (self.paused.is_set() or self.stop_event.is_set()
+                    or self._exclusive_owner is not None
+                    or not automation_config.enable_auto_season):
+                return
+            current = time.monotonic() if now is None else now
+            if current < self._next_season_check:
+                return
+            self._next_season_check = current + 60
+            season = automation_config.auto_season
+            result = self.bridge.maintain_season(season)
+            if not isinstance(result, dict):
+                return
+            retry = result.get("retryAfterMs", 60000)
+            if not isinstance(retry, (int, float)) or not 1000 <= retry <= 60000:
+                retry = 60000
+            completed = time.monotonic() if now is None else now
+            self._next_season_check = completed + retry / 1000
+            state = (season, result.get("reason"))
+            if state != self._last_season_state and state[1] != "active":
+                logger.info("Temporadas: %s — %s", SEASONS.get(season, season),
+                            result.get("message", "Aguardando."))
+            self._last_season_state = state
 
     def request_wrinkler_cash(self, source, target=0, seed=None, ttl=120):
         """Pedido temporário de uma ação real bloqueada por falta de cookies."""

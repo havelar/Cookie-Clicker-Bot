@@ -261,6 +261,12 @@ O Garden agrupa plantios e colheitas comuns por planta; descobertas de sementes 
 
 O histórico não força a rolagem para baixo durante a leitura. Mensagens são exibidas como texto literal e o arquivo usa UTF-8. Os detalhes por ação continuam disponíveis com nível DEBUG.
 
+## Manter temporada ativa
+
+Marque **Manter temporada ativa** em **Automações** e escolha a temporada em **Configurações → Automações → Temporada automática**. As opções são Natal, Halloween, Dia dos Namorados, Dia dos Negócios (Business Day) e Páscoa. A seleção e a checkbox ficam salvas entre execuções; a execução depende de **Ligar bot**.
+
+Se a temporada escolhida já estiver ativa, não compra nada. Quando ela termina, compra o biscoito para ativá-la novamente. Trocar a seleção com a automação ligada ativa a nova temporada na próxima verificação. Requer **Season switcher** e saldo para a compra; sem saldo, aguarda. O preço segue as regras do jogo e aumenta a cada ativação. Funciona junto com Garden, Banco e Simple Farm e aguarda durante Combo, Auto Ascensão, Save Scum e restauração de backups. Os logs registram ativações e mudanças de estado, sem repetir a mesma espera.
+
 ## Coletar Krumblor Upgrades
 
 A checkbox **Coletar Krumblor Upgrades**, na aba Automações, é persistida. Requer **Pet the dragon** comprado e Krumblor no nível 8 ou superior. Identifica o drop da faixa atual de 15 minutos pelo horário do jogo e pela seed do save; usa uma cópia isolada do sorteio nativo para não alterar o RNG global durante a previsão.
