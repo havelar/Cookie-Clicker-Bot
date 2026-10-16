@@ -665,22 +665,22 @@ class GardenUiTests(unittest.TestCase):
 
     def test_tab_exposes_simulation_progress_and_explicit_real_toggle(self):
         from app.ui.main_window import MainWindow
-        previous_thumbcorn = automation_config.enable_green_aching_thumb
-        automation_config.enable_green_aching_thumb = False
+        previous_strategy = automation_config.garden_strategy
+        automation_config.garden_strategy = "plants"
         try:
             window = MainWindow()
             tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
             self.assertIn("Garden", tabs)
             self.assertEqual(window.garden_simulate_button.text(), "Ver próximas ações")
             self.assertEqual(window.garden_toggle.button.text(), "Ligar")
-            self.assertEqual(window.garden_thumbcorn_checkbox.text(), "Green, aching thumb")
-            self.assertIn("Prioriza Thumbcorn", window.garden_thumbcorn_checkbox.toolTip())
+            self.assertEqual(window.garden_strategy_combo.currentText(), "Todas as Plantas")
+            self.assertIn("Desbloqueia todas as sementes", window.garden_strategy_combo.toolTip())
             self.assertFalse(window.garden_toggle.running)
             self.assertGreaterEqual(window.garden_interval_input.minimum(), 30)
             self.assertTrue(window.garden_refresh_timer.isSingleShot())
             window.close()
         finally:
-            automation_config.enable_green_aching_thumb = previous_thumbcorn
+            automation_config.garden_strategy = previous_strategy
 
     def test_valid_result_displays_one_explainable_goal(self):
         from app.ui.main_window import MainWindow

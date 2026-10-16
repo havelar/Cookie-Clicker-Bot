@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 from app.core.garden_timing import schedule_parent_plantings
+from app.core.garden_strategies import GARDEN_DROPS, GARDEN_STRATEGIES
 from app.core.garden_layouts import full_plot_layout
 from app.core.garden_golden import golden_layout, golden_soil, GOLDEN, NURSE
 from app.core.garden_catalog import GARDEN_CATALOG, TARGET_SEED_KEYS, GardenRecipe
@@ -155,7 +156,7 @@ class Fazendeira:
 
     def build_plan(
         self, snapshot: GardenSnapshot, *, green_aching_thumb_enabled: bool = False,
-        golden_cookies_enabled: bool = False,
+        golden_cookies_enabled: bool = False, strategy: Optional[str] = None,
     ) -> GardenPlan:
         """Gera o plano completo antes de qualquer chamada mutável."""
         if snapshot.status.available:
@@ -174,6 +175,13 @@ class Fazendeira:
                     explanation="Catálogo incompatível com esta versão do jogo; " + "; ".join(details) + ".",
                     waiting=True,
                 )
+        if strategy is not None:
+            if strategy not in GARDEN_STRATEGIES:
+                return GardenPlan(None,explanation="Selecione uma estratégia válida para o Garden.",waiting=True)
+            green_aching_thumb_enabled = strategy == 'green_aching_thumb'
+            golden_cookies_enabled = strategy == 'golden_cookies'
+        if strategy == 'garden_upgrades' and snapshot.status.available:
+            return self._build_garden_upgrades_plan(snapshot)
         if golden_cookies_enabled and snapshot.status.available:
             return self._build_golden_cookies_plan(snapshot)
         if green_aching_thumb_enabled:
@@ -198,7 +206,8 @@ class Fazendeira:
                 if snapshot.status.available and not snapshot.missing_seed_keys
                 else snapshot.status.message
             )
-            return GardenPlan(None, explanation=explanation, waiting=True)
+            return GardenPlan(None, explanation=explanation, waiting=True,
+                              completed=snapshot.status.available and not snapshot.missing_seed_keys)
 
         recipe = GARDEN_CATALOG[goal.target_key]
         pending_discoveries = self._pending_discoveries(snapshot)
@@ -308,7 +317,7 @@ class Fazendeira:
         dry_run: bool = True,
         automation_enabled: bool = False,
         green_aching_thumb_enabled: bool = False,
-        golden_cookies_enabled: bool = False,
+        golden_cookies_enabled: bool = False, strategy: Optional[str] = None,
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> GardenCycleResult:
         """Simula ou executa um ciclo; sem autorização, jamais muta o jogo."""
@@ -316,7 +325,7 @@ class Fazendeira:
         snapshot = self.capture_snapshot()
         plan = self.build_plan(
             snapshot, green_aching_thumb_enabled=green_aching_thumb_enabled,
-            golden_cookies_enabled=golden_cookies_enabled,
+            golden_cookies_enabled=golden_cookies_enabled, strategy=strategy,
         )
         if dry_run or not automation_enabled:
             costs = {seed.key: seed.cost for seed in snapshot.seeds}
@@ -340,6 +349,7 @@ class Fazendeira:
 
         results = []
         layout = []
+        harvested_keys = set()
         for action in plan.actions:
             if should_stop():
                 break
@@ -347,7 +357,39 @@ class Fazendeira:
                 layout.append(action)
             else:
                 # Descobertas e colheitas maduras não dependem de pagar o próximo layout.
-                results.append(self._execute_action(action))
+                result = self._execute_action(action)
+                results.append(result)
+                if plan.mode == 'garden_upgrades' and action.kind == 'harvest' and result.success:
+                    statuses = self.bridge.get_garden_upgrades()
+                    if not statuses:
+                        layout.clear()
+                        plan = replace(plan,actions=(),waiting=True,
+                                       explanation="Aguardando confirmação dos upgrades após a colheita.")
+                        break
+                    before = {u.name for u in snapshot.upgrades if u.obtained}
+                    if any(u.obtained and u.name not in before for u in statuses):
+                        # O drop encerra a colheita desse objetivo imediatamente.
+                        # Não pagar nem limpar o layout antigo depois do desbloqueio.
+                        layout.clear()
+                        snapshot = self.capture_snapshot()
+                        plan = self.build_plan(snapshot,strategy='garden_upgrades')
+                        break
+                if action.kind == 'harvest' and result.success:
+                    harvested_keys.add(action.seed_key)
+                    finite_strategy = None
+                    if plan.mode is None and snapshot.missing_seed_keys and snapshot.missing_seed_keys <= harvested_keys:
+                        finite_strategy = 'plants'
+                    elif plan.mode == 'green_aching_thumb' and snapshot.green_aching_thumb_progress is not None:
+                        count = sum(r.success and r.action == 'harvest' for r in results)
+                        if snapshot.green_aching_thumb_progress + count >= 1000:
+                            finite_strategy = 'green_aching_thumb'
+                    if finite_strategy:
+                        refreshed = self.capture_snapshot()
+                        confirmed = self.build_plan(refreshed,strategy=finite_strategy)
+                        if confirmed.completed:
+                            snapshot,plan = refreshed,confirmed
+                            layout.clear()
+                            break
         if layout and not should_stop():
             results.extend(self.bridge.execute_garden_layout(tuple(layout)))
         budget_wait = any(result.waiting and result.reason == "insufficient_funds" for result in results)
@@ -391,6 +433,51 @@ class Fazendeira:
             plan = replace(plan, waiting=True, explanation=plan.explanation + " " + detail +
                            " Nova avaliação no próximo tick do Garden.")
         return GardenCycleResult(snapshot, plan, False, tuple(results))
+
+    def _build_garden_upgrades_plan(self, snapshot: GardenSnapshot) -> GardenPlan:
+        goal = GardenGoal('garden_upgrades','Upgrades do Garden',(),(),
+                          'Liberar os sete upgrades obtidos por colheitas maduras.',(),
+                          'Todos comprados ou disponíveis na loja.','garden_upgrades')
+        if ({u.name for u in snapshot.upgrades} != set(GARDEN_DROPS)
+                or len(snapshot.upgrades)!=len(GARDEN_DROPS)):
+            return GardenPlan(goal,explanation="Aguardando uma leitura completa dos upgrades do Garden.",
+                              waiting=True,mode='garden_upgrades')
+        pending = [u for u in snapshot.upgrades if not u.obtained]
+        progress = f"Upgrades liberados: {len(GARDEN_DROPS)-len(pending)}/{len(GARDEN_DROPS)}. "
+        if not pending:
+            return GardenPlan(goal,explanation=progress+"Todos já foram comprados ou estão disponíveis na loja.",
+                              completed=True,waiting=True,mode='garden_upgrades')
+        available = [u for u in pending if u.plant_key in snapshot.unlocked_seed_keys]
+        if not available:
+            goal = replace(goal,pending_prerequisites=tuple(GARDEN_CATALOG[u.plant_key].name for u in pending))
+            return GardenPlan(goal,explanation=progress+"Desbloqueie as sementes necessárias antes de cultivar os upgrades.",
+                              waiting=True,mode='garden_upgrades')
+        # Uma mutação incidental não troca o objetivo antes do drop confirmado.
+        target = min(available,key=lambda u:list(GARDEN_DROPS).index(u.name))
+        plant_name = GARDEN_CATALOG[target.plant_key].name
+        goal = replace(goal,target_key=target.plant_key,target_name=target.name,
+                       parent_keys=(target.plant_key,),parent_names=(plant_name,))
+        pending_keys = {u.plant_key for u in available}
+        mature = [p for p in self._sorted_plants(snapshot) if p.key in pending_keys and p.mature]
+        if mature:
+            actions = tuple(GardenAction('harvest',
+                'Colher madura para tentar liberar o upgrade que falta.',x=p.x,y=p.y,seed_key=p.key)
+                for p in mature)
+        else:
+            desired = {pos:target.plant_key for pos in snapshot.unlocked_tiles}
+            # Aproveitar também plantas em crescimento de outros drops pendentes.
+            desired.update(((p.x,p.y),p.key) for p in snapshot.plants if p.key in pending_keys)
+            actions = self._reconcile_layout(snapshot,desired)
+        actions = self._growth_actions(snapshot) + actions
+        growing_other = Counter(p.key for p in snapshot.plants
+                                if p.key in pending_keys and p.key != target.plant_key)
+        reuse = (" Aproveitar as plantas já presentes até a colheita: " +
+                 ", ".join(f"{count}× {GARDEN_CATALOG[key].name}" for key,count in growing_other.items()) + ".") if growing_other else ""
+        explanation = (progress+f"Pendentes: {', '.join(u.name for u in pending)}. "
+                       + f"Cultivar {plant_name} e colher madura até liberar {target.name}. "
+                       "Upgrades já disponíveis na loja não precisam ser cultivados novamente. "
+                       "Não compra upgrades nem usa Sugar Lumps." + reuse)
+        return GardenPlan(goal,tuple(actions),explanation,waiting=not actions,mode='garden_upgrades')
 
     def _build_golden_cookies_plan(self, snapshot: GardenSnapshot) -> GardenPlan:
         missing = tuple(key for key in (GOLDEN,NURSE) if key not in snapshot.unlocked_seed_keys)
@@ -451,8 +538,7 @@ class Fazendeira:
             return GardenPlan(
                 goal,
                 explanation=(
-                    "Conquista Green, aching thumb obtida. Encerrar o modo "
-                    "Thumbcorn e retomar o planejamento normal da coleção."
+                    "Conquista Green, aching thumb obtida. Objetivo concluído; desligar a automação do Garden."
                 ),
                 waiting=True,
                 mode="green_aching_thumb",

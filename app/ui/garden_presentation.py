@@ -66,6 +66,21 @@ def _mutation_ready(snapshot, recipe):
 def current_state(snapshot, plan):
     if not snapshot.status.available:
         return 'Garden indisponível', short_message(snapshot.status.message)
+    if plan.completed:
+        return ('Coleção completa' if plan.goal is None else 'Objetivo concluído'), short_message(plan.explanation)
+    if plan.mode == 'garden_upgrades' and plan.goal:
+        if plan.goal.pending_prerequisites:
+            return 'Esperando sementes necessárias', ', '.join(plan.goal.pending_prerequisites)
+        if not snapshot.upgrades:
+            return 'Consultando upgrades do Garden', 'Aguardar a confirmação dos upgrades comprados e disponíveis na loja.'
+        if any(a.kind=='harvest' and a.require_mature for a in plan.actions):
+            return 'Colhendo plantas maduras', 'Tentar liberar os upgrades pendentes; confirmar cada drop antes de continuar.'
+        if any(a.kind in {'plant','harvest'} for a in plan.actions):
+            return 'Preparando as plantas dos upgrades', f'Cultivar {", ".join(plan.goal.parent_names)}.'
+        pending_keys = {u.plant_key for u in snapshot.upgrades if not u.obtained}
+        growing = Counter(p.key for p in snapshot.plants if p.key in pending_keys)
+        crops = ', '.join(f'{count}× {GARDEN_CATALOG[key].name}' for key,count in growing.items())
+        return 'Esperando a colheita amadurecer', (f'Crescendo: {crops}. ' if crops else '') + f'Próximo upgrade: {plan.goal.target_name}.'
     if plan.mode == 'golden_cookies' and plan.goal:
         if plan.goal.pending_prerequisites:
             return 'Esperando sementes necessárias', ', '.join(plan.goal.pending_prerequisites)

@@ -18,8 +18,10 @@ from app.bridge.krumblor_scripts import KRUMBLOR_PET_SCRIPT
 from app.bridge.wrinkler_scripts import WRINKLER_SCRIPT
 from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
 from app.core.garden_catalog import GARDEN_CATALOG
+from app.core.garden_strategies import GARDEN_DROPS
 from app.models.garden import (
     GardenAction,
+    GardenUpgrade,
     GardenActionResult,
     GardenPlant,
     GardenSeed,
@@ -1673,6 +1675,10 @@ class CookieClickerBridge:
                 nextSoilAt:finiteOrNull(M.nextSoil),
                 gameSeed:typeof Game.seed === 'string' ? Game.seed : null,
                 gameVersion:Game.version === undefined ? null : String(Game.version),
+                gardenUpgrades:__GARDEN_DROPS__.map(name=>{
+                    const u=Game.Upgrades && Game.Upgrades[name];
+                    return {name,available:!!u,unlocked:u?!!u.unlocked:null,bought:u?!!u.bought:null};
+                }),
                 greenAchingThumbWon,
                 greenAchingThumbProgress,
                 greenAchingThumbMessage,
@@ -1698,8 +1704,32 @@ class CookieClickerBridge:
                     available:Number(farm.amount||0)>=Number(soil.req||0)
                 }))
             };
-        })()""")
+        })()""".replace("__GARDEN_DROPS__", json.dumps(list(GARDEN_DROPS))))
         return self._parse_garden_snapshot(payload)
+
+    def get_garden_upgrades(self):
+        """Relê somente os sete drops; não compra nem desbloqueia nada."""
+        payload = self.execute_js("""(() => {
+            if (!globalThis.Game || !Game.Upgrades) return null;
+            return __NAMES__.map(name=>{
+                const u=Game.Upgrades[name];
+                return {name,available:!!u,unlocked:u?!!u.unlocked:null,bought:u?!!u.bought:null};
+            });
+        })()""".replace("__NAMES__", json.dumps(list(GARDEN_DROPS))))
+        return self._parse_garden_upgrades(payload)
+
+    @staticmethod
+    def _parse_garden_upgrades(payload):
+        if not isinstance(payload,list) or len(payload)!=len(GARDEN_DROPS):
+            return ()
+        by_name = {item.get("name"):item for item in payload if isinstance(item,dict)}
+        if set(by_name)!=set(GARDEN_DROPS):
+            return ()
+        if any(item.get("available") is not True or not isinstance(item.get("unlocked"),bool)
+               or not isinstance(item.get("bought"),bool) for item in by_name.values()):
+            return ()
+        return tuple(GardenUpgrade(name,GARDEN_DROPS[name][0],item["unlocked"],item["bought"])
+                     for name,item in by_name.items())
 
     def plant_garden_seed(self, seed_key: str, x: int, y: int) -> GardenActionResult:
         """Planta uma semente desbloqueada somente em um canteiro vazio."""
@@ -2356,6 +2386,7 @@ class CookieClickerBridge:
                 payload.get("greenAchingThumbWon")
                 if isinstance(payload.get("greenAchingThumbWon"), bool) else None
             ),
+            upgrades=self._parse_garden_upgrades(payload.get("gardenUpgrades")),
             green_aching_thumb_progress=self._optional_int(payload.get("greenAchingThumbProgress")),
             green_aching_thumb_message=str(
                 payload.get("greenAchingThumbMessage")

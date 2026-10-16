@@ -125,35 +125,31 @@ class GoldenGardenUiTests(unittest.TestCase):
     def setUp(self):
         previous = copy.deepcopy(automation_config.__dict__)
         self.addCleanup(lambda:automation_config.__dict__.update(previous))
-        automation_config.enable_green_aching_thumb=False
-        automation_config.enable_garden_golden_cookies=False
+        automation_config.garden_strategy="plants"
         for target in ('app.ui.main_window.save_automation_settings','app.ui.main_window.QTimer.singleShot'):
             p=patch(target); p.start(); self.addCleanup(p.stop)
         self.window=MainWindow()
         self.addCleanup(self.window.close)
 
-    def test_checkbox_selects_one_strategy_and_saves_without_starting_automation(self):
+    def test_dropdown_selects_one_persisted_strategy(self):
         window=self.window
-        window.garden_thumbcorn_checkbox.setChecked(True)
-        window.garden_golden_checkbox.setChecked(True)
-        self.assertFalse(window.garden_thumbcorn_checkbox.isChecked())
-        self.assertTrue(automation_config.enable_garden_golden_cookies)
-        self.assertFalse(automation_config.enable_green_aching_thumb)
-        window.garden_thumbcorn_checkbox.setChecked(True)
-        self.assertFalse(window.garden_golden_checkbox.isChecked())
-        self.assertFalse(automation_config.enable_garden_golden_cookies)
-        self.assertTrue(automation_config.enable_green_aching_thumb)
+        self.assertEqual([window.garden_strategy_combo.itemText(i) for i in range(4)],
+                         ['Todas as Plantas','Green Thumb','Golden Clovers','Upgrades do Garden'])
+        for key in ('green_aching_thumb','golden_cookies','garden_upgrades','plants'):
+            window.garden_strategy_combo.setCurrentIndex(window.garden_strategy_combo.findData(key))
+            self.assertEqual(automation_config.garden_strategy,key)
+            self.assertEqual(window.garden_strategy_combo.currentData(),key)
 
     def test_preview_and_timer_pass_selected_strategy_to_worker(self):
         window=self.window
         window.fazendeira=Mock()
-        window.garden_golden_checkbox.setChecked(True)
+        window.garden_strategy_combo.setCurrentIndex(window.garden_strategy_combo.findData('golden_cookies'))
         with patch.object(window,'_run_garden_task') as worker:
             for method in (window.refresh_garden,window.simulate_garden,window._on_garden_timer):
                 method()
                 operation=worker.call_args.args[0]
                 operation()
-                self.assertTrue(window.fazendeira.run_cycle.call_args.kwargs['golden_cookies_enabled'])
+                self.assertEqual(window.fazendeira.run_cycle.call_args.kwargs['strategy'],'golden_cookies')
 
     def test_setting_roundtrip_and_conflicting_modes_have_one_winner(self):
         values={}
@@ -165,13 +161,20 @@ class GoldenGardenUiTests(unittest.TestCase):
             def setValue(self,key,value):values[key]=value
             def value(self,key,default=None,type=None):return values.get(key,default)
         with patch('app.config.settings.QSettings',Settings):
-            for enabled in (True,False):
-                automation_config.enable_garden_golden_cookies=enabled
+            for strategy in ('plants','green_aching_thumb','golden_cookies','garden_upgrades'):
+                automation_config.garden_strategy=strategy
                 save_automation_settings()
-                automation_config.enable_garden_golden_cookies=not enabled
+                automation_config.garden_strategy='invalid'
                 load_automation_settings()
-                self.assertEqual(automation_config.enable_garden_golden_cookies,enabled)
+                self.assertEqual(automation_config.garden_strategy,strategy)
+            values.clear()
             values.update(enable_green_aching_thumb=True,enable_garden_golden_cookies=True)
             load_automation_settings()
-            self.assertFalse(automation_config.enable_green_aching_thumb)
-            self.assertTrue(automation_config.enable_garden_golden_cookies)
+            self.assertEqual(automation_config.garden_strategy,'golden_cookies')
+            values.clear()
+            values.update(enable_green_aching_thumb=True)
+            load_automation_settings()
+            self.assertEqual(automation_config.garden_strategy,'green_aching_thumb')
+            values['garden_strategy']='invalid'
+            load_automation_settings()
+            self.assertEqual(automation_config.garden_strategy,'plants')

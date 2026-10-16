@@ -62,6 +62,18 @@ class GardenPlant:
 
 
 @dataclass(frozen=True)
+class GardenUpgrade:
+    name: str
+    plant_key: str
+    unlocked: bool
+    bought: bool
+
+    @property
+    def obtained(self) -> bool:
+        return self.unlocked or self.bought
+
+
+@dataclass(frozen=True)
 class GardenSnapshot:
     """Leitura consistente e imutável do estado relevante do Garden."""
 
@@ -91,6 +103,8 @@ class GardenSnapshot:
     can_refill_lump: Optional[bool] = None
     lump_refill_seconds: Optional[float] = None
     growth_multipliers: Tuple[Tuple[int, int, float], ...] = field(default_factory=tuple)
+
+    upgrades: Tuple[GardenUpgrade, ...] = field(default_factory=tuple)
 
     @property
     def unlocked_seed_keys(self) -> frozenset[str]:

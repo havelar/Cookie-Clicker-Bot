@@ -18,6 +18,7 @@ from app.core.auto_ascensao import AutoAscensao, ConfiguracaoAutoAscensao
 from app.core.combo import ComboAutomation
 from app.core.simple_farm import SimpleFarmAutomation
 from app.core.fazendeira import Fazendeira
+from app.core.garden_strategies import GARDEN_STRATEGIES
 from app.core.stock_market import StockMarketAutomation
 from app.core.stock_policy import asset_limits
 from app.models.stock_market import StockMarketAutomationResult, StockMarketSnapshot, StockTradeResult
@@ -585,22 +586,22 @@ class MainWindow(QMainWindow):
         self.garden_toggle.set_running(automation_config.enable_garden_automation)
         self.garden_toggle.setToolTip("Ligar inicia o Garden. Desligar encerra após a ação em andamento. A prévia não executa ações.")
         self.garden_toggle.requested.connect(self._toggle_garden_automation)
-        self.garden_thumbcorn_checkbox = QCheckBox("Green, aching thumb")
-        self.garden_thumbcorn_checkbox.setToolTip(
-            "Prioriza Thumbcorn até obter a conquista de colher 1.000 plantas maduras. "
-            "Use Ligar para executar esta estratégia; desligada, ela aparece apenas na prévia."
+        self.garden_strategy_combo = ScrollSafeComboBox()
+        self.garden_strategy_combo.setMinimumWidth(240)
+        self.garden_strategy_combo.setMinimumHeight(34)
+        self.garden_strategy_combo.setStyleSheet(
+            "QComboBox { background: #202731; color: #e3e8ef; border: 1px solid #394759; "
+            "border-radius: 5px; padding: 5px 10px; } "
+            "QComboBox:disabled { color: #8792a2; } "
+            "QComboBox QAbstractItemView { background: #202731; color: #e3e8ef; "
+            "selection-background-color: #327bdb; }"
         )
-        self.garden_thumbcorn_checkbox.setChecked(automation_config.enable_green_aching_thumb)
-        self.garden_thumbcorn_checkbox.stateChanged.connect(self._toggle_green_aching_thumb)
-        self.garden_golden_checkbox = QCheckBox("Mais Golden Cookies")
-        self.garden_golden_checkbox.setToolTip(
-            "Alterna Golden Clover e Nursetulip para aumentar a frequência de Golden Cookies. "
-            "Substitui as plantas conhecidas do canteiro e repõe as que morrerem. "
-            "Usa Fertilizer para crescer e Clay quando o conjunto oferece um bom bônus. "
-            "Nursetulip reduz o CpS. Não usa Sugar Lumps. Alternativo ao modo Thumb."
-        )
-        self.garden_golden_checkbox.setChecked(automation_config.enable_garden_golden_cookies)
-        self.garden_golden_checkbox.stateChanged.connect(self._toggle_garden_golden_cookies)
+        for key,label in GARDEN_STRATEGIES.items():
+            self.garden_strategy_combo.addItem(label,key)
+        index = self.garden_strategy_combo.findData(automation_config.garden_strategy)
+        self.garden_strategy_combo.setCurrentIndex(max(0,index))
+        self._update_garden_strategy_tooltip()
+        self.garden_strategy_combo.currentIndexChanged.connect(self._change_garden_strategy)
         toolbar.addWidget(self.garden_status_label)
         toolbar.addWidget(self.garden_progress_label)
         toolbar.addStretch()
@@ -612,8 +613,8 @@ class MainWindow(QMainWindow):
         actions.addStretch()
         layout.addLayout(actions)
         modes = QHBoxLayout()
-        modes.addWidget(self.garden_thumbcorn_checkbox)
-        modes.addWidget(self.garden_golden_checkbox)
+        modes.addWidget(QLabel("Estratégia:"))
+        modes.addWidget(self.garden_strategy_combo)
         modes.addStretch()
         layout.addLayout(modes)
 
@@ -1309,7 +1310,7 @@ class MainWindow(QMainWindow):
                 self.clicker_button, self.mouse_clicker_button, self.golden_checkbox, self.fortune_checkbox,
                 self.reindeer_checkbox, self.wrinkler_checkbox,
                 self.grimoire_spell_spam_checkbox, self.sugar_lump_checkbox, self.krumblor_checkbox,
-                self.garden_thumbcorn_checkbox, self.garden_golden_checkbox,
+                self.garden_strategy_combo,
                 self.auto_ascension_toggle,
             ):
                 widget.setEnabled(not busy)
@@ -2012,14 +2013,12 @@ class MainWindow(QMainWindow):
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
             return
-        green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
-        golden_cookies_enabled = self.garden_golden_checkbox.isChecked()
+        strategy = self.garden_strategy_combo.currentData()
         self._run_garden_task(
             lambda: self.fazendeira.run_cycle(
                 dry_run=True,
                 automation_enabled=False,
-                green_aching_thumb_enabled=green_aching_thumb_enabled,
-                golden_cookies_enabled=golden_cookies_enabled,
+                strategy=strategy,
             ),
             self._display_garden_result,
         )
@@ -2032,14 +2031,12 @@ class MainWindow(QMainWindow):
             self._show_garden_feedback(False, "Bridge não está disponível.")
             return
         logger.info("Garden: simulação solicitada; nenhuma ação será enviada ao jogo")
-        green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
-        golden_cookies_enabled = self.garden_golden_checkbox.isChecked()
+        strategy = self.garden_strategy_combo.currentData()
         self._run_garden_task(
             lambda: self.fazendeira.run_cycle(
                 dry_run=True,
                 automation_enabled=False,
-                green_aching_thumb_enabled=green_aching_thumb_enabled,
-                golden_cookies_enabled=golden_cookies_enabled,
+                strategy=strategy,
             ),
             self._display_garden_result,
         )
@@ -2052,13 +2049,11 @@ class MainWindow(QMainWindow):
         self._garden_run_when_idle = False
         stop_event = self._garden_stop
         enabled = self._bot_enabled and self.garden_toggle.running and not stop_event.is_set()
-        green_aching_thumb_enabled = self.garden_thumbcorn_checkbox.isChecked()
-        golden_cookies_enabled = self.garden_golden_checkbox.isChecked()
+        strategy = self.garden_strategy_combo.currentData()
         self._run_garden_task(
             lambda: self.fazendeira.run_cycle(
                 dry_run=not enabled, automation_enabled=enabled,
-                green_aching_thumb_enabled=green_aching_thumb_enabled,
-                golden_cookies_enabled=golden_cookies_enabled,
+                strategy=strategy,
                 should_stop=stop_event.is_set,
             ),
             self._display_garden_result,
@@ -2111,20 +2106,10 @@ class MainWindow(QMainWindow):
                        and self.garden_toggle.running and not self._garden_stop.is_set()) else 0
             self.runner.request_wrinkler_cash("Garden", target, value.snapshot.game_seed, ttl=600)
         snapshot, plan = value.snapshot, value.plan
-        achievement_completed = plan.mode == "green_aching_thumb" and plan.completed
-        if achievement_completed and self.garden_thumbcorn_checkbox.isChecked():
-            self.garden_thumbcorn_checkbox.blockSignals(True)
-            self.garden_thumbcorn_checkbox.setChecked(False)
-            self.garden_thumbcorn_checkbox.blockSignals(False)
-            automation_config.enable_green_aching_thumb = False
-            save_automation_settings()
-            logger.info("Garden: conquista Green, aching thumb obtida; modo Thumbcorn desativado")
-            # O próximo ciclo real continua a coleção normal. A prévia abaixo
-            # também a mostra imediatamente, sem nova chamada à bridge.
-            if self.fazendeira:
-                plan = self.fazendeira.build_plan(snapshot)
-            if self.garden_toggle.running:
-                self._garden_run_when_idle = True
+        objective_completed = plan.completed and self.garden_strategy_combo.currentData() == (plan.mode or 'plants')
+        if objective_completed and self.garden_toggle.running:
+            self._toggle_garden_automation(False)
+            logger.info("Garden: objetivo de %s concluído; automação desligada.",self.garden_strategy_combo.currentText())
         self._schedule_next_garden_tick(snapshot)
         self._garden_available = snapshot.status.available
         color = "#65d6a5" if snapshot.status.available else (
@@ -2138,6 +2123,8 @@ class MainWindow(QMainWindow):
         self.garden_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
         unlocked = sum(seed.unlocked for seed in snapshot.seeds)
         self.garden_progress_label.setText(
+            f"Upgrades: {sum(u.obtained for u in snapshot.upgrades)}/{len(snapshot.upgrades)}"
+            if plan.mode == 'garden_upgrades' and snapshot.upgrades else
             f"Sementes: {unlocked}/{len(snapshot.seeds)}" if snapshot.seeds else "Sementes: —"
         )
         if not snapshot.status.available:
@@ -2162,7 +2149,7 @@ class MainWindow(QMainWindow):
             goal = plan.goal
             self.garden_goal_label.setText(goal.target_name)
             parents = ", ".join(goal.parent_names) if goal.parent_names else "nenhum (condição especial)"
-            self.garden_parents_label.setText(f"{'Plantas do canteiro' if plan.mode == 'golden_cookies' else 'Planta de origem' if goal.strategy == 'derivado_erva' else 'Pais por espaço de mutação'}: {parents}")
+            self.garden_parents_label.setText(f"{'Planta para colher' if plan.mode == 'garden_upgrades' else 'Plantas do canteiro' if plan.mode == 'golden_cookies' else 'Planta de origem' if goal.strategy == 'derivado_erva' else 'Pais por espaço de mutação'}: {parents}")
             pending = f" Pendentes: {', '.join(goal.pending_prerequisites)}." if goal.pending_prerequisites else ""
             self.garden_reason_label.setText(
                 short_message(f"{goal.reason}{pending}", 100)
@@ -2176,7 +2163,8 @@ class MainWindow(QMainWindow):
         remaining = pending_actions(plan, value.action_results)
         plan_text = grouped_actions(remaining)
         if not plan_text:
-            plan_text = ("Ações confirmadas. Aguardar a próxima leitura do Garden." if value.action_results else
+            plan_text = ("Objetivo concluído. A automação do Garden ficará desligada." if objective_completed else
+                         "Ações confirmadas. Aguardar a próxima leitura do Garden." if value.action_results else
                          "Colher a nova planta quando estiver madura." if state == "Esperando a nova planta amadurecer" else
                          "Plantar os pais quando chegar o momento indicado acima." if state == "Alinhando a maturação dos pais" else
                          "Manter os espaços livres e aguardar a mutação." if state == "Esperando a mutação aparecer" else
@@ -2195,8 +2183,8 @@ class MainWindow(QMainWindow):
                 for r in value.action_results)
         self._set_garden_report_text(self.garden_details_text, details)
         self.garden_details_toggle.setText("Mostrar detalhes da prévia" if value.dry_run else "Mostrar detalhes do último ciclo")
-        if achievement_completed:
-            self._show_garden_feedback(True, "Green, aching thumb obtida. Busca por sementes retomada.")
+        if objective_completed:
+            self._show_garden_feedback(True, "Objetivo concluído. Garden desligado.")
         elif value.action_results:
             waits = [result for result in value.action_results if result.waiting]
             errors = [result for result in value.action_results if not result.success and not result.waiting]
@@ -2276,8 +2264,7 @@ class MainWindow(QMainWindow):
     def _set_garden_busy(self, busy: bool):
         self.garden_refresh_button.setEnabled(not busy)
         self.garden_simulate_button.setEnabled(not busy)
-        self.garden_thumbcorn_checkbox.setEnabled(not busy)
-        self.garden_golden_checkbox.setEnabled(not busy)
+        self.garden_strategy_combo.setEnabled(not busy)
 
 
     def _toggle_garden_automation(self, enabled: bool):
@@ -2309,42 +2296,21 @@ class MainWindow(QMainWindow):
         logger.info("Garden: %s", "ligada" if enabled else "desligamento solicitado")
         self._show_garden_feedback(True, "Automação ligada." if enabled else "Novas ações interrompidas; aguardando o lote em andamento terminar.")
 
-    def _toggle_green_aching_thumb(self, state: int):
-        enabled = bool(state)
-        automation_config.enable_green_aching_thumb = enabled
-        if enabled:
-            self.garden_golden_checkbox.blockSignals(True)
-            self.garden_golden_checkbox.setChecked(False)
-            self.garden_golden_checkbox.blockSignals(False)
-            automation_config.enable_garden_golden_cookies = False
-        save_automation_settings()
-        logger.info(
-            f"Garden: modo Green, aching thumb {'habilitado' if enabled else 'desativado'}"
-        )
-        if enabled and not self.garden_toggle.running:
-            message = "Estratégia Thumbcorn selecionada; use Ligar para executar."
-        else:
-            message = (
-                "Modo Green, aching thumb habilitado."
-                if enabled else "Modo Green, aching thumb desativado."
-            )
-        self._show_garden_feedback(enabled, message)
-        if not (self._garden_worker and self._garden_worker.isRunning()):
-            QTimer.singleShot(0, self._on_garden_timer if self.garden_toggle.running else self.refresh_garden)
+    def _update_garden_strategy_tooltip(self):
+        tips = {
+            'plants': 'Desbloqueia todas as sementes e desliga o Garden ao completar a coleção.',
+            'green_aching_thumb': 'Cultiva e colhe Thumbcorn maduras até a conquista de 1.000 colheitas. Desliga ao concluir.',
+            'golden_cookies': 'Cultivo contínuo de Golden Clover e Nursetulip. Usa Fertilizer para crescer e Clay para ampliar o bônus. Nursetulip reduz o CpS. Não usa Sugar Lumps.',
+            'garden_upgrades': 'Cultiva e colhe as plantas dos upgrades que faltam. Considera concluídos os upgrades comprados ou disponíveis na loja. Não compra upgrades nem usa Sugar Lumps. Desliga ao liberar os sete.',
+        }
+        self.garden_strategy_combo.setToolTip(tips[self.garden_strategy_combo.currentData()])
 
-    def _toggle_garden_golden_cookies(self, state: int):
-        enabled = bool(state)
-        automation_config.enable_garden_golden_cookies = enabled
-        if enabled:
-            self.garden_thumbcorn_checkbox.blockSignals(True)
-            self.garden_thumbcorn_checkbox.setChecked(False)
-            self.garden_thumbcorn_checkbox.blockSignals(False)
-            automation_config.enable_green_aching_thumb = False
+    def _change_garden_strategy(self, index: int):
+        automation_config.garden_strategy = self.garden_strategy_combo.currentData()
+        self._update_garden_strategy_tooltip()
         save_automation_settings()
-        logger.info("Garden: modo Mais Golden Cookies %s", "selecionado" if enabled else "desativado")
-        self._show_garden_feedback(True,
-            "Mais Golden Cookies selecionado. Use Ligar para executar." if enabled and not self.garden_toggle.running else
-            "Mais Golden Cookies selecionado." if enabled else "Busca por sementes selecionada.")
+        logger.info("Garden: estratégia %s selecionada.",self.garden_strategy_combo.currentText())
+        self._show_garden_feedback(True,f"Estratégia: {self.garden_strategy_combo.currentText()}.")
         if not (self._garden_worker and self._garden_worker.isRunning()):
             QTimer.singleShot(0, self._on_garden_timer if self.garden_toggle.running else self.refresh_garden)
 

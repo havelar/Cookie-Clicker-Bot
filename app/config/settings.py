@@ -1,6 +1,7 @@
 """
 Configurações centralizadas do Cookie Clicker Bot.
 """
+from app.core.garden_strategies import GARDEN_STRATEGIES
 from dataclasses import dataclass, field
 import json
 from typing import Optional
@@ -95,8 +96,7 @@ class AutomationConfig:
     stock_market_asset_limits: dict = field(default_factory=dict)
 
     # Garden: seguro por padrão; intervalo usado somente se M.nextStep faltar.
-    enable_green_aching_thumb: bool = False
-    enable_garden_golden_cookies: bool = False
+    garden_strategy: str = "plants"
     garden_poll_interval_seconds: int = 60
 
     # Auto Ascensão: sempre desativada por padrão e confirmada a cada execução real.
@@ -306,14 +306,11 @@ def load_automation_settings() -> None:
         } if isinstance(limits, dict) else {}
     except (ValueError, TypeError):
         automation_config.stock_market_asset_limits = {}
-    automation_config.enable_green_aching_thumb = settings.value(
-        "enable_green_aching_thumb", False, type=bool,
-    )
-    automation_config.enable_garden_golden_cookies = settings.value(
-        "enable_garden_golden_cookies", False, type=bool,
-    )
-    if automation_config.enable_garden_golden_cookies:
-        automation_config.enable_green_aching_thumb = False
+    strategy = settings.value("garden_strategy", "", type=str)
+    if not strategy:
+        strategy = ("golden_cookies" if settings.value("enable_garden_golden_cookies", False, type=bool) else
+                    "green_aching_thumb" if settings.value("enable_green_aching_thumb", False, type=bool) else "plants")
+    automation_config.garden_strategy = strategy if strategy in GARDEN_STRATEGIES else "plants"
     automation_config.garden_poll_interval_seconds = min(3600, max(30, settings.value(
         "garden_poll_interval_seconds",
         automation_config.garden_poll_interval_seconds,
@@ -442,8 +439,7 @@ def save_automation_settings() -> None:
     settings.setValue("enable_stock_market_owned_only_view", automation_config.enable_stock_market_owned_only_view)
     settings.setValue("stock_market_use_reference_prices", automation_config.stock_market_use_reference_prices)
     settings.setValue("stock_market_asset_limits", json.dumps(automation_config.stock_market_asset_limits))
-    settings.setValue("enable_green_aching_thumb", automation_config.enable_green_aching_thumb)
-    settings.setValue("enable_garden_golden_cookies", automation_config.enable_garden_golden_cookies)
+    settings.setValue("garden_strategy", automation_config.garden_strategy)
     settings.setValue("garden_poll_interval_seconds", automation_config.garden_poll_interval_seconds)
     settings.setValue("auto_ascension_target_cycles", automation_config.auto_ascension_target_cycles)
     settings.setValue(
