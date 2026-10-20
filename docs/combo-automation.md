@@ -11,6 +11,18 @@ A aba **Combo** prepara e tenta um Quadcast para a conquista **And a little extr
 
 O plano não é fixado no momento do clique. A seed, a season, o contador de spells, a mana, os buffs e os shimmers são relidos antes de cada ação; se o estado mudar, a janela é calculada novamente.
 
+## Planejador para combos manuais
+
+Abra **Combo → Planejador** para consultar as próximas 50, 100, 250 ou 500 magias de Forçar a Mão do Destino. **Magias antes: 0** corresponde ao próximo lançamento; o valor 5 significa avançar o contador em cinco magias antes de lançar aquele Forçar a Mão do Destino. A coluna **Contador** mostra o valor absoluto usado na previsão. Magias de preparação, como Encanto do pechincheiro, também avançam esse contador quando lançadas normalmente.
+
+As colunas **0 biscoitos** a **3 biscoitos** mostram os resultados conforme a quantidade de biscoitos dourados em tela antes do lançamento, incluindo biscoitos da ira. A coluna correspondente à quantidade atual fica destacada. Cada biscoito em tela acrescenta 15 pontos percentuais à chance de falha. **[falha]** indica que a magia cria um biscoito da ira, podendo inclusive resultar em Frenesi ancestral. Passe o mouse no resultado para ver a chance de falha e o tipo do biscoito.
+
+O seletor **Previsão** compara a temporada atual, as temporadas comuns ou Páscoa/Dia dos Namorados. Ele apenas muda a comparação: não troca a temporada no jogo. O Planejador considera os efeitos atuais que alteram a chance de falha, Voo do dragão e a quantidade de construções. Frenesi de cliques, Frenesi ancestral, Bônus de construção e Torrões de açúcar aparecem em destaque. O prédio de um bônus de construção só é definido ao abrir o biscoito.
+
+**Acompanhar magias automaticamente** consulta a cada dois segundos enquanto o painel está visível. Conforme você usa magias, as quantidades de magias restantes são recalculadas a partir do contador novo. Desmarque para consultar somente pelo botão **Atualizar**. A consulta funciona com o bot pausado, não lança magias, não consome mana ou Torrões de açúcar e usa um gerador aleatório isolado. Ela aguarda durante restaurações e recuperação da conexão. Para executar o combo manualmente, desligue as automações que lançam magias ou coletam biscoitos dourados; o Planejador não altera essas preferências por conta própria.
+
+As previsões mantêm as condições atuais para cada linha. Efeitos que expirem, novas construções ou mudanças de temporada podem alterar a sequência. O acompanhamento automático atualiza essas condições, mas não garante que uma previsão continuará válida após mudanças no jogo.
+
 ## Pausar para acompanhar a tentativa
 
 Marque **Pausar quando faltarem 3 skips e aguardar Retomar** antes de iniciar.

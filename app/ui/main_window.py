@@ -28,6 +28,7 @@ from app.models.auto_ascensao import RelatorioAutoAscensao
 from app.models.combo import ConfiguracaoCombo, EstadoCombo, RelatorioCombo
 from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
+from app.ui.combo_planner import ComboPlanner
 from app.ui.save_scum_tab import SaveScumTab
 from app.ui.automation_control import AutomationControl
 from app.ui.hotkey_capture import HotkeyCapture
@@ -821,6 +822,11 @@ class MainWindow(QMainWindow):
         self.combo_mode_tabs = QTabWidget()
         self.combo_mode_tabs.addTab(self._simple_farm_panel(), "Simple Farm")
         self.combo_mode_tabs.addTab(scroll, "Combo avançado")
+        self.combo_planner = ComboPlanner(
+            lambda: self.bridge if not self._save_scum_exclusive and not self._connection_recovering else None,
+            self,
+        )
+        self.combo_mode_tabs.addTab(self.combo_planner, "Planejador")
         outer_layout.addWidget(self.combo_mode_tabs)
         return tab
 
@@ -2823,6 +2829,9 @@ class MainWindow(QMainWindow):
             self._stock_worker.wait((app_config.connection_timeout + 1) * 1000)
         if self._garden_worker and self._garden_worker.isRunning():
             self._garden_worker.wait((app_config.connection_timeout + 1) * 1000)
+        if not self.combo_planner.shutdown():
+            event.ignore()
+            return
         super().closeEvent(event)
 
 

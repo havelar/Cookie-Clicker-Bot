@@ -391,7 +391,7 @@ class SimpleFarmUiTests(unittest.TestCase):
         window.stock_toggle.setEnabled(True)
 
         names = [window.combo_mode_tabs.tabText(i) for i in range(window.combo_mode_tabs.count())]
-        self.assertEqual(names, ["Simple Farm", "Combo avançado"])
+        self.assertEqual(names, ["Simple Farm", "Combo avançado", "Planejador"])
         self.assertEqual(window.simple_farm_toggle.button.text(), "Ligar")
         self.assertFalse(window.simple_farm_toggle.running)
         window._set_simple_farm_busy(True, preview=False)

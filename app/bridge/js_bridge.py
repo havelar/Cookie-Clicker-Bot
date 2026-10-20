@@ -16,6 +16,7 @@ from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
 from app.bridge.visual_sync import GAME_VISUAL_SYNC
 from app.bridge.krumblor_scripts import KRUMBLOR_PET_SCRIPT
 from app.bridge.season_scripts import AUTO_SEASON_SCRIPT
+from app.bridge.planner_scripts import FTHOF_PLANNER_SCRIPT
 from app.core.seasons import SEASONS
 from app.bridge.wrinkler_scripts import WRINKLER_SCRIPT
 from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
@@ -693,6 +694,16 @@ class CookieClickerBridge:
         return payload if isinstance(payload, dict) else {
             "available": False, "message": "Resposta inválida do snapshot de combo"
         }
+
+    def forecast_fthof_planner(self, count: int = 100, season_mode: str = "current") -> Dict[str, Any]:
+        """Lista os próximos resultados sem lançar magias nem alterar o jogo."""
+        if isinstance(count, bool) or not isinstance(count, int) or not 10 <= count <= 500:
+            return {"ok": False, "message": "Escolha entre 10 e 500 próximas magias."}
+        if season_mode not in ("current", "normal", "seasonal"):
+            return {"ok": False, "message": "Escolha uma comparação de temporada válida."}
+        script = FTHOF_PLANNER_SCRIPT.replace("__COUNT__", str(count)).replace("__MODE__", json.dumps(season_mode))
+        result = self.execute_js(script)
+        return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível consultar o Grimório."}
 
     def forecast_combo_window(self, max_ahead: int, required_total_bs: int) -> Dict[str, Any]:
         """Procura a melhor janela de Quadcast sem alterar contador, mana ou save."""
