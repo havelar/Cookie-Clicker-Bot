@@ -28,6 +28,9 @@ Game.shimmer=function(type,forceObj){
  init.call({spawned:true,chain:0},this);
  created=this;
 };
+Game.version='2.053';
+Game.seasons={christmas:{trigger:'Festive biscuit'},valentines:{trigger:'Lovesick biscuit'}};
+Game.Upgrades={'Festive biscuit':{unlocked:!input.locked, bought:0,getPrice:()=>100},'Lovesick biscuit':{unlocked:!input.locked,bought:0,getPrice:()=>100}};
 const before=JSON.stringify(Game);
 let randomCalls=0;
 const preserved=()=>{randomCalls++;return 0.42;};
@@ -43,13 +46,16 @@ if(result.ok){
  const spell=M.spells['hand of fate'];
  const contextSeason=Game.season;
  Game.season=input.mode==='seasonal'?'easter':input.mode==='normal'?'christmas':contextSeason;
- for(const row of result.rows){
+ const rows=result.rows || result.candidates.map(c=>({cast:c.startCast,season:c.season,expected:c.results}));
+ for(const row of rows){
+  if(row.season!==undefined)Game.season=row.season;
   for(let existing=0;existing<4;existing++){
    Game.shimmerTypes.golden.n=existing;
-   Math.seedrandom(Game.seed+'/'+row.cast);
+   const cast=row.expected ? row.cast+existing : row.cast;
+   Math.seedrandom(Game.seed+'/'+cast);
    const backfire=!(Math.random()<1-M.getFailChance(spell));
    if(backfire)spell.fail();else spell.win();
-   const actual=row.outcomes[existing];
+   const actual=row.expected ? {effect:row.expected[existing],backfire} : row.outcomes[existing];
    if(actual.effect!==created.force || actual.backfire!==backfire)
     mismatches.push({cast:row.cast,existing,actual,expected:{effect:created.force,backfire}});
    checked++;

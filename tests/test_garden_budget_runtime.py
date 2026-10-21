@@ -20,6 +20,7 @@ class GardenBudgetRuntimeTests(unittest.TestCase):
                 return []
 
         bridge = Capture()
+        bridge.set_combo_cash_floor(options.get("cashFloor", 0))
         if single:
             bridge.plant_garden_seed("thumbcorn", 1, 0)
         elif cleanup_only:

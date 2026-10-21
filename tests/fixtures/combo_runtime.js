@@ -53,3 +53,14 @@ Game.Upgrades['Sugar frenzy']={bought:false,buy(bypass){
     return 0;
 }};
 if(options.loanInterest) Game.buffs['Loan 2 (interest)']=buff('loan 2 interest',1000);
+
+// Canteiro descartável para conferir a otimização da finalização.
+if(options.garden) {
+ const keys=options.garden;
+ const plantsById=[{key:'goldenClover',unlocked:true},{key:'nursetulip',unlocked:!options.lockedTulip},{key:'ichorpuff',unlocked:true},{key:'desconhecida',unlocked:false}];
+ const garden={freeze:!!options.frozen,plantsById,plants:{nursetulip:plantsById[1]},
+  plot:[keys.map(k=>[plantsById.findIndex(p=>p.key===k)+1,70])],
+  harvest(x,y){events.push(['gardenHarvest',x,y]);this.plot[y][x]=[0,0];return true;},
+  computeBoostPlot(){events.push(['gardenBoost']);},computeEffs(){events.push(['gardenEffects']);}};
+ Game.Objects.Farm=Object.assign(Game.ObjectsById[2],{minigameLoaded:true,minigame:garden});
+}

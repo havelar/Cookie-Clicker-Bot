@@ -2,6 +2,7 @@
 Bridge para comunicação com o runtime JavaScript do Cookie Clicker.
 """
 import json
+import math
 import time
 import threading
 from typing import Optional, Any, Dict, List
@@ -204,10 +205,18 @@ class CookieClickerBridge:
                     buildings: Game.BuildingsOwned, upgrades: Game.UpgradesOwned};
         })()""")
 
+    def set_combo_cash_floor(self, amount: float) -> None:
+        """Reserva local da sessão exclusiva; não altera o save."""
+        value = float(amount)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError('Reserva de biscoitos inválida.')
+        self._combo_cash_floor = value
+
     def _execute_game_action(self, code: str) -> Optional[Any]:
         """Executa uma ação uma vez e sincroniza a UI, inclusive após falha parcial."""
         script = """(() => {
             %s
+            const comboCashFloor=%s;
             const before=typeof Game==='undefined'?null:[Game.dragonAura,Game.dragonAura2];
             let result;
             try { result=(%s); }
@@ -223,7 +232,7 @@ class CookieClickerBridge:
                 }
             }
             return result;
-        })()""" % (GAME_VISUAL_SYNC, code)
+        })()""" % (GAME_VISUAL_SYNC, json.dumps(getattr(self, "_combo_cash_floor", 0.0)), code)
         result = self.execute_js(script)
         items = result if isinstance(result, list) else [result]
         for item in items:
@@ -654,6 +663,7 @@ class CookieClickerBridge:
                 screen:Game.OnAscend?'ascend':((finite(Game.AscendTimer)>0||finite(Game.ReincarnateTimer)>0)?'transition':'game'),
                 version:String(Game.version), seed:String(Game.seed || ''), season:String(Game.season || ''),
                 seasonSwitchAvailable:!!(lovesick && lovesick.unlocked),
+                fthofFailBase:M.spellsById && M.spellsById[1] ? finite(M.getFailChance(M.spellsById[1]))-0.15*(Number(Game.shimmerTypes.golden.n)||0):null,
                 cookies:finite(Game.cookies), cookiesEarned:finite(Game.cookiesEarned),
                 cookiesPs:finite(Game.cookiesPs), mouseCps:finite(Game.computedMouseCps),
                 achievementWon:!!(achievement && achievement.won),
@@ -704,6 +714,55 @@ class CookieClickerBridge:
         script = FTHOF_PLANNER_SCRIPT.replace("__COUNT__", str(count)).replace("__MODE__", json.dumps(season_mode))
         result = self.execute_js(script)
         return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível consultar o Grimório."}
+
+    def forecast_combo_candidates(self, max_ahead: int, required_total_bs: int) -> Dict[str, Any]:
+        """Busca nas duas famílias sazonais com RNG isolado; retorna alternativas."""
+        if isinstance(max_ahead, bool) or not isinstance(max_ahead, int) or not 4 <= max_ahead <= 100_000:
+            return {"ok": False, "message": "Alcance de busca inválido."}
+        if not 1 <= required_total_bs <= 6:
+            return {"ok": False, "message": "Quantidade de bônus inválida."}
+        prefix = FTHOF_PLANNER_SCRIPT[:FTHOF_PLANNER_SCRIPT.index('const rows=Array.from')]
+        tail = r"""
+const candidates=[];
+for (let offset=0;offset<=count-4;offset++) {
+    const results=[0,1,2,3].map(i=>predict(current+offset+i,i).effect);
+    if (!results.includes('click frenzy') || !results.includes('blood frenzy')) continue;
+    const bs=results.filter(v=>v==='building special').length;
+    const natural=Math.max(0,__REQUIRED__-bs);
+    if (!bs || natural>2) continue;
+    candidates.push({startCast:current+offset,skipCount:offset,results,
+        spellBuildingSpecials:bs,naturalBuildingSpecials:natural});
+}
+return {ok:true,seed,version:String(G.version),currentCast:current,failBase,candidates};
+})()"""
+        body = (prefix + tail).replace("__COUNT__", str(max_ahead)).replace("__REQUIRED__", str(required_total_bs))
+        normal = body.replace("__MODE__", json.dumps("normal"))
+        seasonal = body.replace("__MODE__", json.dumps("seasonal"))
+        script = """(() => {
+const G=globalThis.Game;
+if (!G || !G.ready) return {ok:false,message:'Jogo indisponível.'};
+const all=[];
+for (const [family,read] of [[false,()=>__NORMAL__],[true,()=>__SEASONAL__]]) {
+    const current=String(G.season||'');
+    const same=(current==='easter'||current==='valentines')===family;
+    let season=current;
+    if (!same) {
+        const alternatives=Object.entries(G.seasons||{}).filter(([key,v])=>
+            (key==='easter'||key==='valentines')===family && G.Upgrades &&
+            G.Upgrades[v.trigger] && G.Upgrades[v.trigger].unlocked && !G.Upgrades[v.trigger].bought);
+        alternatives.sort((a,b)=>Number(G.Upgrades[a[1].trigger].getPrice())-Number(G.Upgrades[b[1].trigger].getPrice()));
+        if (!alternatives.length) continue;
+        season=alternatives[0][0];
+    }
+    const result=read();
+    if (!result.ok) return result;
+    for (const candidate of result.candidates) all.push(Object.assign(candidate,{
+        seed:result.seed,version:result.version,currentCast:result.currentCast,failBase:result.failBase,season}));
+}
+return {ok:true,candidates:all};
+})()""".replace("__NORMAL__", normal).replace("__SEASONAL__", seasonal)
+        result = self.execute_js(script)
+        return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível buscar as sequências."}
 
     def forecast_combo_window(self, max_ahead: int, required_total_bs: int) -> Dict[str, Any]:
         """Procura a melhor janela de Quadcast sem alterar contador, mana ou save."""
@@ -1077,9 +1136,35 @@ class CookieClickerBridge:
             "ok": False, "message": "Resposta inválida ao drenar Cookie Storm"
         }
 
+    def collect_combo_leftovers(self, leftovers) -> Dict[str, Any]:
+        """Coleta somente os biscoitos identificados na tentativa anterior."""
+        items = []
+        for item in leftovers:
+            if not isinstance(item, dict) or not isinstance(item.get('id'), (int, float)) or not isinstance(item.get('force'), str):
+                return {"ok": False, "message": "Identificação dos biscoitos restantes inválida."}
+            items.append(dict(id=int(item['id']), force=item['force']))
+        script = """(() => {
+            const wanted=__ITEMS__;
+            if (!globalThis.Game || Game.OnAscend || Game.AscendTimer)
+                return {ok:false,message:'Jogo indisponível ao concluir o combo.'};
+            const cookies=[];
+            for (const expected of wanted) {
+                const cookie=(Game.shimmers||[]).find(s=>Number(s.id)===expected.id);
+                if (!cookie) continue;
+                if (cookie.type!=='golden' || String(cookie.force||'')!==expected.force || typeof cookie.pop!=='function')
+                    return {ok:false,message:'Um biscoito restante mudou; execução interrompida.'};
+                cookies.push(cookie);
+            }
+            for (const cookie of cookies) cookie.pop();
+            return {ok:true,count:cookies.length};
+        })()""".replace('__ITEMS__', json.dumps(items))
+        result = self._execute_game_action(script)
+        return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível concluir a coleta do combo."}
+
     def set_combo_season(self, season: str) -> Dict[str, Any]:
         """Troca para Valentine/Easter pela API nativa e confirma a season."""
-        triggers = {"valentines": "Lovesick biscuit", "easter": "Bunny biscuit"}
+        triggers = {"valentines": "Lovesick biscuit", "easter": "Bunny biscuit",
+                    "christmas": "Festive biscuit", "halloween": "Ghostly biscuit", "fools": "Fool's biscuit"}
         if season not in triggers:
             return {"ok": False, "message": "Season não suportada pelo modo Combo"}
         script = """(() => {
@@ -1089,6 +1174,9 @@ class CookieClickerBridge:
             if (!upgrade || !upgrade.unlocked || typeof upgrade.buy!=='function')
                 return {ok:false,message:'Season switcher não está disponível'};
             const before=Number(Game.cookies);
+            const price=typeof upgrade.getPrice==='function'?Number(upgrade.getPrice()):Infinity;
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para esta compra.'};
             const accepted=upgrade.buy()===1;
             const ok=String(Game.season||'')===season;
             return {ok,message:ok?'Season alterada e verificada':'O jogo não confirmou a troca de season',accepted,before,after:Number(Game.cookies)};
@@ -1108,6 +1196,9 @@ class CookieClickerBridge:
             const name=desired?'Golden switch [off]':'Golden switch [on]';
             const upgrade=Game.Upgrades && Game.Upgrades[name];
             if (!upgrade || typeof upgrade.buy!=='function') return {ok:false,message:'Toggle do Golden Switch indisponível'};
+            const price=typeof upgrade.getPrice==='function'?Number(upgrade.getPrice()):Infinity;
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para o interruptor dourado.'};
             const accepted=upgrade.buy()===1;
             const after=Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]');
             return {ok:after===desired,message:after===desired?'Golden Switch alterado e verificado':'O jogo recusou o Golden Switch',accepted,enabled:after};
@@ -1132,8 +1223,8 @@ class CookieClickerBridge:
             if (missing>0) {
                 let price=Infinity;
                 try { price=Number(cursor.getSumPrice(missing)); } catch (_) {}
-                if (!Number.isFinite(price) || price>Number(Game.cookies))
-                    return {ok:false,message:`Cookies insuficientes para comprar ${missing} Cursors`};
+                if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                    return {ok:false,waiting:true,message:`Reserva protegida; aguardando saldo para ${missing} Cursors`};
                 const buyMode=Game.buyMode;
                 try { Game.buyMode=1; cursor.buy(missing); }
                 finally { Game.buyMode=buyMode; }
@@ -1223,8 +1314,8 @@ class CookieClickerBridge:
                 const quantity=target-before;
                 let price=Infinity;
                 try { price=Number(tower.getSumPrice(quantity)); } catch (_) {}
-                if (!Number.isFinite(price) || price>Number(Game.cookies))
-                    return {ok:false,message:'Cookies insuficientes para recomprar Wizard Towers',before,price};
+                if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                    return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para recomprar torres',before,price};
                 const buyMode=Game.buyMode;
                 try { Game.buyMode=1; tower.buy(quantity); }
                 finally { Game.buyMode=buyMode; }
@@ -1253,8 +1344,8 @@ class CookieClickerBridge:
             const quantity=minimum-before;
             let price=Infinity;
             try { price=Number(object.getSumPrice(quantity)); } catch (_) {}
-            if (!Number.isFinite(price) || price>Number(Game.cookies))
-                return {ok:false,message:'Cookies insuficientes para recompor o estoque de Godzamok',id,before,price};
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para repor construções',id,before,price};
             const buyMode=Game.buyMode;
             try { Game.buyMode=1; object.buy(quantity); }
             finally { Game.buyMode=buyMode; }
@@ -1326,6 +1417,7 @@ class CookieClickerBridge:
         required_natural_bs: int,
         use_sugar_frenzy: bool,
         use_loans: bool,
+        optimize_garden: bool = False,
     ) -> Dict[str, Any]:
         """Executa e verifica a janela crítica em uma única avaliação síncrona."""
         allowed = {
@@ -1346,7 +1438,7 @@ class CookieClickerBridge:
         script = """(() => {
             const expectedCast=__EXPECTED_CAST__,expectedResults=__EXPECTED_RESULTS__;
             const minimum=__MINIMUM__,requiredNaturalBs=__NATURAL_BS__;
-            const useSugar=__USE_SUGAR__,useLoans=__USE_LOANS__;
+            const useSugar=__USE_SUGAR__,useLoans=__USE_LOANS__,optimizeGarden=__OPTIMIZE_GARDEN__;
             const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
             const wait=message=>fail(message,{retryable:true,mutated:false,lumpsSpent:0});
             const tower=Game.Objects && Game.Objects['Wizard tower'];
@@ -1437,8 +1529,8 @@ class CookieClickerBridge:
                     price+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
                 price=Math.ceil(Number(Game.modifyBuildingPrice(tower,price)));
             } catch (_) { price=Infinity; }
-            if (!Number.isFinite(price) || price>Number(Game.cookies))
-                return fail('Saldo insuficiente para a recompra conservadora das Wizard Towers',{price,cookies:Number(Game.cookies)});
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return wait('Reserva protegida; aguardando saldo para a recompra das torres');
 
             const created=[];
             function castOne(index) {
@@ -1508,12 +1600,42 @@ class CookieClickerBridge:
                 }
                 Game.recalculateGains=1;
             }
+            // O canteiro de coleta deixa de ser necessário após identificar os BS.
+            // Só remove tulipas desbloqueadas se TODO o canteiro contém apenas
+            // trevos/tulipas conhecidos. Não toca em culturas ou descobertas.
+            let gardenRemoved=0;
+            const farm=Game.Objects && Game.Objects.Farm;
+            const garden=farm && farm.minigameLoaded && farm.minigame;
+            if (optimizeGarden && garden && !garden.freeze && Array.isArray(garden.plot)
+                    && garden.plants && garden.plants.nursetulip && garden.plants.nursetulip.unlocked
+                    && typeof garden.harvest==='function') {
+                const occupied=[];
+                let safe=true;
+                for (let y=0;y<garden.plot.length;y++) for (let x=0;x<garden.plot[y].length;x++) {
+                    const tile=garden.plot[y][x];
+                    if (!tile || !tile[0]) continue;
+                    const plant=garden.plantsById && garden.plantsById[tile[0]-1];
+                    if (!plant || !plant.unlocked || !['goldenClover','nursetulip'].includes(plant.key)) safe=false;
+                    occupied.push({x,y,plant});
+                }
+                if (safe) for (const tile of occupied) if (tile.plant.key==='nursetulip') {
+                    if (garden.harvest(tile.x,tile.y)) gardenRemoved++;
+                }
+                if (gardenRemoved) {
+                    if (typeof garden.computeBoostPlot==='function') garden.computeBoostPlot();
+                    if (typeof garden.computeEffs==='function') garden.computeEffs();
+                    Game.recalculateGains=1;
+                }
+            }
             setAuras(16,15); // Dragon's Fortune + Radiant Appetite
 
             let goldenSwitch=false;
             const switchUpgrade=Game.Upgrades && Game.Upgrades['Golden switch [off]'];
             if (switchUpgrade && !Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]')) {
-                try { goldenSwitch=switchUpgrade.buy()===1; } catch (_) { goldenSwitch=false; }
+                try {
+                    const price=typeof switchUpgrade.getPrice==='function'?Number(switchUpgrade.getPrice()):Infinity;
+                    if (Number.isFinite(price) && price<=Number(Game.cookies)-comboCashFloor) goldenSwitch=switchUpgrade.buy()===1;
+                } catch (_) { goldenSwitch=false; }
             }
 
             let lumpsSpent=1,sugarFrenzy=false;
@@ -1561,6 +1683,7 @@ class CookieClickerBridge:
             if (!cf || !ef) return fail('CF ou EF desapareceu antes do clique final',{lumpsSpent,created:created.map(item=>[item.id,item.force])});
             cf.shimmer.pop();
             ef.shimmer.pop();
+            if (typeof Game.CalculateGains==='function') Game.CalculateGains();
             const clickBuff=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='click frenzy');
             const elderBuff=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='blood frenzy');
             const devastation=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='devastation');
@@ -1577,7 +1700,7 @@ class CookieClickerBridge:
                 return fail('A janela útil expirou durante a execução',{lumpsSpent,mutated:true});
             return {ok:true,message:'Quadcast e multiplicadores finais confirmados',
                 results:created.map(item=>item.force),lumpsSpent,clickSeconds,sold,protectedIds:Array.from(protectedIds),
-                goldenSwitch,sugarFrenzy,loans,preserved:(Game.shimmers||[]).filter(item=>item.type==='golden').map(item=>({id:Number(item.id),force:String(item.force||'')})),
+                goldenSwitch,sugarFrenzy,loans,gardenRemoved,preserved:(Game.shimmers||[]).filter(item=>item.type==='golden').map(item=>({id:Number(item.id),force:String(item.force||'')})),
                 buffs:Object.values(Game.buffs||{}).map(buff=>String(buff.name||'')),wizardTowers:Number(tower.amount)};
         })()"""
         replacements = {
@@ -1587,6 +1710,7 @@ class CookieClickerBridge:
             "__NATURAL_BS__": str(required_natural_bs),
             "__USE_SUGAR__": "true" if use_sugar_frenzy else "false",
             "__USE_LOANS__": "true" if use_loans else "false",
+            "__OPTIMIZE_GARDEN__": "true" if optimize_garden else "false",
         }
         for marker, value in replacements.items():
             script = script.replace(marker, value)
@@ -1848,7 +1972,7 @@ class CookieClickerBridge:
                     required+=cost;
                 }
             }
-            const available=Number(Game.cookies);
+            const available=Number(Game.cookies)-comboCashFloor;
             if (!Number.isFinite(required) || !Number.isFinite(available) || available<0)
                 return fail('Orçamento indisponível; layout preservado');
             if (available<required) return fail('Aguardando dinheiro para completar o layout; plantas preservadas',
@@ -1868,7 +1992,7 @@ class CookieClickerBridge:
                         if (Number(M.plot[a.y][a.x][0])!==0) return fail('Canteiro ocupado; plantio cancelado');
                         const cost=M.getCost(seed);
                         if (!Number.isFinite(cost) || cost<0) return fail('Custo mudou para um valor inválido');
-                        if (Number(Game.cookies)<cost) return fail('Aguardando dinheiro; custo mudou durante o lote',
+                        if (Number(Game.cookies)-comboCashFloor<cost) return fail('Aguardando dinheiro; custo mudou durante o lote',
                             {waiting:true,reason:'insufficient_funds',requiredCookies:cost,availableCookies:Number(Game.cookies)});
                         if (M.useTool(Number(seed.id),a.x,a.y)!==true ||
                                 !plantAt(a.x,a.y) || plantAt(a.x,a.y).key!==a.seedKey)

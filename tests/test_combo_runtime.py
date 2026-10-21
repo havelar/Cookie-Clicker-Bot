@@ -20,11 +20,12 @@ class ComboRuntimeTests(unittest.TestCase):
                 return {"ok": True}
 
         bridge = Capture()
+        bridge.set_combo_cash_floor(options.get("cashFloor", 0))
         bridge.execute_combo_quadcast(
             expected_cast=10,
             expected_results=['blood frenzy', 'click frenzy', 'frenzy', 'building special'],
             minimum_buff_seconds=12, required_natural_bs=1,
-            use_sugar_frenzy=True, use_loans=True,
+            use_sugar_frenzy=True, use_loans=True, optimize_garden=options.get("optimizeGarden", True),
         )
         script = bridge.script
         runtime = Path(__file__).with_name('fixtures').joinpath('combo_runtime.js').read_text(encoding='utf-8')
