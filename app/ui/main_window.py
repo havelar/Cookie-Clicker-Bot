@@ -692,15 +692,45 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         warning = QLabel(
-            "Este combo pausa as outras automações e pode gastar Sugar Lumps, vender construções "
-            "e recomprá-las."
+            "Farm contínuo: prepara e repete combos até você desligar ou atingir o limite de gastos. "
+            "Pausa as outras automações e vende/recompra construções."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #e8b766; font-weight: 600;")
         layout.addWidget(warning)
 
-        config_group = QGroupBox("Preparação do combo")
+        config_group = QGroupBox("Limites do farm")
         form = QFormLayout(config_group)
+        self.combo_lumps_input = ScrollSafeSpinBox()
+        self.combo_lumps_input.setRange(0, 10_000)
+        self.combo_lumps_input.setValue(automation_config.combo_max_total_lumps)
+        self.combo_lumps_input.setSuffix(" torrões")
+        self.combo_lumps_input.setMaximumWidth(180)
+        self.combo_lumps_input.setToolTip("Limite total desde que você liga o Combo. Inclui alinhamento, recargas finais e frenesi de açúcar. Não reinicia entre combos. Zero impede gastos e encerra a execução. Cada tentativa precisa de pelo menos um torrão.")
+        self.combo_lumps_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Gastar no máximo nesta sessão", self.combo_lumps_input)
+        self.combo_reserve_input = ScrollSafeDoubleSpinBox()
+        self.combo_reserve_input.setRange(0, 99)
+        self.combo_reserve_input.setDecimals(0)
+        self.combo_reserve_input.setSuffix(" %")
+        self.combo_reserve_input.setMaximumWidth(180)
+        self.combo_reserve_input.setValue(automation_config.combo_cash_reserve_percent)
+        self.combo_reserve_input.setToolTip("Parte do saldo protegida das compras do Combo. A reserva é calculada ao iniciar e aumenta a cada combo concluído. Se uma compra não couber, aguarda. Vendas e sacrifícios de construções continuam fazendo parte do combo.")
+        self.combo_reserve_input.valueChanged.connect(self._save_combo_settings)
+        form.addRow("Manter reservado em biscoitos", self.combo_reserve_input)
+        self.combo_garden_checkbox = QCheckBox("Permitir preparar o Garden para o combo")
+        self.combo_garden_checkbox.setChecked(automation_config.combo_convert_garden)
+        self.combo_garden_checkbox.setToolTip("Desmarcado: não planta, não colhe e não troca o solo. Marcado: pode substituir culturas desbloqueadas por trevos e tulipas, ajustar o solo e retirar tulipas na finalização. Descobertas bloqueadas e plantas fora do catálogo nunca são removidas.")
+        self.combo_garden_checkbox.toggled.connect(self._save_combo_settings)
+        form.addRow("Garden", self.combo_garden_checkbox)
+        layout.addWidget(config_group)
+
+        self.combo_advanced_group = QGroupBox("Opções avançadas")
+        self.combo_advanced_group.setCheckable(True)
+        self.combo_advanced_group.setChecked(False)
+        advanced_layout = QVBoxLayout(self.combo_advanced_group)
+        self.combo_advanced_body = QWidget()
+        form = QFormLayout(self.combo_advanced_body)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.combo_search_input = ScrollSafeSpinBox()
         self.combo_search_input.setRange(4, 100_000)
@@ -708,13 +738,6 @@ class MainWindow(QMainWindow):
         self.combo_search_input.setSuffix(" magias")
         self.combo_search_input.valueChanged.connect(self._save_combo_settings)
         form.addRow("Magias futuras analisadas", self.combo_search_input)
-
-        self.combo_lumps_input = ScrollSafeSpinBox()
-        self.combo_lumps_input.setRange(0, 10_000)
-        self.combo_lumps_input.setValue(automation_config.combo_max_skip_lumps)
-        self.combo_lumps_input.setSuffix(" lumps")
-        self.combo_lumps_input.valueChanged.connect(self._save_combo_settings)
-        form.addRow("Orçamento para alinhamento", self.combo_lumps_input)
 
         self.combo_bs_input = ScrollSafeSpinBox()
         self.combo_bs_input.setRange(1, 6)
@@ -743,10 +766,10 @@ class MainWindow(QMainWindow):
         self.combo_wait_input.setValue(automation_config.combo_max_wait_minutes)
         self.combo_wait_input.setSuffix(" min")
         self.combo_wait_input.setToolTip(
-            "Tempo máximo para preparar o combo e aguardar uma oportunidade. Ao atingir o limite, a automação desliga."
+            "Intervalo para renovar a busca quando não aparece uma oportunidade. O farm continua ligado, preservando o orçamento."
         )
         self.combo_wait_input.valueChanged.connect(self._save_combo_settings)
-        form.addRow("Limite de espera", self.combo_wait_input)
+        form.addRow("Renovar busca a cada", self.combo_wait_input)
 
         # Em algumas escalas de DPI do Windows, o sizeHint nativo dos spinboxes
         # ignora o padding do tema e recorta todo o texto do valor.
@@ -760,8 +783,13 @@ class MainWindow(QMainWindow):
         ):
             field.setMinimumHeight(32)
 
+        self.combo_final_garden_checkbox = QCheckBox("Retirar penalidades das tulipas na finalização")
+        self.combo_final_garden_checkbox.setChecked(automation_config.combo_optimize_final_garden)
+        self.combo_final_garden_checkbox.setToolTip("Só se o Garden estiver autorizado e todo o canteiro contiver trevos e tulipas desbloqueados. Não remove outras culturas.")
+        self.combo_final_garden_checkbox.toggled.connect(self._save_combo_settings)
+        form.addRow("Garden na finalização", self.combo_final_garden_checkbox)
         boosts = QHBoxLayout()
-        self.combo_sugar_checkbox = QCheckBox("Usar Sugar Frenzy na tentativa final")
+        self.combo_sugar_checkbox = QCheckBox("Usar frenesi de açúcar quando disponível")
         self.combo_sugar_checkbox.setChecked(automation_config.combo_use_sugar_frenzy)
         self.combo_sugar_checkbox.stateChanged.connect(self._save_combo_settings)
         self.combo_loans_checkbox = QCheckBox("Usar os três empréstimos")
@@ -774,12 +802,15 @@ class MainWindow(QMainWindow):
         self.combo_pause_checkbox = QCheckBox("Pausar antes das últimas magias de preparação")
         self.combo_pause_checkbox.setChecked(automation_config.combo_pause_before_last_skips)
         self.combo_pause_checkbox.setToolTip(
-            "Pausa uma vez por execução, antes dos últimos 3 skips (ou menos). "
+            "Pausa antes dos últimos 3 avanços de cada combo (ou menos). "
             "Enquanto aguarda, nenhuma ação no jogo é executada pelo bot."
         )
         self.combo_pause_checkbox.stateChanged.connect(self._save_combo_settings)
         form.addRow("Acompanhar tentativa", self.combo_pause_checkbox)
-        layout.addWidget(config_group)
+        advanced_layout.addWidget(self.combo_advanced_body)
+        self.combo_advanced_body.setVisible(False)
+        self.combo_advanced_group.toggled.connect(self.combo_advanced_body.setVisible)
+        layout.addWidget(self.combo_advanced_group)
 
         status_group = QGroupBox("Acompanhamento")
         status_form = QFormLayout(status_group)
@@ -937,8 +968,11 @@ class MainWindow(QMainWindow):
         return scroll
 
     def _save_combo_settings(self, _value=None):
+        automation_config.combo_convert_garden = self.combo_garden_checkbox.isChecked()
+        automation_config.combo_optimize_final_garden = self.combo_final_garden_checkbox.isChecked()
+        automation_config.combo_cash_reserve_percent = self.combo_reserve_input.value()
+        automation_config.combo_max_total_lumps = self.combo_lumps_input.value()
         automation_config.combo_max_search_ahead = self.combo_search_input.value()
-        automation_config.combo_max_skip_lumps = self.combo_lumps_input.value()
         automation_config.combo_required_building_specials = self.combo_bs_input.value()
         automation_config.combo_poll_interval_seconds = self.combo_interval_input.value()
         automation_config.combo_minimum_buff_seconds = self.combo_min_buff_input.value()
@@ -1043,7 +1077,7 @@ class MainWindow(QMainWindow):
         self.simple_farm_plan_label.setToolTip(value.plano.decisao if value.plano else "")
         mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
         self.simple_farm_resources_label.setText(
-            f"Magias usadas: {value.cast_atual if value.cast_atual is not None else '—'} | "
+            f"Combos: {value.ciclos_concluidos} | Magias usadas: {value.cast_atual if value.cast_atual is not None else '—'} | "
             f"Mana: {mana} | Cookies: {self._format_number(value.cookies_no_banco)} | "
             f"Caixa protegido: {self._format_number(value.caixa_reservado)}"
         )
@@ -1105,9 +1139,12 @@ class MainWindow(QMainWindow):
     def _combo_configuration(self) -> ConfiguracaoCombo:
         self._save_combo_settings()
         return ConfiguracaoCombo(
-            alvo_cookies=automation_config.combo_target_cookies,
+            permitir_converter_garden=automation_config.combo_convert_garden,
+            otimizar_garden_final=automation_config.combo_optimize_final_garden,
+            cliques_por_segundo=min(1000, max(1, 1 / app_config.click_interval)),
             busca_maxima_spells=self.combo_search_input.value(),
-            maximo_lumps_alinhamento=self.combo_lumps_input.value(),
+            maximo_lumps_total=self.combo_lumps_input.value(),
+            reserva_caixa_percentual=self.combo_reserve_input.value(),
             building_specials_totais=self.combo_bs_input.value(),
             intervalo_verificacao=self.combo_interval_input.value(),
             duracao_minima_buff=self.combo_min_buff_input.value(),
@@ -1139,7 +1176,7 @@ class MainWindow(QMainWindow):
             self,
             "Iniciar modo Combo",
             "O modo Combo pausará as outras automações e poderá gastar até "
-            f"{self.combo_lumps_input.value()} lumps no alinhamento, mais o Quadcast/Sugar Frenzy. "
+            f"{self.combo_lumps_input.value()} torrões no total desta sessão. "
             "Também venderá e recomprará prédios. Continuar?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1254,7 +1291,7 @@ class MainWindow(QMainWindow):
         self.combo_plan_label.setText(value.plano.resumo if value.plano else "—")
         mana = "—" if value.mana is None else f"{value.mana:.1f}/{value.mana_maxima:.1f}"
         self.combo_progress_label.setText(
-            f"Magias usadas: {value.cast_atual if value.cast_atual is not None else '—'} | "
+            f"Combos: {value.ciclos_concluidos} | Magias usadas: {value.cast_atual if value.cast_atual is not None else '—'} | "
             f"Mana: {mana} | Sugar Lumps: {value.lumps if value.lumps is not None else '—'} "
             f"(gastos: {value.lumps_gastos}) | Cookies: {self._format_number(value.cookies_assados)}"
         )
@@ -1263,8 +1300,8 @@ class MainWindow(QMainWindow):
             + f" | Bônus de construções: {value.building_specials_ativos}"
         )
         self.combo_garden_label.setText(
-            f"Maduras na última leitura: {value.garden_maduras}/{value.garden_total}"
-            if value.garden_total else "Nenhuma planta no Garden."
+            "Preservado: nenhuma alteração autorizada." if not self.combo_garden_checkbox.isChecked()
+            else f"Plantas maduras: {value.garden_maduras}/{value.garden_total}"
         )
         self.combo_message_label.setText(
             value.mensagem + (f" Próximo: {value.proximo_passo}" if value.proximo_passo else "")
@@ -1301,6 +1338,8 @@ class MainWindow(QMainWindow):
 
     def _set_combo_busy(self, busy: bool, preview: bool):
         for widget in (
+            self.combo_garden_checkbox, self.combo_reserve_input, self.combo_advanced_group,
+            self.combo_final_garden_checkbox,
             self.combo_search_input, self.combo_lumps_input, self.combo_bs_input,
             self.combo_interval_input, self.combo_min_buff_input, self.combo_wait_input,
             self.combo_sugar_checkbox, self.combo_loans_checkbox, self.combo_pause_checkbox,

@@ -109,9 +109,11 @@ class AutomationConfig:
     auto_ascension_max_cycle_seconds: int = 86_400
 
     # Combo endgame: execução real sempre parte desligada.
-    combo_target_cookies: float = 1e72
+    combo_convert_garden: bool = False
+    combo_optimize_final_garden: bool = True
     combo_max_search_ahead: int = 5_000
-    combo_max_skip_lumps: int = 64
+    combo_max_total_lumps: int = 64
+    combo_cash_reserve_percent: float = 80.0
     combo_required_building_specials: int = 2
     combo_poll_interval_seconds: float = 0.2
     combo_minimum_buff_seconds: float = 12.0
@@ -342,15 +344,15 @@ def load_automation_settings() -> None:
         automation_config.auto_ascension_max_cycle_seconds,
         type=int,
     )))
-    automation_config.combo_target_cookies = max(1.0, settings.value(
-        "combo_target_cookies", automation_config.combo_target_cookies, type=float,
-    ))
+    automation_config.combo_convert_garden = settings.value("combo_convert_garden", False, type=bool)
+    automation_config.combo_optimize_final_garden = settings.value("combo_optimize_final_garden", True, type=bool)
     automation_config.combo_max_search_ahead = min(100_000, max(4, settings.value(
         "combo_max_search_ahead", automation_config.combo_max_search_ahead, type=int,
     )))
-    automation_config.combo_max_skip_lumps = min(10_000, max(0, settings.value(
-        "combo_max_skip_lumps", automation_config.combo_max_skip_lumps, type=int,
-    )))
+    automation_config.combo_max_total_lumps = min(10000, max(0, settings.value(
+        "combo_max_total_lumps", settings.value("combo_max_skip_lumps", 64, type=int), type=int)))
+    automation_config.combo_cash_reserve_percent = min(99.0, max(0.0, settings.value(
+        "combo_cash_reserve_percent", 80.0, type=float)))
     automation_config.combo_required_building_specials = min(6, max(1, settings.value(
         "combo_required_building_specials",
         automation_config.combo_required_building_specials,
@@ -462,9 +464,11 @@ def save_automation_settings() -> None:
         "auto_ascension_max_cycle_seconds",
         automation_config.auto_ascension_max_cycle_seconds,
     )
-    settings.setValue("combo_target_cookies", automation_config.combo_target_cookies)
+    settings.setValue("combo_convert_garden", automation_config.combo_convert_garden)
+    settings.setValue("combo_optimize_final_garden", automation_config.combo_optimize_final_garden)
     settings.setValue("combo_max_search_ahead", automation_config.combo_max_search_ahead)
-    settings.setValue("combo_max_skip_lumps", automation_config.combo_max_skip_lumps)
+    settings.setValue("combo_max_total_lumps", automation_config.combo_max_total_lumps)
+    settings.setValue("combo_cash_reserve_percent", automation_config.combo_cash_reserve_percent)
     settings.setValue(
         "combo_required_building_specials",
         automation_config.combo_required_building_specials,

@@ -173,6 +173,16 @@ class FakeComboBridge:
         self.calls.append(("quadcast", kwargs))
         return dict(self.quadcast_result)
 
+    def execute_garden_layout(self, actions):
+        self.calls.append(('layout', actions))
+        results = []
+        for action in actions:
+            if action.kind == 'plant':
+                results.append(self.plant_garden_seed(action.seed_key, action.x, action.y))
+            else:
+                results.append(GardenActionResult(True, 'harvest', 'Removida'))
+        return tuple(results)
+
     def plant_garden_seed(self, seed_key, x, y):
         self.calls.append(("plant", seed_key, x, y))
         return GardenActionResult(True, "plant", "Plantio confirmado", x=x, y=y, seed_key=seed_key)
@@ -190,10 +200,11 @@ class ComboStateMachineTests(unittest.TestCase):
     def test_garden_grows_in_fertilizer_then_collects_in_clay(self):
         bridge = FakeComboBridge()
         bridge.garden = full_garden(3, 2)
-        automation = ComboAutomation(bridge, ConfiguracaoCombo())
+        automation = ComboAutomation(bridge, ConfiguracaoCombo(permitir_converter_garden=True))
         self.assertEqual(automation.executar_passo().estado, EstadoCombo.PREPARANDO)
         self.assertIn(("soil", "fertilizer"), bridge.calls)
-        bridge.garden = replace(full_garden(12, 6), soil_key="fertilizer")
+        bridge.garden = replace(full_garden(24, 12), soil_key="fertilizer")
+        automation._garden_check_at = 0
         self.assertEqual(automation.executar_passo().estado, EstadoCombo.PREPARANDO)
         self.assertIn(("soil", "clay"), bridge.calls)
 
@@ -227,7 +238,7 @@ class ComboStateMachineTests(unittest.TestCase):
         bridge.snapshots[0] = combo_snapshot(buffs=ready_buffs())
         now[0] = 60
         report = automation.executar_passo()
-        self.assertEqual(report.estado, EstadoCombo.INTERROMPIDO)
+        self.assertEqual(report.estado, EstadoCombo.AGUARDANDO_BUFFS)
         self.assertEqual(bridge.calls, [("snapshot",)])
 
     def test_transient_preflight_failure_stops_clicker_but_keeps_waiting(self):
@@ -267,7 +278,7 @@ class ComboStateMachineTests(unittest.TestCase):
         now[0] = 2
         self.assertEqual(automation.executar_passo().estado, EstadoCombo.CLICANDO)
         now[0] = 9
-        self.assertEqual(automation.executar_passo().estado, EstadoCombo.CONCLUIDO)
+        self.assertEqual(automation.executar_passo().estado, EstadoCombo.PREPARANDO)
 
     def test_preview_only_reads_snapshot_and_forecast(self):
         bridge = FakeComboBridge()
@@ -388,12 +399,12 @@ class ComboStateMachineTests(unittest.TestCase):
         self.assertEqual(len([c for c in bridge.calls if c[0] == "refill"]), 1)
 
     def test_alignment_preserves_full_bar_strategy_without_refill_resources(self):
-        for budget, lumps, spent in [(0, 1200, 0), (1, 1200, 1), (64, 0, 0)]:
+        for budget, lumps, spent in [(1, 1200, 0), (2, 1200, 1), (64, 0, 0)]:
             with self.subTest(budget=budget, lumps=lumps, spent=spent):
                 bridge = FakeComboBridge([combo_snapshot(magic=50, lumps=lumps)])
                 bridge.forecast.update(startCast=20, skipCount=10)
                 automation = ComboAutomation(
-                    bridge, ConfiguracaoCombo(maximo_lumps_alinhamento=budget),
+                    bridge, ConfiguracaoCombo(maximo_lumps_total=budget),
                 )
                 automation._lumps_gastos = spent
 
@@ -487,13 +498,13 @@ class ComboStateMachineTests(unittest.TestCase):
         bridge.forecast.update(currentCast=9, startCast=10, skipCount=1)
         bridge.garden = empty_garden()
 
-        report = ComboAutomation(bridge, ConfiguracaoCombo()).executar_passo()
+        report = ComboAutomation(bridge, ConfiguracaoCombo(permitir_converter_garden=True)).executar_passo()
 
         self.assertEqual(report.estado, EstadoCombo.PREPARANDO)
         self.assertIn("2 semente(s)", report.mensagem)
         self.assertEqual(
             [call for call in bridge.calls if call[0] == "plant"],
-            [("plant", "goldenClover", 0, 0), ("plant", "nursetulip", 1, 0)],
+            [("plant", "goldenClover", 0, 0), ("plant", "goldenClover", 1, 0)],
         )
 
     def test_garden_maturity_never_gates_ready_quadcast(self):
@@ -540,7 +551,7 @@ class ComboStateMachineTests(unittest.TestCase):
         bridge = FakeComboBridge()
         bridge.garden = full_garden(11, 10)
 
-        report = ComboAutomation(bridge, ConfiguracaoCombo()).executar_passo()
+        report = ComboAutomation(bridge, ConfiguracaoCombo(permitir_converter_garden=True)).executar_passo()
 
         self.assertEqual(report.estado, EstadoCombo.AGUARDANDO_BUFFS)
         self.assertEqual(report.garden_maduras, 21)
@@ -580,7 +591,7 @@ class ComboStateMachineTests(unittest.TestCase):
                             Mock(return_value=GardenActionResult(False, "plant", "Caixa insuficiente"))
                         )
 
-                    report = ComboAutomation(bridge, ConfiguracaoCombo()).executar_passo()
+                    report = ComboAutomation(bridge, ConfiguracaoCombo(permitir_converter_garden=True)).executar_passo()
 
                     self.assertFalse(report.terminal)
                     self.assertEqual(
@@ -593,7 +604,7 @@ class ComboStateMachineTests(unittest.TestCase):
         bridge = FakeComboBridge()
         bridge.garden = empty_garden()
         bridge.forecast.update(startCast=11, skipCount=1)
-        automation = ComboAutomation(bridge, ConfiguracaoCombo())
+        automation = ComboAutomation(bridge, ConfiguracaoCombo(permitir_converter_garden=True))
 
         def plant_and_stop(seed_key, x, y):
             automation.parar()
@@ -845,7 +856,8 @@ class ComboUiTests(unittest.TestCase):
 
     def test_automation_configuration_defaults_to_disabled(self):
         config = AutomationConfig()
-        self.assertEqual(config.combo_target_cookies, 1e72)
+        self.assertEqual(config.combo_max_total_lumps, 64)
+        self.assertEqual(config.combo_cash_reserve_percent, 80)
         self.assertEqual(config.combo_required_building_specials, 2)
         self.assertFalse(config.combo_pause_before_last_skips)
         self.assertFalse(ConfiguracaoCombo().pausar_antes_ultimos_skips)
@@ -872,6 +884,7 @@ class ComboUiTests(unittest.TestCase):
             automation.retomar.assert_called_once_with()
             self.assertFalse(window.combo_resume_button.isEnabled())
             window._set_combo_busy(False, preview=False)
+            window.combo_advanced_group.setChecked(True)
             self.assertTrue(window.combo_pause_checkbox.isEnabled())
             self.assertFalse(window.combo_resume_button.isEnabled())
         finally:
