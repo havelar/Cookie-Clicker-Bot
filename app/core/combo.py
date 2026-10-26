@@ -8,6 +8,11 @@ from typing import Callable, Optional
 
 from app.models.combo import ConfiguracaoCombo, EstadoCombo, PlanoCombo, RelatorioCombo
 from app.utils.logger import logger
+from app.core.garden_catalog import GARDEN_CATALOG
+from app.core.garden_golden import golden_layout, golden_soil
+from app.core.combo_planning import choose, estimate
+from app.models.garden import GardenAction
+from dataclasses import replace
 
 
 class ComboAutomation:
@@ -46,6 +51,16 @@ class ComboAutomation:
         self._latest_snapshot: Optional[dict] = None
         self._garden_maduras = 0
         self._garden_total = 0
+        self._plan_key = None
+        self._selected_candidate = None
+        self._garden_check_at = 0.0
+        self._garden_tick = None
+        self._busca_armada = False
+        self._ciclos_concluidos = 0
+        self._residuos_combo = ()
+        self._session_seed = None
+        self._cash_floor = 0.0
+        self._rebuild = {}
         self._last_report = RelatorioCombo(EstadoCombo.OCIOSO, "Combo não iniciado.")
 
     def parar(self) -> None:
@@ -55,6 +70,7 @@ class ComboAutomation:
     def retomar(self) -> None:
         """Libera uma única pausa de acompanhamento nesta execução."""
         if self._pause_plan is not None:
+            self._plan_key = None
             self._pause_released.set()
 
     def _report_pausa(self, snapshot: dict) -> RelatorioCombo:
@@ -62,7 +78,7 @@ class ComboAutomation:
         remaining = max(0, plano.cast_inicial - int(snapshot.get("spellsCastTotal", 0)))
         return self._report(
             EstadoCombo.PAUSADO,
-            f"Pausa de acompanhamento: faltavam até 3 skips; agora faltam {remaining} para o plano guardado.",
+            f"Combo pausado. Magias de preparação restantes: {remaining} para o plano guardado.",
             "Clique em Retomar combo quando estiver pronto. Nenhuma ação no jogo será executada até lá.",
             snapshot,
             plano,
@@ -72,13 +88,16 @@ class ComboAutomation:
         """Lê e planeja sem alterar o jogo."""
         snapshot = self.bridge.get_combo_snapshot()
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"))
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."))
         plano = self._planejar(snapshot)
         if plano is None:
+            if any(b.get('type') == 'dragonflight' for b in snapshot.get('buffs', ())):
+                return self._report(EstadoCombo.AGUARDANDO_BUFFS, 'Aguardando terminar o Voo do dragão.',
+                                    'A previsão será refeita quando o frenesi de cliques voltar a ser possível.', snapshot, None)
             return self._error("Nenhuma janela EF + CF + BS foi encontrada no alcance configurado.")
         return self._report(
             EstadoCombo.PREVIA,
-            f"Janela calculada on-the-go: {plano.resumo}.",
+            f"Oportunidade planejada: {plano.resumo}.",
             "Inicie o modo real para pausar as demais automações e preparar o save.",
             snapshot,
             plano,
@@ -101,6 +120,8 @@ class ComboAutomation:
             return self._error(f"Falha inesperada: {error}")
         finally:
             self.desabilitar_clicker()
+            if hasattr(self.bridge, "set_combo_cash_floor"):
+                self.bridge.set_combo_cash_floor(0)
 
     def executar_passo(self) -> RelatorioCombo:
         if self._stop.is_set():
@@ -108,7 +129,7 @@ class ComboAutomation:
 
         snapshot = self.bridge.get_combo_snapshot()
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"))
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."))
         self._latest_snapshot = snapshot
         if snapshot.get("screen") != "game":
             return self._error("O Cookie Clicker não está na tela normal do jogo.")
@@ -121,18 +142,17 @@ class ComboAutomation:
                 return self._report_pausa(snapshot)
             self._pause_plan = None
 
-        if self._click_deadline is None and (
-            snapshot.get("achievementWon") or float(snapshot.get("cookiesEarned", 0)) >= self.configuracao.alvo_cookies
-        ):
-            self.desabilitar_clicker()
-            self._restore_wizard_towers(snapshot)
-            return self._report(
-                EstadoCombo.CONCLUIDO,
-                "Meta confirmada: And a little extra foi obtida.",
-                "Combo encerrado; as automações pausadas podem ser retomadas.",
-                snapshot,
-                None,
-            )
+        if self._session_seed is None:
+            self._session_seed = snapshot.get('seed')
+        elif snapshot.get('seed') != self._session_seed:
+            return self._error('O save mudou durante o farm; inicie novamente para revalidar os gastos.')
+        if self._click_deadline is None:
+            if self._lumps_gastos >= self.configuracao.maximo_lumps_total:
+                return self._interrompido('Limite de torrões desta sessão atingido. Nenhum novo combo será preparado.')
+            if not self._cash_floor:
+                self._cash_floor = float(snapshot.get('cookies', 0)) * self.configuracao.reserva_caixa_percentual / 100
+        if hasattr(self.bridge, 'set_combo_cash_floor'):
+            self.bridge.set_combo_cash_floor(self._cash_floor)
 
         if self._click_deadline is not None:
             return self._monitorar_cliques(snapshot)
@@ -140,9 +160,13 @@ class ComboAutomation:
         if self._inicio_espera is None:
             self._inicio_espera = self.relogio()
         if self.relogio() - self._inicio_espera >= self.configuracao.tempo_maximo_espera:
-            return self._interrompido(
-                "Limite de espera atingido sem uma pilha válida; nenhuma tentativa final foi disparada."
-            )
+            self._inicio_espera = self.relogio()
+            return self._report(EstadoCombo.AGUARDANDO_BUFFS, 'Nenhuma oportunidade nesta janela; a busca continua.',
+                                'A sequência e o orçamento da sessão são preservados.', snapshot, None)
+
+        if any(b.get('type') == 'dragonflight' for b in snapshot.get('buffs', ())):
+            return self._report(EstadoCombo.AGUARDANDO_BUFFS, 'Aguardando terminar o Voo do dragão.',
+                                'A previsão será refeita quando o frenesi de cliques voltar a ser possível.', snapshot, None)
 
         plano = self._planejar(snapshot)
         if plano is None:
@@ -169,7 +193,7 @@ class ComboAutomation:
                     return self._report(
                         EstadoCombo.PREPARANDO,
                         "Golden Cookie expirou antes da coleta.",
-                        "Recalculando o runtime sem considerar o shimmer antigo.",
+                        "Buscando outra oportunidade de Golden Cookie.",
                         snapshot,
                         plano,
                     )
@@ -177,7 +201,7 @@ class ComboAutomation:
             return self._report(
                 EstadoCombo.PREPARANDO,
                 "Golden Cookie natural coletado pelo modo Combo.",
-                "Recalculando buffs e plano no próximo snapshot.",
+                "Atualizando os bônus e a próxima oportunidade.",
                 snapshot,
                 plano,
             )
@@ -223,7 +247,7 @@ class ComboAutomation:
             # Outro ator lançou uma spell entre snapshots; não reutilize o plano obsoleto.
             novo = self._planejar(snapshot)
             if novo is None or novo.cast_inicial < cast_atual:
-                return self._error("O contador de spells ultrapassou a janela e não foi possível replanejar.")
+                return self._error("A oportunidade de combo passou e não foi possível encontrar outra.")
             plano = novo
             ready, reason = self._buffs_prontos(snapshot, plano)
 
@@ -244,13 +268,21 @@ class ComboAutomation:
                 snapshot,
                 plano,
             )
-        required_lumps = 1 + int(
-            self.configuracao.usar_sugar_frenzy and not snapshot.get("sugarFrenzyUsed")
-        )
-        if int(snapshot.get("lumps", 0)) < required_lumps:
-            return self._error(
-                f"São necessários {required_lumps} Sugar Lumps para o Quadcast final configurado."
-            )
+        usar_acucar = self._usar_sugar_frenzy(snapshot)
+        required_lumps = 1 + int(usar_acucar)
+        if int(snapshot.get('lumps', 0)) < required_lumps:
+            return self._interrompido('Faltam torrões para a próxima tentativa. Nenhum novo gasto foi feito.')
+
+        if self.configuracao.usar_loans and any(
+                'loan' in str(b.get('name', '')).lower() + str(b.get('type', '')).lower()
+                and 'interest' in str(b.get('name', '')).lower() + str(b.get('type', '')).lower()
+                for b in snapshot.get('buffs', ())):
+            return self._report(EstadoCombo.PREPARANDO, 'Aguardando terminar os juros dos empréstimos.',
+                                'A espera armada começa quando os recursos finais estiverem disponíveis.', snapshot, plano)
+
+        if not self._busca_armada:
+            self._busca_armada = True
+            self._inicio_espera = self.relogio()
 
         if not ready:
             return self._report(
@@ -272,8 +304,9 @@ class ComboAutomation:
             expected_results=list(plano.resultados),
             minimum_buff_seconds=self.configuracao.duracao_minima_buff,
             required_natural_bs=plano.building_specials_naturais,
-            use_sugar_frenzy=self.configuracao.usar_sugar_frenzy,
+            use_sugar_frenzy=usar_acucar,
             use_loans=self.configuracao.usar_loans,
+            optimize_garden=self.configuracao.permitir_converter_garden and self.configuracao.otimizar_garden_final,
         )
         if not result.get("ok"):
             self.desabilitar_clicker()
@@ -282,13 +315,17 @@ class ComboAutomation:
                 return self._report(
                     EstadoCombo.AGUARDANDO_BUFFS,
                     result.get("message", "A pilha mudou antes do disparo."),
-                    "Revalidando sem consumir spells ou lumps.", snapshot, plano,
+                    "Conferindo a oportunidade sem gastar mana ou Sugar Lumps.", snapshot, plano,
                 )
             self._recover_after_quadcast_failure()
             return self._error(result.get("message", "Quadcast não foi confirmado"))
         self._lumps_gastos += int(result.get("lumpsSpent", 0))
         click_seconds = max(1.0, float(result.get("clickSeconds", 8.0)))
         self._click_deadline = started + click_seconds
+        self._residuos_combo = tuple(result.get("preserved", ()))
+        sold_ids = {int(item[0]) for item in result.get("sold", ())}
+        self._rebuild = {int(b["id"]):int(b["amount"]) for b in snapshot.get("buildings", ())
+                         if int(b.get("id", -1)) in sold_ids}
         return self._report(
             EstadoCombo.CLICANDO,
             "Quadcast confirmado; clicker executando na janela final.",
@@ -297,33 +334,46 @@ class ComboAutomation:
             plano,
         )
 
+    def _usar_sugar_frenzy(self, snapshot):
+        return (self.configuracao.usar_sugar_frenzy and not snapshot.get('sugarFrenzyUsed')
+                and self.configuracao.maximo_lumps_total-self._lumps_gastos >= 2
+                and int(snapshot.get('lumps', 0)) >= 2)
+
     def _planejar(self, snapshot: dict) -> Optional[PlanoCombo]:
-        raw = self.bridge.forecast_combo_window(
-            self.configuracao.busca_maxima_spells,
-            self.configuracao.building_specials_totais,
-        )
-        if not isinstance(raw, dict) or not raw.get("ok"):
+        config = replace(self.configuracao, maximo_lumps_total=max(0, self.configuracao.maximo_lumps_total-self._lumps_gastos))
+        current = int(snapshot.get('spellsCastTotal', 0))
+        key = (snapshot.get('seed'), snapshot.get('version'), snapshot.get('fthofFailBase'),
+               tuple(snapshot.get('auras', ())), snapshot.get('seasonSwitchAvailable'),
+               sum(int(b.get('amount', 0)) for b in snapshot.get('buildings', ())) >= 10,
+               tuple(sorted(b.get('type', '') for b in snapshot.get('buffs', ())
+                            if b.get('type') in {'dragonflight', 'magic adept', 'magic inept'})))
+        selected = self._selected_candidate
+        if self._plan_key != key or not selected or current > selected['startCast']:
+            if hasattr(self.bridge, 'forecast_combo_candidates'):
+                raw = self.bridge.forecast_combo_candidates(self.configuracao.busca_maxima_spells,
+                                                            self.configuracao.building_specials_totais)
+                selected = choose(raw.get('candidates', ()), snapshot, config) if raw.get('ok') else None
+            else:
+                # Compatibilidade com bridges antigos; a implementação atual usa alternativas isoladas.
+                raw = self.bridge.forecast_combo_window(self.configuracao.busca_maxima_spells,
+                                                        self.configuracao.building_specials_totais)
+                selected = raw if isinstance(raw, dict) and raw.get('ok') else None
+            self._selected_candidate, self._plan_key = selected, key
+        if not selected or len(selected.get('results', ())) != 4:
             return None
-        outcomes = tuple(str(value) for value in raw.get("results", ()))
-        if len(outcomes) != 4:
-            return None
+        raw = estimate(selected, snapshot, config)
         return PlanoCombo(
-            seed=str(raw.get("seed", snapshot.get("seed", ""))),
-            versao=str(raw.get("version", snapshot.get("version", ""))),
-            cast_atual=int(raw.get("currentCast", snapshot.get("spellsCastTotal", 0))),
-            cast_inicial=int(raw["startCast"]),
-            season=str(raw.get("season", snapshot.get("season", ""))),
-            resultados=outcomes,
-            spells_a_pular=int(raw.get("skipCount", 0)),
-            building_specials_spell=int(raw.get("spellBuildingSpecials", 0)),
-            building_specials_naturais=int(raw.get("naturalBuildingSpecials", 0)),
-            score=float(raw.get("score", 0)),
-        )
+            seed=str(raw.get('seed', snapshot.get('seed', ''))),
+            versao=str(raw.get('version', snapshot.get('version', ''))),
+            cast_atual=current, cast_inicial=int(raw['startCast']), season=str(raw.get('season', snapshot.get('season', ''))),
+            resultados=tuple(raw['results']), spells_a_pular=max(0, int(raw['startCast'])-current),
+            building_specials_spell=int(raw['spellBuildingSpecials']), building_specials_naturais=int(raw['naturalBuildingSpecials']),
+            score=float(raw['score']), ganho_estimado=raw['estimatedGain'], preparo_estimado=raw['preparationSeconds'])
 
     def _preparar_estado_estatico(self, snapshot: dict, plano: PlanoCombo) -> Optional[RelatorioCombo]:
         if snapshot.get("season") != plano.season:
             result = self.bridge.set_combo_season(plano.season)
-            return self._action_report(result, "Season ajustada para o forecast.", snapshot, plano)
+            return self._action_report(result, "Temporada ajustada para preparar o combo.", snapshot, plano)
         if snapshot.get("goldenSwitchOn"):
             result = self.bridge.set_combo_golden_switch(False)
             return self._action_report(result, "Golden Switch desligado durante a busca natural.", snapshot, plano)
@@ -374,8 +424,8 @@ class ComboAutomation:
         mana_cheia = maximum > 0 and magic + 1e-7 >= maximum
         refill_disponivel = bool(
             snapshot.get("canRefillLump")
-            and self._lumps_gastos < self.configuracao.maximo_lumps_alinhamento
-            and int(snapshot.get("lumps", 0)) > 0
+            and self._lumps_gastos + 1 + int(self._usar_sugar_frenzy(snapshot)) < self.configuracao.maximo_lumps_total
+            and int(snapshot.get("lumps", 0)) > 1 + int(self._usar_sugar_frenzy(snapshot))
         )
         # Com refill autorizado e disponivel, consome a barra em skips antes
         # de gastar o lump. Cada cast ainda passa por um novo snapshot/plano.
@@ -390,7 +440,7 @@ class ComboAutomation:
             )
             return self._action_report(
                 result,
-                f"Spell de alinhamento lançada; faltavam {remaining} skips.",
+                f"Spell de alinhamento lançada; faltavam {remaining} magias de preparação.",
                 snapshot,
                 plano,
                 EstadoCombo.ALINHANDO,
@@ -412,102 +462,65 @@ class ComboAutomation:
             )
         return self._report(
             EstadoCombo.ALINHANDO,
-            f"Aguardando mana máxima; faltam {remaining} spells até a janela recalculada.",
+            f"Aguardando mana máxima; faltam {remaining} magias até a próxima oportunidade.",
             "Sem refill disponível, Haggler's Charm aguarda a barra cheia; com refill disponível, consome a mana antes da recarga.",
             snapshot,
             plano,
         )
 
     def _preparar_garden(self, snapshot: dict, plano: PlanoCombo):
-        def optional_problem(message: str):
-            return self._report(
-                EstadoCombo.AGUARDANDO_GARDEN,
-                "Garden opcional: " + message,
-                "O alinhamento e a busca de buffs continuam; o Garden não bloqueia o Quadcast.",
-                snapshot,
-                plano,
-            ), False
-
-        try:
-            garden = self.bridge.get_garden_snapshot()
-        except Exception as error:
-            return optional_problem(str(error))
-        if not garden.status.available:
-            return optional_problem(garden.status.message)
-        required = {"goldenClover", "nursetulip"}
-        if not required.issubset(garden.unlocked_seed_keys):
-            return optional_problem("Golden Clover ou Nursetulip não está desbloqueada.")
-        plants = {(plant.x, plant.y): plant for plant in garden.plants}
-        desired = {
-            tile: ("nursetulip" if tile[0] % 3 == 1 else "goldenClover")
-            for tile in garden.unlocked_tiles
-        }
-        total = len(desired)
-        if not total:
-            return optional_problem("O Garden não possui espaços desbloqueados.")
-        mature_plants = [
-            plants[position] for position, key in desired.items()
-            if position in plants and plants[position].key == key and plants[position].mature
-        ]
-        mature = len(mature_plants)
-        self._garden_maduras = mature
-        self._garden_total = total
+        # A consulta e a manutenção ficam fora da janela final; o solo não precisa ser lido a cada 0,2 s.
+        if not self.configuracao.permitir_converter_garden:
+            return None, False
+        now = self.relogio()
+        if now < self._garden_check_at:
+            return None, True
+        self._garden_check_at = now + 10
+        garden = self.bridge.get_garden_snapshot()
+        if not garden.status.available or not {'goldenClover', 'nursetulip'}.issubset(garden.unlocked_seed_keys):
+            return None, False
         if garden.frozen:
-            result = self.bridge.set_garden_frozen(False)
-            if not result.success:
-                return optional_problem(result.message)
-            return self._garden_action_report(result, snapshot, plano), False
-        # Clay prolonga a coleta, mas seus ticks de 15 min tornam a formação
-        # das Nursetulips muito lenta. Fertilizer cresce em ticks de 3 min;
-        # troca para Clay quando já há uma maioria útil, sem exigir perfeição.
-        tulips_total = sum(key == "nursetulip" for key in desired.values())
-        tulips_mature = sum(plant.key == "nursetulip" for plant in mature_plants)
-        harvest_ready = mature * 2 >= total and tulips_mature * 2 >= tulips_total
-        desired_soil = "clay" if harvest_ready else "fertilizer"
-        if garden.soil_key != desired_soil:
-            result = self.bridge.change_garden_soil(desired_soil)
+            # Congelar desativa os efeitos. Preserve uma escolha manual; não descongele sem autorização.
+            return None, False
+        blocked = tuple((p.x, p.y) for p in garden.plants if
+                        p.key not in GARDEN_CATALOG or p.key not in garden.unlocked_seed_keys or
+                        (not self.configuracao.permitir_converter_garden and p.key not in {'goldenClover', 'nursetulip'}))
+        desired = dict(golden_layout(garden.unlocked_tiles, blocked))
+        # Plantas saudáveis deste cultivo não são arrancadas só para redesenhar as faixas.
+        desired.update(((p.x, p.y), p.key) for p in garden.plants
+                       if (p.x, p.y) not in blocked and p.key in {'goldenClover', 'nursetulip'})
+        self._garden_total = len(desired)
+        self._garden_maduras = sum(p.mature and desired.get((p.x, p.y)) == p.key for p in garden.plants)
+        if not desired:
+            return None, False
+        soil, effect, peak = golden_soil(garden, desired)
+        if garden.soil_key != soil:
+            result = self.bridge.change_garden_soil(soil)
             if result.success:
                 return self._garden_action_report(result, snapshot, plano), False
-            # Cooldown de solo é uma espera legítima, não um erro fatal.
-            return self._report(
-                EstadoCombo.AGUARDANDO_GARDEN,
-                result.message,
-                f"A troca para {desired_soil} será tentada novamente sem bloquear os buffs.",
-                snapshot,
-                plano,
-            ), False
-
-        for position, key in desired.items():
-            plant = plants.get(position)
-            if plant is not None and plant.key != key:
-                result = self.bridge.harvest_garden_tile(
-                    position[0], position[1], expected_key=plant.key, require_mature=False
-                )
-                if not result.success:
-                    return optional_problem(result.message)
-                return self._garden_action_report(result, snapshot, plano), False
-
-        missing = [
-            (position, key) for position, key in desired.items()
-            if plants.get(position) is None
-        ]
-        if missing:
-            planted = 0
-            for position, key in missing:
-                if self._stop.is_set():
-                    return self._interrompido("Parada solicitada durante o plantio do Garden."), False
-                result = self.bridge.plant_garden_seed(key, position[0], position[1])
-                if not result.success:
-                    return optional_problem(result.message)
-                planted += 1
-            return self._report(
-                EstadoCombo.PREPARANDO,
-                f"Garden preenchido rapidamente: {planted} semente(s) plantada(s) neste ciclo.",
-                "Revalidando todo o canteiro antes de aguardar a maturidade.",
-                snapshot,
-                plano,
-            ), False
-
+            return None, False
+        tick = garden.next_tick_at
+        if tick is not None and tick == self._garden_tick:
+            return None, True
+        actions = []
+        plants = {(p.x, p.y): p for p in garden.plants}
+        for (x, y), seed in desired.items():
+            plant = plants.get((x, y))
+            if plant and plant.key == seed:
+                continue
+            if plant:
+                actions.append(GardenAction('harvest', 'Conversão do canteiro autorizada.', x=x, y=y,
+                                            seed_key=plant.key, require_mature=False))
+            actions.append(GardenAction('plant', 'Reposição dos espaços disponíveis para coleta.', x=x, y=y, seed_key=seed))
+        if actions:
+            # O bridge revalida todas as plantas, sementes e o saldo do lote antes da primeira remoção.
+            results = self.bridge.execute_garden_layout(tuple(actions))
+            if not results or not all(r.success for r in results):
+                return None, False
+            self._garden_tick = tick
+            planted = sum(a.kind == 'plant' for a in actions)
+            return self._report(EstadoCombo.PREPARANDO, f'Garden: {planted} semente(s) plantada(s) em lote.',
+                                'Mantendo as plantas produtivas e repondo os espaços disponíveis.', snapshot, plano), False
         return None, True
 
     def _buffs_prontos(self, snapshot: dict, plano: PlanoCombo):
@@ -526,6 +539,10 @@ class ComboAutomation:
         if any(buff.get("type") in {"dragonflight", "cursed finger", "clot", "building debuff"}
                for buff in buffs):
             return False, "Aguardando expirar Dragonflight ou um efeito negativo incompatível."
+        if self.configuracao.usar_loans:
+            if any('interest' in str(buff.get('name', '')).lower() or 'interest' in str(buff.get('type', '')).lower()
+                   for buff in buffs if 'loan' in str(buff.get('name', '')).lower() or 'loan' in str(buff.get('type', '')).lower()):
+                return False, 'Aguardando terminar os juros dos empréstimos antes da tentativa.'
         if (not frenzy or float(frenzy.get("timeSeconds", 0)) < minimum) and "frenzy" not in plano.resultados:
             missing.append("Frenzy")
         if not harvest or float(harvest.get("timeSeconds", 0)) < minimum:
@@ -539,37 +556,55 @@ class ComboAutomation:
         return True, "Pilha natural confirmada com margem de duração."
 
     def _monitorar_cliques(self, snapshot: dict) -> RelatorioCombo:
-        achieved = snapshot.get("achievementWon") or float(snapshot.get("cookiesEarned", 0)) >= self.configuracao.alvo_cookies
-        active = {str(buff.get("type")) for buff in snapshot.get("buffs", ())}
-        if self.relogio() >= (self._click_deadline or 0) or not {"blood frenzy", "click frenzy"}.issubset(active):
+        active = {str(buff.get('type')) for buff in snapshot.get('buffs', ())}
+        if self.relogio() >= (self._click_deadline or 0) or not {'blood frenzy', 'click frenzy'}.issubset(active):
             self.desabilitar_clicker()
-            self._restore_wizard_towers(snapshot)
-            if achieved:
-                return self._report(
-                    EstadoCombo.CONCLUIDO,
-                    "Meta confirmada; janela de cliques aproveitada até o fim.",
-                    "Combo encerrado.", snapshot, None,
-                )
-            return self._error(
-                "A janela final terminou antes de confirmar 1e72; o bot parou sem repetir gastos."
-            )
+            if self._residuos_combo:
+                result = self.bridge.collect_combo_leftovers(self._residuos_combo)
+                if not result.get('ok'):
+                    return self._error(result.get('message', 'Não foi possível conferir os biscoitos restantes.'))
+                self._residuos_combo = ()
+            if self._wizard_towers_originais is not None and int(snapshot.get('wizardTowers', 0)) < self._wizard_towers_originais:
+                restored = self.bridge.set_combo_wizard_towers(self._wizard_towers_originais)
+                if not restored.get('ok'):
+                    if restored.get('waiting'):
+                        return self._report(EstadoCombo.PREPARANDO, 'Aguardando saldo livre para recompor as torres.',
+                                            'A reserva é preservada; o combo não será repetido antes da recomposição.', snapshot, None)
+                    return self._error('Não foi possível restaurar as torres respeitando a reserva de biscoitos.')
+            for building_id, amount in tuple(self._rebuild.items()):
+                restored = self.bridge.ensure_combo_building_minimum(building_id, amount)
+                if not restored.get('ok'):
+                    if restored.get('waiting'):
+                        return self._report(EstadoCombo.PREPARANDO, 'Aguardando saldo livre para recompor os prédios vendidos.',
+                                            'A reserva é preservada; aguardando antes do próximo combo.', snapshot, None)
+                    return self._error('Não foi possível confirmar a recomposição dos prédios vendidos.')
+                self._rebuild.pop(building_id)
+            self._ciclos_concluidos += 1
+            self._click_deadline = None
+            self._selected_candidate = self._plan_key = self._pause_plan = None
+            self._pause_released.clear()
+            self._inicio_espera = self.relogio()
+            self._busca_armada = False
+            self._garden_tick = None
+            self._garden_check_at = 0.0
+            self._cash_floor = max(self._cash_floor, float(snapshot.get('cookies', 0))*self.configuracao.reserva_caixa_percentual/100)
+            return self._report(EstadoCombo.PREPARANDO,
+                                f'Combo {self._ciclos_concluidos} concluído. Preparando a próxima tentativa.',
+                                'Aguardando mana, recarga e empréstimos disponíveis. O limite de gastos não é reiniciado.', snapshot, None)
         remaining = max(0.0, (self._click_deadline or 0) - self.relogio())
-        return self._report(
-            EstadoCombo.CLICANDO,
-            ("Meta atingida; " if achieved else "Clicker ativo; ") + f"{remaining:.1f} s de margem planejada.",
-            "Monitorando cookiesEarned e buffs a cada snapshot.",
-            snapshot,
-            None,
-        )
+        return self._report(EstadoCombo.CLICANDO, f'Clicker ativo; {remaining:.1f} s de janela útil.',
+                            'Aproveitando os bônus antes de preparar outro combo.', snapshot, None)
 
     def _restore_wizard_towers(self, snapshot: dict) -> None:
         if self._wizard_towers_originais is None:
-            return
+            return True
         current = int(snapshot.get("wizardTowers", 0))
         if current < self._wizard_towers_originais:
             result = self.bridge.set_combo_wizard_towers(self._wizard_towers_originais)
             if not result.get("ok"):
                 logger.warning("Combo: não foi possível restaurar Wizard Towers: %s", result.get("message"))
+                return False
+        return True
 
     def _recover_after_quadcast_failure(self) -> None:
         """Tenta somente a restauração idempotente das torres após falha parcial."""
@@ -598,7 +633,7 @@ class ComboAutomation:
         return self._report(
             state,
             result.get("message") or success_message,
-            "Revalidando o runtime antes da próxima ação.",
+            "Conferindo os recursos antes da próxima ação.",
             snapshot,
             plano,
         )
@@ -639,7 +674,8 @@ class ComboAutomation:
             mana_maxima=float(snapshot.get("magicM", 0)),
             lumps=int(snapshot.get("lumps", 0)),
             lumps_gastos=self._lumps_gastos,
-            cookies_assados=float(snapshot.get("cookiesEarned", 0)),
+            cookies_assados=float(snapshot.get("cookies", 0)),
+            ciclos_concluidos=self._ciclos_concluidos,
             buffs_ativos=buffs,
             building_specials_ativos=sum(
                 buff.get("type") == "building buff" for buff in snapshot.get("buffs", ())
@@ -655,6 +691,7 @@ class ComboAutomation:
             "Execução bloqueada em estado seguro.",
             "Corrija o diagnóstico e inicie novamente; gastos ambíguos não serão repetidos.",
             lumps_gastos=self._lumps_gastos,
+            ciclos_concluidos=self._ciclos_concluidos,
             erro=message,
         )
 
@@ -665,4 +702,5 @@ class ComboAutomation:
             message,
             "Nenhuma nova ação será iniciada.",
             lumps_gastos=self._lumps_gastos,
+            ciclos_concluidos=self._ciclos_concluidos,
         )

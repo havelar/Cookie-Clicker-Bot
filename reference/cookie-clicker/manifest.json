@@ -1,0 +1,401 @@
+{
+  "source": "Instalação local oficial Steam de Cookie Clicker",
+  "sourceDirectory": "D:/Steam/steamapps/common/Cookie Clicker/resources/app",
+  "gameVersion": "2.053",
+  "steamAppId": 1454400,
+  "steamBuildId": "17243728",
+  "copiedOn": "2026-10-07",
+  "javascriptFiles": 69,
+  "files": [
+    {
+      "path": "src/index.html",
+      "bytes": 8814,
+      "sha256": "28488d9aef9bf31c4c023a0af01f0500a3b3e462b79bf7f2b09790025927a969"
+    },
+    {
+      "path": "greenworks/LICENSE",
+      "bytes": 1151,
+      "sha256": "8f9bfa89296e21073f0b55531a13f7f2f2b327666df4adacad0deceaabd5fa51"
+    },
+    {
+      "path": "greenworks/greenworks.js",
+      "bytes": 7892,
+      "sha256": "e308321bcd8eccfa0e13a9c5b71d7f9189d92a0381dedc648220a12d3e59117d"
+    },
+    {
+      "path": "greenworks/package.json",
+      "bytes": 1590,
+      "sha256": "a4bd380e97af05b50d7dc9b05ce94e41aa5c1841fbba021178052d42c599a03b"
+    },
+    {
+      "path": "greenworks/samples/electron/main.js",
+      "bytes": 2919,
+      "sha256": "ef6d574138531bc481090cba7bc086385b938865821c1c2b7b241405eb67f0ef"
+    },
+    {
+      "path": "greenworks/samples/electron/package.json",
+      "bytes": 69,
+      "sha256": "882cea982b8061477c52200adb0dc33e8f8b19ca485651ee6af6eb8a40540d91"
+    },
+    {
+      "path": "greenworks/samples/electron/start.js",
+      "bytes": 619,
+      "sha256": "6ee65d5f938946d7bc79cbcf2d6ef393121af93aa2ac944809994b4c607e8ac0"
+    },
+    {
+      "path": "greenworks/samples/nw.js/main.js",
+      "bytes": 3024,
+      "sha256": "60475c84cc464f1c344361b8dc1d53f62ab51240bd70d4351c972729c17c1fe6"
+    },
+    {
+      "path": "greenworks/samples/nw.js/package.json",
+      "bytes": 63,
+      "sha256": "6d0c72286b386b5cb45e3840513a0d4612f5f98c2dc749e215f1ed8b7bd20676"
+    },
+    {
+      "path": "greenworks/test/test.js",
+      "bytes": 3538,
+      "sha256": "2fae2672f2a2ca67700992802b61f6cf848f48dcd872aaed8937c62e9030a33a"
+    },
+    {
+      "path": "greenworks/tools/steamworks_sdk_dir.js",
+      "bytes": 357,
+      "sha256": "6e077c5cfe4acc139a4572100bba0548dfcf56d4e429d91d794b7e9d5dd1598d"
+    },
+    {
+      "path": "mods/local/coolerSampleMod/main.js",
+      "bytes": 3092,
+      "sha256": "19ab141ba4e2168d95b5a6c6ca695e3e518c5c998ceffdb7ba5c1129f513c0b4"
+    },
+    {
+      "path": "mods/local/languageSampleMod/lang.js",
+      "bytes": 2620,
+      "sha256": "22cd57c089f417977b3387e557f13e34763f13266a15f1058323200e7264e70a"
+    },
+    {
+      "path": "mods/local/sampleMod/main.js",
+      "bytes": 533,
+      "sha256": "f735a13c5854117a67f55f5508e8570f36e644d2307dacc0cac3af1fc71ffb5f"
+    },
+    {
+      "path": "node_modules/adm-zip/LICENSE",
+      "bytes": 1127,
+      "sha256": "d53b892bc94c3feba237dfad40e5fa3574389274196294b594088fad156c8098"
+    },
+    {
+      "path": "node_modules/adm-zip/adm-zip.js",
+      "bytes": 30844,
+      "sha256": "d20bfe3d0c20a738275cd60c928610a6ba484f1a33e2bbf1eec85f24de0c1bcd"
+    },
+    {
+      "path": "node_modules/adm-zip/headers/entryHeader.js",
+      "bytes": 11355,
+      "sha256": "d3ca0adfd642be6287daf5a7cc8d3959332f31ba52b6ef1a53e4520bf4175f3f"
+    },
+    {
+      "path": "node_modules/adm-zip/headers/index.js",
+      "bytes": 94,
+      "sha256": "536e4b5bf009a3d9f6eccfbbc4157cb6de663d889e0826ea5f6e5fa17aaeb8bf"
+    },
+    {
+      "path": "node_modules/adm-zip/headers/mainHeader.js",
+      "bytes": 4439,
+      "sha256": "6da8b16b5f1fe3c930a06e4aab9dd1fcce78d9850baafec3e5702c038d5dc58e"
+    },
+    {
+      "path": "node_modules/adm-zip/methods/deflater.js",
+      "bytes": 1021,
+      "sha256": "6dc41b2460594cfa5136b797653c166b2f7403820a40f2fca17cca35a5de1b5f"
+    },
+    {
+      "path": "node_modules/adm-zip/methods/index.js",
+      "bytes": 128,
+      "sha256": "d67714f1a04be942f90be77069af3ff4214aa8ee84b26edeff3a87eb0d8e2dc0"
+    },
+    {
+      "path": "node_modules/adm-zip/methods/inflater.js",
+      "bytes": 936,
+      "sha256": "ac2c664bd94fe9daee76174aa00d149d60bbbe6ae5d5865b14bd76e9b7d2d612"
+    },
+    {
+      "path": "node_modules/adm-zip/methods/zipcrypto.js",
+      "bytes": 5455,
+      "sha256": "2b76c14cac47da833e1bdf690faf68acc0f5ceb645605df876f42e67801d2f1c"
+    },
+    {
+      "path": "node_modules/adm-zip/package.json",
+      "bytes": 791,
+      "sha256": "bf52d3151bd62815e7f0ddbef80f3f41da52c624c57d4ae9a1c5da36dc0c719b"
+    },
+    {
+      "path": "node_modules/adm-zip/util/constants.js",
+      "bytes": 6374,
+      "sha256": "208e943a2e5faad056047f3c7991cce3cde637d8e272a564f2546210ebdf2069"
+    },
+    {
+      "path": "node_modules/adm-zip/util/errors.js",
+      "bytes": 1886,
+      "sha256": "56ee85e2b90ec4a41df0813c4e7e08f617da69a82663149a8f9cc110deff43ea"
+    },
+    {
+      "path": "node_modules/adm-zip/util/fattr.js",
+      "bytes": 1963,
+      "sha256": "cecf4e89cd49c408dacf19894756926cb73bae801f4f44e66011826230ef1975"
+    },
+    {
+      "path": "node_modules/adm-zip/util/fileSystem.js",
+      "bytes": 353,
+      "sha256": "c0e0fdf6ca6d8dd98041adc6d8674f6bb02b94145abc98f08f24f1d0e4a8b5ad"
+    },
+    {
+      "path": "node_modules/adm-zip/util/index.js",
+      "bytes": 179,
+      "sha256": "a231e422e9f88464dbaf2ca91c0b7acd141f84e475de7847538d3f53890fd274"
+    },
+    {
+      "path": "node_modules/adm-zip/util/utils.js",
+      "bytes": 7728,
+      "sha256": "6a742fd01e060853064d0f484ed49e41de5ab8bf6e5c14c515e4f38d3de78282"
+    },
+    {
+      "path": "node_modules/adm-zip/zipEntry.js",
+      "bytes": 11959,
+      "sha256": "699358b454fd68983c363f2df22ada2fac0ad3ebfc4890f80efe7e49461f8c78"
+    },
+    {
+      "path": "node_modules/adm-zip/zipFile.js",
+      "bytes": 13649,
+      "sha256": "015cb9553db23bc281ee784f7eb974cbd026dace0322a0989b0a400bbcd68e8c"
+    },
+    {
+      "path": "node_modules/steamapi/index.js",
+      "bytes": 43,
+      "sha256": "a39399623f167452e61293060481aa2e0b2636d5230d2b3ea48a0ed7d06be67f"
+    },
+    {
+      "path": "node_modules/steamapi/package.json",
+      "bytes": 442,
+      "sha256": "861a3a5b73d927d3988defac6830a1fd8fb2b2075a7d1698727b80bb0b0e72a6"
+    },
+    {
+      "path": "node_modules/steamapi/src/SteamAPI.js",
+      "bytes": 12970,
+      "sha256": "d5ebfeaaabed25c251f624cda5ca5b2aba1d5996316f6b8f2f831e8e2e4cb737"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/Achievement.js",
+      "bytes": 440,
+      "sha256": "5ce330e7ae066337cd19f295c04642ff816176f316f79cd0c8de819d7f5217e8"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/Badge.js",
+      "bytes": 494,
+      "sha256": "f26e677384affc79fe562d07353b0333804577149f06c7a8ebf8c0529a04668b"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/Friend.js",
+      "bytes": 394,
+      "sha256": "e307140f1f44c9a86f2f882810bc99a577fe6484d812d41deea958dfd2fc0f61"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/Game.js",
+      "bytes": 415,
+      "sha256": "6bef721f90dda02b42a92cce8a89a5f975fdfa3c6b48253b0853e555fb28ab40"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/GameServer.js",
+      "bytes": 607,
+      "sha256": "c42eb747864e7c8e555e7a7320ebe3ec2c01c68daa47018de3cde97782584c74"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/Player.js",
+      "bytes": 211,
+      "sha256": "bc67098632e94d2d45cdc5f337af6502e0c50ea5fb9fca8c5860ab429585580f"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/PlayerAchievements.js",
+      "bytes": 361,
+      "sha256": "a702f969d10ba1f3bb9a7d94ffd5cd95fd4198eb432c1b0fc5b8c2bfdb481ab0"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/PlayerBadges.js",
+      "bytes": 388,
+      "sha256": "df95b6e61417ecf3e8a54ca026d66a2c2bf94bab89ac9bcf56cb815ce9919fa0"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/PlayerBans.js",
+      "bytes": 606,
+      "sha256": "16f55650690621202b7b9347c15486a796e9430fede7afaa06d26779639557d2"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/PlayerServers.js",
+      "bytes": 802,
+      "sha256": "7817a23a5823510fde2b8e95036583c7783ae1a36f086f6e0761537e98781bfa"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/PlayerStats.js",
+      "bytes": 409,
+      "sha256": "fce8e1bc225baa8fdaee54e3a3ed76ab191c8a1b040fa4e0cf3671a70247a810"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/PlayerSummary.js",
+      "bytes": 1309,
+      "sha256": "cbdd43c0bd3aa020efbb4242e160552de27c18ec02ffe080110315401c467ce4"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/RecentGame.js",
+      "bytes": 373,
+      "sha256": "4c6d7e390b0441c6f02d5b777b522b5a1dfbf87eb04233bf3c2a05145b043dd7"
+    },
+    {
+      "path": "node_modules/steamapi/src/structures/Server.js",
+      "bytes": 345,
+      "sha256": "1c6996c8e80fd0c7ffa5fd357470545cac7271a9ae7ef77f6518ad2bdf0887e9"
+    },
+    {
+      "path": "node_modules/steamapi/src/utils/fetch.js",
+      "bytes": 1078,
+      "sha256": "c395251ca5968833577d3796774b224aa2949140ab5a36814fcabdc8cf8cb683"
+    },
+    {
+      "path": "node_modules/steamapi/src/utils/objectify.js",
+      "bytes": 800,
+      "sha256": "afd843c73b64d846c9ad69c9c4108488bc47fa06b819a152dd0c6d917d76ee69"
+    },
+    {
+      "path": "package.json",
+      "bytes": 314,
+      "sha256": "d07d0a73db772a274d036d8194f335d916ff93ba452bac42235dd535f646b870"
+    },
+    {
+      "path": "preload.js",
+      "bytes": 315,
+      "sha256": "4092e582e2ddb8098cc623d3ce51b0296e6126624edd714a421e291071007ed7"
+    },
+    {
+      "path": "src/ascendCalibrator.js",
+      "bytes": 16545,
+      "sha256": "1ff58329defbd1238eeadf56396900e402426754db62d1c3771aa272a1369c47"
+    },
+    {
+      "path": "src/base64.js",
+      "bytes": 3146,
+      "sha256": "875839c3e0c174c9358ce96923adfed6a6d2c090187a32deb35152dfac2c0e47"
+    },
+    {
+      "path": "src/excanvas.compiled.js",
+      "bytes": 11363,
+      "sha256": "cbb3b3cb26e233aa777e6f92d2b0880f1cc01a195bfe4b91399e737b09dc1d29"
+    },
+    {
+      "path": "src/loc/CS.js",
+      "bytes": 256983,
+      "sha256": "994f5fb45150da539ee215425dfd0632efe8b535f5996b11ffc5fbb7110cdcc6"
+    },
+    {
+      "path": "src/loc/DA.js",
+      "bytes": 249585,
+      "sha256": "f4142917e8c454f7504b8ea57fdd2ee583878a421e59693a69e3919350d7d552"
+    },
+    {
+      "path": "src/loc/DE.js",
+      "bytes": 260520,
+      "sha256": "a271a7db75ca46c1022610cb0efabcb56cbc15bb521ca81d08d41872e7798af0"
+    },
+    {
+      "path": "src/loc/EN.js",
+      "bytes": 198218,
+      "sha256": "ce48272a5fd5ab1f309dbb8fd7bd70188984ce14235a1d3d9215f3585101f433"
+    },
+    {
+      "path": "src/loc/ES.js",
+      "bytes": 260489,
+      "sha256": "6c2ed68898af67c2ddfc30b0f93c5685fbd4bec82df4c8dc39b45e2b0a475127"
+    },
+    {
+      "path": "src/loc/FR.js",
+      "bytes": 266067,
+      "sha256": "15daaf032622975964dc97c8295ffcee073c19524a0661d86e204e739f08529f"
+    },
+    {
+      "path": "src/loc/IT.js",
+      "bytes": 262871,
+      "sha256": "b60d54cd4cf142fb2ef5a22aa7611e5d7e4fa4d555cd2c91736b87f44253b725"
+    },
+    {
+      "path": "src/loc/JA.js",
+      "bytes": 278499,
+      "sha256": "e7ae39f10a9810982ea5018a175efe86a6fd33e1c3ff55e867c4d4bdbb9be0fc"
+    },
+    {
+      "path": "src/loc/KO.js",
+      "bytes": 264424,
+      "sha256": "f18dfa274c7a889a456b61e629d447d3668db70ad767675a5959aefc9231649b"
+    },
+    {
+      "path": "src/loc/NL.js",
+      "bytes": 254305,
+      "sha256": "754f02abc1824383e00619ef85788bc261964631313d4179a79a1e8637531745"
+    },
+    {
+      "path": "src/loc/NO.js",
+      "bytes": 247345,
+      "sha256": "9b9b14d32230056baa8302c098498715449cf46adb5700b0143f02761864bb61"
+    },
+    {
+      "path": "src/loc/PL.js",
+      "bytes": 262188,
+      "sha256": "751fd28921f3df891642e29fb3036db9686478da85aa0f18c53b83349ef33dd5"
+    },
+    {
+      "path": "src/loc/PT-BR.js",
+      "bytes": 260661,
+      "sha256": "26631fe0ff4cc780fc378c2d46d39c691809d04bf0543f93968545ce92228551"
+    },
+    {
+      "path": "src/loc/RU.js",
+      "bytes": 337470,
+      "sha256": "33fb5f6c20bf8dba56105fd23376d0fcc75af3d3c36e1693faf161a275143b90"
+    },
+    {
+      "path": "src/loc/ZH-CN.js",
+      "bytes": 240613,
+      "sha256": "1ca3d9587968581b23d4f51f4d5b0cf11568642a37c0d78f4a8cbfac18624fe3"
+    },
+    {
+      "path": "src/main.js",
+      "bytes": 958536,
+      "sha256": "a8813ec2ee97edf5ebff6a3ce2037dcb65c08abd13c123bb92efda89b06ef4f7"
+    },
+    {
+      "path": "src/minigameGarden.js",
+      "bytes": 85140,
+      "sha256": "184eacacd9325d493412dcda07f63d3a791939f83889b4349b6099d04be8e6c9"
+    },
+    {
+      "path": "src/minigameGrimoire.js",
+      "bytes": 23574,
+      "sha256": "9efea1feb898dc9b719dd971bd27a71f083a8855b910013c524aea9b6d2a349d"
+    },
+    {
+      "path": "src/minigameMarket.js",
+      "bytes": 56757,
+      "sha256": "78538743673f3c1cd0e870a3695c77dcacd63febbe64b88f8a8fab9ea7e2863f"
+    },
+    {
+      "path": "src/minigamePantheon.js",
+      "bytes": 25887,
+      "sha256": "af08c31c4564d445cc2d1a7d101c4a63b57aa9b89991b93b8a65f4c0427573a0"
+    },
+    {
+      "path": "start.js",
+      "bytes": 20122,
+      "sha256": "10f940c1d978e810d5f97f65279cc82b9ba426ae2289cfaa5d12ece5a0d69437"
+    },
+    {
+      "path": "steam/steam.js",
+      "bytes": 38810,
+      "sha256": "7d5a235508dd93aef12e974a17f38a2f1d656228b8bb5240c3449f7a2cef09cb"
+    }
+  ]
+}

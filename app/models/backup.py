@@ -41,7 +41,10 @@ class BackupEntry:
         date_str, time_str, name = parts
 
         timestamp_str = f"{date_str} {time_str.replace('-', ':')}"
-        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+        try:
+            timestamp = datetime.strptime(f'{date_str} {time_str}', '%Y-%m-%d %H-%M-%S-%f')
+        except ValueError:
+            timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
 
         return cls(
             name=name,

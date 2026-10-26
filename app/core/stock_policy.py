@@ -2,9 +2,6 @@
 import math
 from typing import Mapping
 
-GASEOUS_ASSETS_TARGET = 31_536_000.0
-
-
 def valid_limits(value) -> bool:
     if not isinstance(value, dict):
         return False

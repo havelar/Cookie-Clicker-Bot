@@ -1,0 +1,2 @@
+# Preservar os bytes e a formatação dos arquivos originais do jogo.
+reference/cookie-clicker/** -text -whitespace

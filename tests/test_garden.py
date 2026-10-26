@@ -1,14 +1,16 @@
 """Testes da bridge, catálogo, planejamento, UI e segurança do Garden."""
 from collections import Counter
+from dataclasses import replace
 import os
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from app.bridge.js_bridge import CookieClickerBridge
 from app.config.settings import AutomationConfig, automation_config
 from app.core.fazendeira import Fazendeira
 from app.core.garden_catalog import GARDEN_CATALOG, TARGET_SEED_KEYS, validate_catalog
 from app.models.garden import (
+    GardenAction,
     GardenActionResult,
     GardenCycleResult,
     GardenGoal,
@@ -65,6 +67,15 @@ class FakeGardenBridge:
         self.mutable_calls.append(("harvest", options.get("expected_key"), x, y))
         return GardenActionResult(True, "harvest", "Colheita confirmada", x=x, y=y)
 
+    def execute_garden_layout(self, actions):
+        results = []
+        for action in actions:
+            if action.kind == "plant":
+                results.append(self.plant_garden_seed(action.seed_key, action.x, action.y))
+            else:
+                results.append(self.harvest_garden_tile(action.x, action.y, expected_key=action.seed_key))
+        return tuple(results)
+
     def change_garden_soil(self, key):
         self.mutable_calls.append(("soil", key))
         return GardenActionResult(True, "change_soil", "Solo confirmado", soil_key=key)
@@ -73,6 +84,68 @@ class FakeGardenBridge:
         self.mutable_calls.append(("freeze", frozen))
         return GardenActionResult(True, "set_freeze", "Estado confirmado")
 
+
+class PlantioImediatoColecaoTests(unittest.TestCase):
+    def cenario(self, *, pai_existente=False, substituicao=False):
+        plantas = []
+        if pai_existente:
+            plantas.append(GardenPlant(0, 1, 0, "doughshroom", "Doughshroom", 55, 80.75, False,
+                                       average_growth=2.1))
+        if substituicao:
+            plantas.append(GardenPlant(1, 1, 0, "bakerWheat", "Baker's wheat", 10, 35, False))
+        atual = snapshot(set(TARGET_SEED_KEYS) - {"foolBolete"}, plantas, soil="fertilizer",
+                         tiles=tuple((x, y) for y in range(6) for x in range(6)), next_tick_at=1234.5)
+        sementes = tuple(replace(s, mature_age=80.75, average_growth=2.1) if s.key == "doughshroom" else
+                         replace(s, mature_age=61.75, average_growth=19.425) if s.key == "greenRot" else s
+                         for s in atual.seeds)
+        return replace(atual, seeds=sementes)
+
+    def test_pais_lento_e_rapido_entram_juntos_sem_ocupar_espacos_de_mutacao(self):
+        atual = self.cenario()
+        fazendeira = Fazendeira(FakeGardenBridge(atual))
+        plano = fazendeira.build_plan(atual, strategy="plants")
+        desejado, centros, _ = fazendeira._find_generic_layout(atual, GARDEN_CATALOG["foolBolete"])
+        plantios = {(a.x, a.y): a.seed_key for a in plano.actions if a.kind == "plant"}
+        self.assertEqual(plantios, desejado)
+        self.assertEqual(len(plantios), 10)
+        self.assertEqual(len(centros), 26)
+        self.assertFalse(set(plantios) & set(centros))
+        self.assertEqual(set(plantios.values()), {"doughshroom", "greenRot"})
+        self.assertIn("plantar imediatamente", plano.explanation)
+        self.assertNotIn("Sincronizar os pais", plano.explanation)
+
+    def test_pai_lento_em_crescimento_nao_adia_substituicao_e_plantio_do_rapido(self):
+        atual = self.cenario(pai_existente=True, substituicao=True)
+        plano = Fazendeira(FakeGardenBridge(atual)).build_plan(atual, strategy="plants")
+        self.assertTrue(any(a.kind == "harvest" and (a.x, a.y) == (1, 1) and not a.require_mature
+                            for a in plano.actions))
+        self.assertTrue(any(a.kind == "plant" and (a.x, a.y) == (1, 1) and a.seed_key == "greenRot"
+                            for a in plano.actions))
+        self.assertFalse(any((a.x, a.y) == (0, 1) for a in plano.actions))
+        self.assertEqual(sum(a.kind == "plant" for a in plano.actions), 9)
+
+    def test_mesmo_ciclo_envia_todos_os_pais_em_um_lote_e_nao_repete_o_tick(self):
+        bridge = FakeGardenBridge(self.cenario())
+        bridge.execute_garden_layout = Mock(wraps=bridge.execute_garden_layout)
+        fazendeira = Fazendeira(bridge)
+        resultado = fazendeira.run_cycle(dry_run=False, automation_enabled=True, strategy="plants")
+        lote = bridge.execute_garden_layout.call_args.args[0]
+        self.assertEqual(sum(a.kind == "plant" for a in lote), 10)
+        self.assertEqual({a.seed_key for a in lote if a.kind == "plant"}, {"doughshroom", "greenRot"})
+        self.assertTrue(all(r.success for r in resultado.action_results))
+        repetido = fazendeira.run_cycle(dry_run=False, automation_enabled=True, strategy="plants")
+        self.assertEqual(repetido.action_results, ())
+        bridge.execute_garden_layout.assert_called_once()
+
+    def test_simulacao_planeja_os_dois_pais_sem_chamadas_mutaveis(self):
+        bridge = FakeGardenBridge(self.cenario())
+        fazendeira = Fazendeira(bridge)
+        for simular, habilitada in ((True, True), (False, False)):
+            resultado = fazendeira.run_cycle(dry_run=simular, automation_enabled=habilitada, strategy="plants")
+            self.assertEqual({a.seed_key for a in resultado.plan.actions if a.kind == "plant"},
+                             {"doughshroom", "greenRot"})
+            self.assertTrue(resultado.dry_run)
+        self.assertEqual(bridge.mutable_calls, [])
 
 class GardenCatalogTests(unittest.TestCase):
     def test_catalog_has_all_runtime_plants_and_valid_dependencies(self):
@@ -91,7 +164,6 @@ class GardenCatalogTests(unittest.TestCase):
 
     def test_automation_default_is_disabled_and_interval_is_conservative(self):
         config = AutomationConfig()
-        self.assertFalse(config.enable_garden_automation)
         self.assertGreaterEqual(config.garden_poll_interval_seconds, 30)
 
 
@@ -172,7 +244,7 @@ class FazendeiraPlanningTests(unittest.TestCase):
         self.assertEqual({action.seed_key for action in plants}, {"queenbeet"})
         self.assertIn("anel", plan.explanation)
 
-    def test_shriekbulb_prefers_three_duketaters_of_any_age(self):
+    def test_shriekbulb_distributes_duketaters_across_the_whole_plot(self):
         six_by_six = tuple((x, y) for y in range(6) for x in range(6))
         unlocked = set(TARGET_SEED_KEYS) - {"shriekbulb"}
         current = snapshot(unlocked, tiles=six_by_six)
@@ -180,8 +252,12 @@ class FazendeiraPlanningTests(unittest.TestCase):
         plants = [action for action in plan.actions if action.kind == "plant"]
 
         self.assertEqual(plan.goal.target_key, "shriekbulb")
-        self.assertEqual(len(plants), 3)
+        self.assertGreater(len(plants), 3)
         self.assertEqual({action.seed_key for action in plants}, {"duketater"})
+        layout = {(a.x,a.y): a.seed_key for a in plants}
+        recipe = GARDEN_CATALOG["shriekbulb"]
+        centers = [p for p in six_by_six if p not in layout and Fazendeira(FakeGardenBridge(current))._intended_tile_matches(p,layout,{},recipe)]
+        self.assertGreaterEqual(len(centers), 16)
         self.assertEqual(plan.goal.parent_names, ("3× Duketater",))
 
     def test_golden_clover_uses_optimized_maximum_garden_layout(self):
@@ -217,16 +293,16 @@ class FazendeiraPlanningTests(unittest.TestCase):
             for position in mutation_tiles
         ))
 
-    def test_golden_clover_falls_back_to_local_ring_on_smaller_garden(self):
+    def test_golden_clover_uses_all_available_area_on_smaller_garden(self):
         unlocked = set(TARGET_SEED_KEYS) - {"goldenClover"}
         current = snapshot(unlocked)
         plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
         plants = [action for action in plan.actions if action.kind == "plant"]
 
         self.assertEqual(plan.goal.target_key, "goldenClover")
-        self.assertEqual(len(plants), 4)
+        self.assertGreater(len(plants), 4)
         self.assertEqual({action.seed_key for action in plants}, {"clover"})
-        self.assertIn("anel", plan.explanation)
+        self.assertIn("layout distribuído", plan.explanation)
 
     def test_mature_golden_clover_layout_switches_to_woodchips(self):
         six_by_six = tuple((x, y) for y in range(6) for x in range(6))
@@ -519,6 +595,67 @@ class FazendeiraPlanningTests(unittest.TestCase):
         self.assertTrue(plan.waiting)
 
 
+class GardenBudgetDecisionTests(unittest.TestCase):
+    def test_wait_keeps_mature_harvest_and_retries_after_next_tick(self):
+        bridge = FakeGardenBridge(snapshot({"bakerWheat", "thumbcorn"}, next_tick_at=1000))
+        farmer = Fazendeira(bridge)
+        mature = GardenAction("harvest", "save discovery", x=2, y=2, seed_key="thumbcorn")
+        remove = GardenAction("harvest", "replace", x=3, y=3, seed_key="bakerWheat", require_mature=False)
+        plant = GardenAction("plant", "new layout", x=3, y=3, seed_key="thumbcorn")
+        farmer.build_plan = Mock(return_value=GardenPlan(None, (remove, mature, plant)))
+        wait = GardenActionResult(False, "layout", "Aguardando dinheiro", waiting=True,
+                                  reason="insufficient_funds", required_cookies=500, available_cookies=100)
+        batch = bridge.execute_garden_layout
+        bridge.execute_garden_layout = Mock(return_value=(wait,))
+        with patch('app.core.fazendeira.logger') as log:
+            first = farmer.run_cycle(dry_run=False, automation_enabled=True)
+            self.assertTrue(first.plan.waiting)
+            self.assertIn("500", first.plan.explanation)
+            self.assertEqual(bridge.mutable_calls, [("harvest", "thumbcorn", 2, 2)])
+            log.warning.assert_not_called()
+            farmer.run_cycle(dry_run=False, automation_enabled=True)
+            bridge.execute_garden_layout.assert_called_once_with((remove, plant))
+            # No more mature discovery in the next snapshot/plan.
+            farmer.build_plan.return_value = GardenPlan(None, (remove, plant))
+            bridge.current = replace(bridge.current, next_tick_at=2000)
+            farmer.run_cycle(dry_run=False, automation_enabled=True)
+            waiting_logs = [c for c in log.info.call_args_list if "Aguardando" in str(c)]
+            self.assertEqual(len(waiting_logs), 1)
+            bridge.current = replace(bridge.current, next_tick_at=3000)
+            bridge.execute_garden_layout.side_effect = batch
+            recovered = farmer.run_cycle(dry_run=False, automation_enabled=True)
+        self.assertTrue(all(r.success for r in recovered.action_results))
+        self.assertIn(("plant", "thumbcorn", 3, 3), bridge.mutable_calls)
+        self.assertFalse(farmer._last_budget_wait)
+
+    def test_switching_off_after_harvest_prevents_layout_execution(self):
+        bridge = FakeGardenBridge(snapshot({"bakerWheat", "thumbcorn"}))
+        farmer = Fazendeira(bridge)
+        actions = (
+            GardenAction("harvest", "discovery", x=2, y=2, seed_key="thumbcorn"),
+            GardenAction("plant", "new layout", x=3, y=3, seed_key="bakerWheat"),
+        )
+        farmer.build_plan = Mock(return_value=GardenPlan(None, actions))
+        stopped = [False]
+        def harvest(*args, **kwargs):
+            stopped[0] = True
+            return GardenActionResult(True, "harvest", "Colhida")
+        bridge.harvest_garden_tile = harvest
+        bridge.execute_garden_layout = Mock()
+        result = farmer.run_cycle(dry_run=False, automation_enabled=True, should_stop=lambda: stopped[0])
+        self.assertEqual(len(result.action_results), 1)
+        bridge.execute_garden_layout.assert_not_called()
+
+    def test_preview_explains_shortage_without_mutation(self):
+        current = snapshot({"bakerWheat"})
+        current = replace(current, cookies=1, seeds=tuple(replace(s, cost=100) for s in current.seeds))
+        bridge = FakeGardenBridge(current)
+        result = Fazendeira(bridge).run_cycle(dry_run=True)
+        self.assertTrue(result.plan.waiting)
+        self.assertIn("aguardará dinheiro", result.plan.explanation)
+        self.assertEqual(bridge.mutable_calls, [])
+
+
 class GardenBridgeTests(unittest.TestCase):
     def test_invalid_response_becomes_unavailable_snapshot(self):
         bridge = CookieClickerBridge()
@@ -541,17 +678,41 @@ class GardenBridgeTests(unittest.TestCase):
         self.assertFalse(result.success)
         bridge.execute_js.assert_not_called()
 
+    def test_budget_wait_is_parsed_with_structured_amounts(self):
+        bridge = CookieClickerBridge()
+        bridge.execute_js = Mock(return_value=[{
+            "ok": False, "action": "layout", "message": "Aguardando dinheiro",
+            "waiting": True, "reason": "insufficient_funds",
+            "requiredCookies": 100, "availableCookies": 20,
+        }])
+        result, = bridge.execute_garden_layout((GardenAction("plant", "fill", x=0, y=0, seed_key="bakerWheat"),))
+        self.assertTrue(result.waiting)
+        self.assertEqual(result.required_cookies, 100)
+        self.assertEqual(result.available_cookies, 20)
+
+    def test_layout_rejects_invalid_or_duplicate_actions_before_runtime(self):
+        bridge = CookieClickerBridge()
+        bridge.execute_js = Mock()
+        action = GardenAction("plant", "fill", x=0, y=0, seed_key="bakerWheat")
+        for actions in ((action, action), (replace(action, x=99),),
+                        (replace(action, kind="harvest"),)):
+            self.assertFalse(bridge.execute_garden_layout(actions)[0].success)
+        bridge.execute_js.assert_not_called()
+
     def test_snapshot_expoe_conquista_e_progresso_do_runtime(self):
         bridge = CookieClickerBridge()
         bridge.execute_js = Mock(return_value={
             "status": {"available": True, "unlocked": True, "message": "Garden disponível"},
-            "seeds": [{"id": 0, "key": "bakerWheat", "name": "Baker's wheat", "unlocked": True, "plantable": True, "matureAge": 50}],
+            "seeds": [{"id": 0, "key": "bakerWheat", "name": "Baker's wheat", "unlocked": True, "plantable": True, "matureAge": 50, "cost": 123}],
             "plants": [], "soils": [], "unlockedTiles": [],
+            "cookies": 456,
             "greenAchingThumbWon": False,
             "greenAchingThumbProgress": 999,
             "greenAchingThumbMessage": "Conquista confirmada por Game.HasAchiev",
         })
         result = bridge.get_garden_snapshot()
+        self.assertEqual(result.cookies, 456)
+        self.assertEqual(result.seeds[0].cost, 123)
         self.assertFalse(result.green_aching_thumb_won)
         self.assertEqual(result.green_aching_thumb_progress, 999)
         self.assertIn("Game.HasAchiev", result.green_aching_thumb_message)
@@ -566,25 +727,22 @@ class GardenUiTests(unittest.TestCase):
 
     def test_tab_exposes_simulation_progress_and_explicit_real_toggle(self):
         from app.ui.main_window import MainWindow
-        previous = automation_config.enable_garden_automation
-        previous_thumbcorn = automation_config.enable_green_aching_thumb
-        automation_config.enable_garden_automation = False
-        automation_config.enable_green_aching_thumb = False
+        previous_strategy = automation_config.garden_strategy
+        automation_config.garden_strategy = "plants"
         try:
             window = MainWindow()
             tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
             self.assertIn("Garden", tabs)
-            self.assertEqual(window.garden_simulate_button.text(), "Simular próximo tick")
-            self.assertEqual(window.garden_auto_checkbox.text(), "Automação real")
-            self.assertEqual(window.garden_thumbcorn_checkbox.text(), "Green, aching thumb")
-            self.assertIn("Prioriza Thumbcorn", window.garden_thumbcorn_checkbox.toolTip())
-            self.assertFalse(window.garden_auto_checkbox.isChecked())
+            self.assertEqual(window.garden_simulate_button.text(), "Ver próximas ações")
+            self.assertEqual(window.garden_toggle.button.text(), "Ligar")
+            self.assertEqual(window.garden_strategy_combo.currentText(), "Todas as Plantas")
+            self.assertIn("Desbloqueia todas as sementes", window.garden_strategy_combo.toolTip())
+            self.assertFalse(window.garden_toggle.running)
             self.assertGreaterEqual(window.garden_interval_input.minimum(), 30)
             self.assertTrue(window.garden_refresh_timer.isSingleShot())
             window.close()
         finally:
-            automation_config.enable_garden_automation = previous
-            automation_config.enable_green_aching_thumb = previous_thumbcorn
+            automation_config.garden_strategy = previous_strategy
 
     def test_valid_result_displays_one_explainable_goal(self):
         from app.ui.main_window import MainWindow
@@ -601,7 +759,23 @@ class GardenUiTests(unittest.TestCase):
         self.assertEqual(window.garden_goal_label.text(), "Thumbcorn")
         self.assertIn("2× Baker's wheat", window.garden_parents_label.text())
         self.assertIn("Libera novas dependências", window.garden_reason_label.text())
-        self.assertIn("Simulação concluída", window.garden_feedback_label.text())
+        self.assertIn("Prévia atualizada", window.garden_feedback_label.text())
+        window.close()
+
+    def test_budget_wait_is_amber_with_shortfall_and_real_errors_stay_red(self):
+        from app.ui.main_window import MainWindow
+        current = snapshot({"bakerWheat"})
+        plan = Fazendeira(FakeGardenBridge(current)).build_plan(current)
+        wait = GardenActionResult(False, "layout", "Aguardando dinheiro", waiting=True,
+                                  reason="insufficient_funds", required_cookies=100, available_cookies=20)
+        window = MainWindow()
+        window._display_garden_result(GardenCycleResult(current, plan, False, (wait,)))
+        self.assertEqual(window.garden_status_label.text(), "Garden: aguardando dinheiro")
+        self.assertIn("faltam", window.garden_feedback_label.text())
+        self.assertIn("#e8b766", window.garden_feedback_label.styleSheet())
+        error = GardenActionResult(False, "layout", "Bridge desconectada")
+        window._display_garden_result(GardenCycleResult(current, plan, False, (error,)))
+        self.assertIn("#f07883", window.garden_feedback_label.styleSheet())
         window.close()
 
 

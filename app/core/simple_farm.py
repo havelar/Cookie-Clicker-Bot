@@ -1,4 +1,4 @@
-"""Looper econômico de Golden Cookies com Dualcast sem Sugar Lumps."""
+"""Looper econômico de Golden Cookies e Dual Cast oportunista sem Sugar Lumps."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.utils.logger import logger
 
 
 class SimpleFarmAutomation:
-    """Coleta naturais e usa um Dualcast oportunista sem tocar nos minigames."""
+    """Coleta naturais e combina FtHoF sem mudar Garden ou Pantheon."""
 
     SKIP_SPELL_ID = 4  # Haggler's Charm: menor custo no save suportado.
     COOKIE_STORM_DROP = "cookie storm drop"
@@ -44,31 +44,32 @@ class SimpleFarmAutomation:
         self.relogio = relogio
         self._stop = threading.Event()
         self._golden_cookies = 0
-        self._dualcasts = 0
+        self._magias = 0
         self._upgrades = 0
         self._buildings = 0
         self._cash_floor = 0.0
         self._last_reinvest_at = float("-inf")
+        self._last_spent = 0.0
         self._clicker_ativo = False
+        self._investment_status = ""
+        self._live_reserve = 0.0
 
     def parar(self) -> None:
         self._stop.set()
 
     def gerar_previa(self) -> RelatorioSimpleFarm:
-        snapshot = self.bridge.get_combo_snapshot()
+        snapshot = self.bridge.get_combo_snapshot(require_minigames=False)
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"), stop_clicker=False)
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."), stop_clicker=False)
         self._cash_floor = max(
             self._cash_floor,
             float(snapshot.get("cookies", 0)) * self.configuracao.reserva_caixa,
         )
         plano = self._planejar(snapshot)
-        if plano is None:
-            return self._error("Nenhum par seguro com Click Frenzy foi encontrado no alcance.", stop_clicker=False)
         return self._report(
             EstadoSimpleFarm.PREVIA,
-            "Previsão somente leitura; nenhum recurso foi usado.",
-            "Ao iniciar, o clicker ficará ligado e o plano será recalculado continuamente.",
+            "Prévia atualizada. Nenhum recurso foi gasto.",
+            "Garden e Banco continuam ativos; cliques extras somente nas janelas fortes.",
             snapshot,
             plano,
         )
@@ -93,9 +94,9 @@ class SimpleFarmAutomation:
         if self._stop.is_set():
             return self._interrompido("Simple Farm interrompido pelo usuário.")
 
-        snapshot = self.bridge.get_combo_snapshot()
+        snapshot = self.bridge.get_combo_snapshot(require_minigames=False)
         if not snapshot.get("available"):
-            return self._error(snapshot.get("message", "Runtime indisponível"))
+            return self._error(snapshot.get("message", "Não foi possível ler o jogo. Verifique a conexão."))
         if snapshot.get("screen") != "game":
             return self._error("O Cookie Clicker não está na tela normal do jogo.")
         self._cash_floor = max(
@@ -106,8 +107,6 @@ class SimpleFarmAutomation:
             return self._error("Não foi possível ativar o autoclicker na janela útil.")
 
         plano = self._planejar(snapshot)
-        if plano is None:
-            return self._error("Nenhum par seguro com Click Frenzy foi encontrado no alcance.")
 
         forced = [item for item in snapshot.get("shimmers", ()) if item.get("force")]
         unexpected = [item for item in forced if item.get("force") != self.COOKIE_STORM_DROP]
@@ -135,7 +134,7 @@ class SimpleFarmAutomation:
                 return self._report(
                     EstadoSimpleFarm.COLETANDO,
                     "Golden Cookie natural coletado.",
-                    "Reavaliando o buff obtido e o Dualcast no próximo ciclo.",
+                    "Reavaliando o buff obtido e o FtHoF no próximo ciclo.",
                     snapshot,
                     plano,
                 )
@@ -149,15 +148,20 @@ class SimpleFarmAutomation:
                 )
             return self._error(result.get("message", "Falha ao coletar Golden Cookie natural"))
 
-        # Dragonflight muda a lista de resultados do FtHoF. Nunca arriscamos a
-        # seed prevista enquanto ele estiver ativo.
+        # Compras independem da existência de um combo ou de mana disponível.
+        investment = self._talvez_reinvestir(snapshot, plano)
+        if investment is not None:
+            return investment
+        if plano is None:
+            return self._report(
+                EstadoSimpleFarm.COLETANDO,
+                "Farm ativo; nenhuma magia útil disponível no alcance.",
+                "Coletando naturais e acumulando caixa para compras econômicas.", snapshot, None,
+            )
         if self._buff(snapshot, "dragonflight") is not None:
             return self._report(
-                EstadoSimpleFarm.AGUARDANDO_BUFF,
-                "Dragonflight ativo: o Dualcast foi adiado para preservar o forecast.",
-                "O autoclicker continua aproveitando o buff.",
-                snapshot,
-                plano,
+                EstadoSimpleFarm.AGUARDANDO_BUFF, "Aproveitando Dragonflight sem usar magia.",
+                "Aguardando o buff terminar para reavaliar a previsão.", snapshot, plano,
             )
 
         cast_atual = int(snapshot.get("spellsCastTotal", 0))
@@ -166,35 +170,19 @@ class SimpleFarmAutomation:
         if cast_atual > plano.cast_inicial:
             return self._report(
                 EstadoSimpleFarm.ALINHANDO,
-                "O contador de spells mudou; o plano foi descartado.",
-                "Recalculando a seed no próximo ciclo.",
-                snapshot,
-                plano,
-            )
-
-        initial = plano.torres_iniciais
-        towers = int(snapshot.get("wizardTowers", 0))
-        if towers < initial:
-            investment = self._talvez_reinvestir(snapshot, plano)
-            if investment is not None:
-                return investment
-            return self._report(
-                EstadoSimpleFarm.COLETANDO,
-                f"Dualcast requer {initial} Wizard Towers; há {towers} no momento.",
-                "As torres faltantes serão compradas gradualmente sem cruzar o caixa protegido.",
+                "As magias disponíveis mudaram. Atualizando o plano.",
+                "Buscando outra oportunidade.",
                 snapshot,
                 plano,
             )
 
         magic = float(snapshot.get("magic", 0))
         maximum = float(snapshot.get("magicM", 0))
-        if maximum <= 0 or magic + 1e-7 < maximum:
-            investment = self._talvez_reinvestir(snapshot, plano)
-            if investment is not None:
-                return investment
+        cost = float(snapshot.get("fthofCost") or 0)
+        if maximum <= 0 or magic + 1e-7 < maximum or magic < cost:
             return self._report(
                 EstadoSimpleFarm.AGUARDANDO_BUFF,
-                "Par de FtHoF alinhado; aguardando mana completamente cheia.",
+                "Click Frenzy alinhado; aguardando mana cheia e suficiente para a magia.",
                 "Golden Cookies e autoclick continuam ativos durante a regeneração.",
                 snapshot,
                 plano,
@@ -202,75 +190,86 @@ class SimpleFarmAutomation:
 
         trigger = self._melhor_buff_natural(snapshot)
         if trigger is None:
-            investment = self._talvez_reinvestir(snapshot, plano)
-            if investment is not None:
-                return investment
             return self._report(
                 EstadoSimpleFarm.AGUARDANDO_BUFF,
-                "Mana e Dualcast prontos; aguardando um multiplicador natural.",
+                "Mana e Click Frenzy prontos; aguardando um multiplicador natural.",
                 "O próximo multiplicador natural dispara a tentativa automaticamente.",
                 snapshot,
                 plano,
             )
 
         # O clique precisa começar antes da avaliação atômica que cria e abre
-        # o Click Frenzy; assim nenhum frame útil do Dualcast é perdido.
+        # o Click Frenzy; assim nenhum frame útil do FtHoF é perdido.
         if not self._set_clicker(True):
-            return self._error("O Dualcast estava pronto, mas o autoclicker não pôde ser ativado.")
-        result = self.bridge.execute_simple_farm_dualcast(
+            return self._error("O FtHoF estava pronto, mas o autoclicker não pôde ser ativado.")
+        result = self.bridge.execute_simple_farm_spell(
             expected_cast=plano.cast_inicial,
-            expected_results=list(plano.resultados),
             minimum_buff_seconds=self.configuracao.duracao_minima_buff,
-            minimum_towers=plano.torres_iniciais,
-            final_towers=plano.torres_finais,
+            **self._orcamento_magia(),
         )
         if not result.get("ok"):
             if result.get("waiting"):
                 self._sincronizar_clicker(snapshot)
                 return self._report(
                     EstadoSimpleFarm.AGUARDANDO_BUFF,
-                    result.get("message", "Aguardando recursos para o Dualcast."),
+                    result.get("message", "Aguardando recursos para o FtHoF."),
                     "Nada foi vendido; o modo tentará novamente.",
                     snapshot,
                     plano,
                 )
-            return self._error(result.get("message", "Dualcast não confirmado"))
-        self._dualcasts += 1
+            self._magias += int(result.get("casts", 0))
+            return self._error(result.get("message", "FtHoF não confirmado"))
+        self._magias += int(result.get("casts", 1))
+        self._cash_floor = max(self._cash_floor, float(result.get("before", 0)) * self.configuracao.reserva_caixa)
+        self._live_reserve = float(result.get("reserve", self._live_reserve))
+        if result.get("dualcast"):
+            recent = self._orcamento_magia()["spent_in_window"]
+            self._last_spent = recent + float(result.get("rebuy", 0))
+            self._last_reinvest_at = self.relogio()
+        snapshot = dict(snapshot, cookies=result.get("after", snapshot.get("cookies", 0)))
+        snapshot.update({key: result[key] for key in ("magic", "magicM", "spellsCastTotal") if key in result})
         return self._report(
             EstadoSimpleFarm.EXECUTANDO,
-            f"Dualcast concluído sobre {trigger}; torres restauradas e clicker mantido ligado.",
+            (result.get("message", f"FtHoF concluído sobre {trigger}; clicker ativo.")
+             + (f" Custo líquido: {float(result.get('spent', 0)):.3g} cookies."
+                if result.get("dualcast") else "")),
             "Regenerando mana para a próxima oportunidade, sem usar Sugar Lumps.",
             snapshot,
             plano,
         )
 
     def _talvez_reinvestir(
-        self, snapshot: dict, plano: PlanoSimpleFarm,
+        self, snapshot: dict, plano: Optional[PlanoSimpleFarm],
     ) -> Optional[RelatorioSimpleFarm]:
         """Investe uma parcela do excedente, no máximo uma vez por cooldown."""
         now = self.relogio()
         if now - self._last_reinvest_at < self.REINVEST_INTERVAL_SECONDS:
             return None
-        # Buffs multiplicativos são curtos; durante eles o clicker e o Dualcast
+        # Buffs multiplicativos são curtos; durante eles o clicker e o FtHoF
         # têm precedência total sobre compras de loja.
-        if self._melhor_buff_natural(snapshot) is not None:
+        if self._janela_ativa(snapshot):
             return None
         self._last_reinvest_at = now
         result = self.bridge.reinvest_simple_farm(
             cash_floor=self._cash_floor,
             max_spend_fraction=self.configuracao.investimento_por_ciclo,
-            minimum_towers=plano.torres_iniciais,
+            reserve_fraction=self.configuracao.reserva_caixa,
         )
+        self._cash_floor = max(
+            self._cash_floor,
+            float(result.get("before", 0)) * self.configuracao.reserva_caixa,
+        )
+        self._live_reserve = float(result.get("reserve", self._cash_floor))
+        self._investment_status = result.get("message", "")
+        self._last_spent = max(0.0, float(result.get("spent", 0)))
         if not result.get("ok"):
             if result.get("waiting"):
                 return None
             return self._error(result.get("message", "Reinvestimento não confirmado"))
-        kind = str(result.get("kind", ""))
-        count = max(0, int(result.get("count", 0)))
-        if kind == "upgrade":
-            self._upgrades += count
-        elif kind == "buildings":
-            self._buildings += count
+        self._upgrades += max(0, int(result.get("upgrades", 0)))
+        self._buildings += max(0, int(result.get("buildings", 0)))
+        # Exibe o saldo após as compras, não o snapshot anterior.
+        snapshot = dict(snapshot, cookies=result.get("after", snapshot.get("cookies", 0)))
         return self._report(
             EstadoSimpleFarm.COLETANDO,
             result.get("message", "Excedente reinvestido com segurança."),
@@ -279,30 +278,46 @@ class SimpleFarmAutomation:
             plano,
         )
 
+    def _orcamento_magia(self) -> dict:
+        recent = self.relogio() - self._last_reinvest_at < self.REINVEST_INTERVAL_SECONDS
+        return {
+            "cash_floor": self._cash_floor,
+            "max_spend_fraction": self.configuracao.investimento_por_ciclo,
+            "reserve_fraction": self.configuracao.reserva_caixa,
+            "spent_in_window": self._last_spent if recent else 0.0,
+        }
+
     def _planejar(self, snapshot: dict) -> Optional[PlanoSimpleFarm]:
-        raw = self.bridge.forecast_simple_farm_pair(self.configuracao.busca_maxima_spells)
+        raw = self.bridge.forecast_simple_farm_spell(
+            self.configuracao.busca_maxima_spells, **self._orcamento_magia(),
+        )
         if not isinstance(raw, dict) or not raw.get("ok"):
             return None
         outcomes = tuple(str(value) for value in raw.get("results", ()))
-        if len(outcomes) != 2:
+        pair = (len(outcomes) == 2 and outcomes.count("click frenzy") == 1
+                and all(value in {"click frenzy", "frenzy", "building special", "blood frenzy"}
+                        for value in outcomes))
+        if outcomes != ("click frenzy",) and not pair:
             return None
         return PlanoSimpleFarm(
             seed=str(raw.get("seed", snapshot.get("seed", ""))),
             versao=str(raw.get("version", snapshot.get("version", ""))),
             cast_atual=int(raw.get("currentCast", snapshot.get("spellsCastTotal", 0))),
             cast_inicial=int(raw["startCast"]),
-            resultados=(outcomes[0], outcomes[1]),
+            resultados=outcomes,
             spells_a_pular=int(raw.get("skipCount", 0)),
             qualidade=str(raw.get("quality", "Click Frenzy")),
-            torres_iniciais=int(raw.get("minimumTowers", 1)),
-            torres_finais=int(raw.get("finalTowers", 1)),
+            torres_originais=int((raw.get("dual") or {}).get("originalTowers", 0)),
+            torres_temporarias=int((raw.get("dual") or {}).get("targetTowers", 0)),
+            custo_recompra=float((raw.get("dual") or {}).get("rebuy", 0)),
+            decisao=str(raw.get("decision", "")),
         )
 
     def _alinhar(self, snapshot: dict, plano: PlanoSimpleFarm) -> RelatorioSimpleFarm:
-        if self._melhor_buff_natural(snapshot) is not None:
+        if self._janela_ativa(snapshot):
             return self._report(
                 EstadoSimpleFarm.ALINHANDO,
-                "Um multiplicador natural está ativo, mas o par ainda não está alinhado.",
+                "Um multiplicador natural está ativo, mas a magia ainda não está alinhada.",
                 "O bot aproveitará os cliques e só fará o skip depois que o buff terminar.",
                 snapshot,
                 plano,
@@ -324,9 +339,6 @@ class SimpleFarmAutomation:
                 snapshot,
                 plano,
             )
-        investment = self._talvez_reinvestir(snapshot, plano)
-        if investment is not None:
-            return investment
         return self._report(
             EstadoSimpleFarm.ALINHANDO,
             f"Faltam {plano.spells_a_pular} skip(s); aguardando mana máxima.",
@@ -335,10 +347,19 @@ class SimpleFarmAutomation:
             plano,
         )
 
+    def _janela_ativa(self, snapshot: dict) -> bool:
+        return any(
+            str(buff.get("type")) in self.DIRECT_CLICK_BUFFS | self.PRODUCTION_CLICK_BUFFS
+            and float(buff.get("timeSeconds", 0)) > 0
+            for buff in snapshot.get("buffs", ())
+        )
+
     def _melhor_buff_natural(self, snapshot: dict) -> Optional[str]:
         minimum = self.configuracao.duracao_minima_buff
+        if self._buff(snapshot, "click frenzy") or self._buff(snapshot, "dragonflight"):
+            return None
         allowed = {
-            "frenzy", "dragon harvest", "building buff", "click frenzy", "blood frenzy",
+            "frenzy", "dragon harvest", "building buff", "blood frenzy",
         }
         candidates = [
             buff for buff in snapshot.get("buffs", ())
@@ -382,7 +403,7 @@ class SimpleFarmAutomation:
         return RelatorioSimpleFarm(
             estado=state,
             mensagem=message,
-            proximo_passo=next_step,
+            proximo_passo=next_step + (f" Compras: {self._investment_status}" if self._investment_status else ""),
             plano=plano,
             cast_atual=int(snapshot.get("spellsCastTotal", 0)),
             mana=float(snapshot.get("magic", 0)),
@@ -393,10 +414,10 @@ class SimpleFarmAutomation:
                 str(buff.get("name") or buff.get("type")) for buff in snapshot.get("buffs", ())
             ),
             golden_cookies_coletados=self._golden_cookies,
-            dualcasts_executados=self._dualcasts,
+            magias_executadas=self._magias,
             upgrades_comprados=self._upgrades,
             construcoes_compradas=self._buildings,
-            caixa_reservado=self._cash_floor,
+            caixa_reservado=max(self._cash_floor, self._live_reserve),
             pantheon_slots=tuple(int(value) for value in snapshot.get("pantheonSlots", ())),
         )
 
@@ -408,7 +429,7 @@ class SimpleFarmAutomation:
             "Simple Farm bloqueado em estado seguro.",
             "Corrija o diagnóstico e inicie novamente.",
             golden_cookies_coletados=self._golden_cookies,
-            dualcasts_executados=self._dualcasts,
+            magias_executadas=self._magias,
             upgrades_comprados=self._upgrades,
             construcoes_compradas=self._buildings,
             caixa_reservado=self._cash_floor,
@@ -422,7 +443,7 @@ class SimpleFarmAutomation:
             message,
             "Nenhuma nova ação será iniciada.",
             golden_cookies_coletados=self._golden_cookies,
-            dualcasts_executados=self._dualcasts,
+            magias_executadas=self._magias,
             upgrades_comprados=self._upgrades,
             construcoes_compradas=self._buildings,
             caixa_reservado=self._cash_floor,

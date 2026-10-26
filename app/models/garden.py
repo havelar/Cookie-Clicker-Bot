@@ -25,6 +25,9 @@ class GardenSeed:
     weed: bool = False
     fungus: bool = False
     immortal: bool = False
+    cost: Optional[float] = None
+    average_growth: Optional[float] = None
+    maximum_growth: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,20 @@ class GardenPlant:
     weed: bool = False
     fungus: bool = False
     immortal: bool = False
+    average_growth: Optional[float] = None
+    maximum_growth: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class GardenUpgrade:
+    name: str
+    plant_key: str
+    unlocked: bool
+    bought: bool
+
+    @property
+    def obtained(self) -> bool:
+        return self.unlocked or self.bought
 
 
 @dataclass(frozen=True)
@@ -79,7 +96,15 @@ class GardenSnapshot:
     soils: Tuple[GardenSoil, ...] = field(default_factory=tuple)
     green_aching_thumb_won: Optional[bool] = None
     green_aching_thumb_progress: Optional[int] = None
-    green_aching_thumb_message: str = "Estado da conquista Green, aching thumb indisponível no runtime."
+    green_aching_thumb_message: str = "Não foi possível consultar a conquista Green, aching thumb."
+
+    cookies: Optional[float] = None
+    sugar_lumps: Optional[float] = None
+    can_refill_lump: Optional[bool] = None
+    lump_refill_seconds: Optional[float] = None
+    growth_multipliers: Tuple[Tuple[int, int, float], ...] = field(default_factory=tuple)
+
+    upgrades: Tuple[GardenUpgrade, ...] = field(default_factory=tuple)
 
     @property
     def unlocked_seed_keys(self) -> frozenset[str]:
@@ -121,6 +146,10 @@ class GardenActionResult:
     soil_key: Optional[str] = None
     before_key: Optional[str] = None
     after_key: Optional[str] = None
+    waiting: bool = False
+    reason: str = ""
+    required_cookies: Optional[float] = None
+    available_cookies: Optional[float] = None
 
 
 @dataclass(frozen=True)

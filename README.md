@@ -19,7 +19,7 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 - **Garden por tick**: reconcilia o layout completo e automatiza opcionalmente a coleção de 34 sementes
 - **Auto Ascensão controlada**: simula ou executa ciclos com meta de prestígio, timeout, confirmação e parada segura
 - **Combo endgame autônomo**: busca um BS natural + um da spell, aproveita Frenzy do Quadcast e limita a espera padrão a três horas, com backup obrigatório
-- **Simple Farm**: autoclick sob demanda e Golden Cookies com Dualcast oportunista, sem gastar Sugar Lumps nem tocar em Garden, Pantheon ou loans
+- **Simple Farm**: farm paralelo ao Garden e Banco, com reserva de caixa, compras de produção e Dual Cast oportunista com recompra das torres dentro do orçamento; sem gastar Sugar Lumps ou alterar o Pantheon
 
 ## 🚀 Instalação
 
@@ -27,7 +27,7 @@ Um bot automatizado para Cookie Clicker com interface gráfica moderna, desenvol
 
 - Python 3.12 ou superior
 - Windows 10/11 (suporte nativo para APIs Win32)
-- Cookie Clicker rodando no navegador Chrome
+- Cookie Clicker instalado pela Steam
 
 ### Instalação das Dependências
 
@@ -42,16 +42,21 @@ pip install -r requirements.txt
 
 ## 🎮 Como Usar
 
-1. **Inicie o Cookie Clicker** no navegador Chrome
+1. **Deixe a Steam aberta**. Não é necessário configurar opções de inicialização.
 2. **Execute o bot**:
    ```bash
    python main.py
    ```
-3. **Configure as automações** na interface gráfica:
+3. Clique em **Abrir jogo**, no topo do bot. O Cookie Clicker será iniciado com
+   `--remote-debugging-port=9222` e conectado automaticamente. O bot pode abrir
+   mesmo com o jogo fechado. A instalação é localizada nas bibliotecas da Steam;
+   se necessário, selecione `Cookie Clicker.exe` uma vez para salvar o caminho.
+   Se o jogo já estiver aberto sem debugger, salve e feche antes de usar o botão.
+4. **Configure as automações** na interface gráfica:
    - Ative o clicker do cookie principal
    - Habilite detecção de Golden Cookies
    - Habilite detecção de Fortune Cookies
-4. **Controle via teclado**: Use SCROLL LOCK para ligar/desligar o clicker
+5. **Controle via teclado**: Use SCROLL LOCK para ligar/desligar o clicker
 
 ## 🏗️ Arquitetura
 
@@ -210,3 +215,60 @@ Este software é fornecido apenas para fins educacionais e de entretenimento. O 
 ## Logs
 
 Logs detalhados em console para debugging e monitoramento.
+
+### Controles das automações
+
+Stock Market, Garden, Simple Farm, Combo Endgame e Auto Ascensão usam o mesmo
+controle **Ligar / Desligar**, com estado **Desligada**, **Rodando** ou
+**Desligando…**. Não há uma etapa separada para habilitar “automação real”.
+As configurações são salvas. Stock Market e Garden também preservam se estavam
+ligados e aguardam **Ligar bot** para retomar; os modos especiais começam desligados. Prévia e simulação continuam separadas e não ligam a execução.
+
+Ao desligar, a chamada já enviada ao jogo termina; novas ordens e ações são
+canceladas. As leituras de Stock e Garden continuam disponíveis. Durante um
+Combo Endgame, esses dois controles indicam **Pausada pelo Combo** e ainda
+permitem desligar a automação. As confirmações de início de Combo Endgame e
+Auto Ascensão foram mantidas.
+
+## Referência local do JavaScript do jogo
+
+A pasta [reference/cookie-clicker](reference/cookie-clicker/README.md) contém todos
+os arquivos JavaScript da instalação Steam, preservados sem alterações, com
+versão, origem e hashes de integridade registrados em `manifest.json`.
+Use essa cópia como referência ao implementar ou revisar as automações.
+
+## Save Scum de Sugar Lumps
+
+A aba **Save Scum** permite procurar Dourado e Caramelizado com backup e restauração verificados. Veja [como configurar e testar](docs/save-scum.md).
+
+## Backups do jogo
+
+Salve e carregue diretamente pela tela **Gerenciar Backups**, com nome opcional e **Desfazer carga**. Veja [como usar](docs/backups.md).
+
+## Controle geral do bot
+
+A barra superior mostra **Abrir jogo** com o jogo fechado, **Ligar bot** com o jogo aberto e **Desligar bot** durante a execução. Conectar ao jogo não inicia as automações. Ligar libera as configurações e os controles individuais; desligar bloqueia detector, clicker (inclusive Scroll Lock), Banco, Garden e os modos especiais.
+
+Banco e Garden mantêm a seleção para retomar ao ligar novamente. Combo, Simple Farm, Auto Ascensão e Save Scum recebem parada segura e devem ser iniciados novamente nas abas. O botão mostra **Pausando…** enquanto as ações em andamento terminam. Uma restauração pendente ainda precisa ser resolvida antes de liberar o bot. As configurações e consultas continuam disponíveis enquanto ele está pausado.
+
+A seleção de **Ligar/Desligar** do Stock Market e Garden é salva imediatamente e restaurada entre execuções. Desligar o bot, fechar o programa ou pausar por um modo exclusivo mantém essa seleção; desligar uma automação na própria aba salva a escolha de deixá-la desligada.
+
+## Clareza dos logs
+
+A aba Atividade usa horário, nível e mensagem. Verificações de janela, conexão e detalhes técnicos ficam em DEBUG; jogo fechado não é tratado como erro. As coletas comuns são resumidas a cada 60 segundos de atividade e ao pausar/encerrar, com contadores em tempo real na interface. Sugar Lumps e uso de magias continuam registrados individualmente.
+
+O Garden agrupa plantios e colheitas comuns por planta; descobertas de sementes e ações especiais continuam explícitas. Save Scum atualiza o estado em tempo real e registra progresso no máximo a cada cinco segundos, além dos resultados finais. Falhas novas aparecem imediatamente; mensagens idênticas do mesmo ponto do código são limitadas a uma por 30 segundos, com a contagem de repetições no próximo registro.
+
+O histórico não força a rolagem para baixo durante a leitura. Mensagens são exibidas como texto literal e o arquivo usa UTF-8. Os detalhes por ação continuam disponíveis com nível DEBUG.
+
+## Manter temporada ativa
+
+Marque **Manter temporada ativa** em **Automações** e escolha a temporada em **Configurações → Automações → Temporada automática**. As opções são Natal, Halloween, Dia dos Namorados, Dia dos Negócios (Business Day) e Páscoa. A seleção e a checkbox ficam salvas entre execuções; a execução depende de **Ligar bot**.
+
+Se a temporada escolhida já estiver ativa, não compra nada. Quando ela termina, compra o biscoito para ativá-la novamente. Trocar a seleção com a automação ligada ativa a nova temporada na próxima verificação. Requer **Season switcher** e saldo para a compra; sem saldo, aguarda. O preço segue as regras do jogo e aumenta a cada ativação. Funciona junto com Garden, Banco e Simple Farm e aguarda durante Combo, Auto Ascensão, Save Scum e restauração de backups. Os logs registram ativações e mudanças de estado, sem repetir a mesma espera.
+
+## Coletar Krumblor Upgrades
+
+A checkbox **Coletar Krumblor Upgrades**, na aba Automações, é persistida. Requer **Pet the dragon** comprado e Krumblor no nível 8 ou superior. Identifica o drop da faixa atual de 15 minutos pelo horário do jogo e pela seed do save; usa uma cópia isolada do sorteio nativo para não alterar o RNG global durante a previsão.
+
+Se o drop já foi liberado ou comprado, não faz carinho nem consulta novamente até a próxima faixa. Quando falta, faz carinhos nativos no intervalo configurado em **Configurações → Automações → Intervalo entre carinhos no Krumblor** (padrão: 0,1 s; mínimo: 0,05 s) e para assim que liberar. Apenas desbloqueia: não compra upgrades, treina o dragão, troca auras, sacrifica prédios ou gasta Sugar Lumps. Restaura o painel anterior após o carinho. Segue Ligar/Desligar bot e as pausas exclusivas de Combo, Save Scum e backups. Os logs registram início da coleta, desbloqueio e espera, sem mensagens por carinho.

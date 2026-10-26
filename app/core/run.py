@@ -9,7 +9,8 @@ from app.automation.input import InputHandler
 from app.bridge.js_bridge import CookieClickerBridge
 from app.config.settings import app_config, automation_config
 from app.core.window_finder import find_cookie_window
-from app.utils.logger import logger
+from app.core.seasons import SEASONS
+from app.utils.logger import logger, ActivitySummary
 
 
 class Macro:
@@ -59,15 +60,36 @@ class AutomationRunner:
         """
         self.bridge = bridge
         self.is_running = False
+        self.mouse_clicker_running = False
+        self.cookie_hold_active = False
+        self.mouse_hold_active = False
+        self.mouse_clicks = 0
+        self.mouse_clicker_over_game = False
+        self.hotkey_capture_active = threading.Event()
+        self.require_fresh_hotkeys = False
         self.stop_event = threading.Event()
+        self.paused = threading.Event()
+        self._collection_summary = ActivitySummary(logger)
         self._clicker_state_lock = threading.RLock()
         self._exclusive_lock = threading.RLock()
         self._exclusive_owner: Optional[str] = None
+        self._simple_farm_active = False
+        self.gc_farm_active = False
+        self.gc_farm_seed = None
+        self._simple_farm_manual_clicker = False
+        self._simple_farm_clicker_requested = False
         self.on_clicker_state_change = state_change_callback
 
         self.cookie_position: Optional[Tuple[int, int]] = None
         self.input_handler = InputHandler(pid=pid, restore_game=False, cookie_position=None)
-        self.wrinkler_seen_at: dict[int, float] = {}
+        self._next_wrinkler_check = 0.0
+        self._wrinkler_blocked = False
+        self._cash_requests: dict[str, dict] = {}
+        self._cash_request_lock = threading.RLock()
+        self._next_krumblor_check = 0.0
+        self._last_krumblor_state = None
+        self._next_season_check = 0.0
+        self._last_season_state = None
         self._last_grimoire_attempt_at = 0.0
         self._last_grimoire_failure: Optional[tuple] = None
 
@@ -81,6 +103,22 @@ class AutomationRunner:
         # Threads
         self.detector_thread: Optional[threading.Thread] = None
         self.clicker_thread: Optional[threading.Thread] = None
+
+    def set_paused(self, paused: bool):
+        """Bloqueia detector, atalhos e clicker sem alterar as preferências."""
+        if paused:
+            self.paused.set()
+            self.cookie_hold_active = self.mouse_hold_active = False
+            self.mouse_clicker_running = False
+            with self._cash_request_lock:
+                self._cash_requests.clear()
+            self._collection_summary.flush()
+            self.ensure_clicker_stopped()
+        else:
+            self.paused.clear()
+            self.reset_season_schedule()
+            self.reset_krumblor_schedule()
+            self._next_wrinkler_check = 0.0
 
     def update_cookie_position(self) -> bool:
         """
@@ -96,12 +134,18 @@ class AutomationRunner:
 
         self.cookie_position = (cookie_pos['x'], cookie_pos['y'])
         self.input_handler.cookie_position = self.cookie_position
-        logger.info(f"Posição do cookie atualizada: {self.cookie_position}")
+        logger.debug(f"Posição do cookie atualizada: {self.cookie_position}")
         return True
 
     def toggle_clicker(self) -> None:
         """Liga/desliga o clicker do cookie."""
+        if self.paused.is_set():
+            return
         with self._exclusive_lock:
+            if self._simple_farm_active:
+                self._simple_farm_manual_clicker = not self._simple_farm_manual_clicker
+                self.set_simple_farm_clicker(self._simple_farm_clicker_requested)
+                return
             if self._exclusive_owner is not None:
                 logger.warning(
                     "Toggle manual do clicker bloqueado pelo modo exclusivo %s",
@@ -114,7 +158,7 @@ class AutomationRunner:
             self.is_running = not self.is_running
             current_state = self.is_running
         status = "INICIADO" if current_state else "PARADO"
-        logger.info(f"Macro {status}!")
+        logger.info("Clicker: %s.", "ligado" if current_state else "desligado")
 
         if self.on_clicker_state_change:
             try:
@@ -122,10 +166,31 @@ class AutomationRunner:
             except Exception as e:
                 logger.error(f"Erro no callback de estado do clicker: {e}")
 
+    def toggle_mouse_clicker(self):
+        with self._exclusive_lock:
+            if self.paused.is_set() or self.stop_event.is_set() or self._exclusive_owner is not None:
+                return False
+            self.mouse_clicker_running = not self.mouse_clicker_running
+            logger.info("Clicker do mouse: %s.", "ligado" if self.mouse_clicker_running else "desligado")
+            return self.mouse_clicker_running
+
+    def reset_manual_clicker(self, mouse=False):
+        """Limpa o acionamento manual ao mudar o modo, preservando as farms."""
+        with self._exclusive_lock:
+            if mouse:
+                self.mouse_clicker_running = self.mouse_hold_active = False
+            else:
+                self.cookie_hold_active = False
+                if self._simple_farm_active:
+                    self._simple_farm_manual_clicker = False
+                    self.set_simple_farm_clicker(self._simple_farm_clicker_requested)
+                elif self._exclusive_owner is None:
+                    self.ensure_clicker_stopped()
+
     def ensure_clicker_running(self) -> bool:
         """Habilita o clicker de forma idempotente para a fase de produção."""
         with self._clicker_state_lock:
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or self.paused.is_set():
                 logger.warning("Clicker não foi habilitado porque o runner está encerrando")
                 return False
             if self.is_running:
@@ -152,12 +217,59 @@ class AutomationRunner:
         if not owner:
             return False
         with self._exclusive_lock:
-            if self._exclusive_owner not in (None, owner):
+            if self.gc_farm_active or self._simple_farm_active or self._exclusive_owner not in (None, owner):
                 return False
             self._exclusive_owner = owner
+            self.cookie_hold_active = self.mouse_hold_active = False
+            self.mouse_clicker_running = False
         self.ensure_clicker_stopped()
         logger.info("Modo exclusivo adquirido por %s", owner)
         return True
+
+    def acquire_simple_farm(self) -> bool:
+        """Reserva apenas GC/Grimoire; detector, Garden e Banco continuam ativos."""
+        with self._exclusive_lock:
+            if self.gc_farm_active or self._exclusive_owner is not None or self._simple_farm_active:
+                return False
+            self._simple_farm_active = True
+            self._simple_farm_manual_clicker = self.is_running
+            self._simple_farm_clicker_requested = False
+            return True
+
+    def set_simple_farm_clicker(self, enabled: bool) -> bool:
+        with self._exclusive_lock:
+            if not self._simple_farm_active:
+                return False
+            self._simple_farm_clicker_requested = enabled
+            desired = enabled or self._simple_farm_manual_clicker
+            return self.ensure_clicker_running() if desired else self.ensure_clicker_stopped()
+
+    def acquire_gc_farm(self):
+        """Reserva coleta, magias e temporada; mantém as demais coletas disponíveis."""
+        with self._exclusive_lock:
+            if self.gc_farm_active or self._exclusive_owner is not None or self._simple_farm_active:
+                return False
+            self.gc_farm_active = True
+            self.gc_farm_seed = None
+            return True
+
+    def activate_gc_farm_collection(self, seed):
+        """Libera os cliques somente após o backup e a primeira leitura válida."""
+        with self._exclusive_lock:
+            if self.gc_farm_active and isinstance(seed, str) and seed:
+                self.gc_farm_seed = seed
+
+    def release_gc_farm(self):
+        with self._exclusive_lock:
+            self.gc_farm_active = False
+            self.gc_farm_seed = None
+            self.reset_season_schedule()
+
+    def release_simple_farm(self) -> None:
+        with self._exclusive_lock:
+            if self._simple_farm_active:
+                self.set_simple_farm_clicker(False)
+                self._simple_farm_active = False
 
     def release_exclusive(self, owner: str) -> bool:
         """Libera a reserva sem religar automaticamente nenhuma automação."""
@@ -165,6 +277,12 @@ class AutomationRunner:
             if self._exclusive_owner != owner:
                 return False
             self._exclusive_owner = None
+        if owner in {"save_scum", "backup_restore"}:
+            self.reset_season_schedule()
+            self.reset_krumblor_schedule()
+            self._next_wrinkler_check = 0.0
+            with self._cash_request_lock:
+                self._cash_requests.clear()
         logger.info("Modo exclusivo liberado por %s", owner)
         return True
 
@@ -184,85 +302,199 @@ class AutomationRunner:
 
     def detector_loop(self) -> None:
         """Thread dedicada às coletas e automações baseadas no runtime."""
-        logger.info("Thread detector iniciada. Monitorando automações do jogo...")
+        logger.debug("Detector: thread iniciada")
 
         while not self.stop_event.is_set():
             try:
-                if self.exclusive_owner is not None:
+                if self.paused.is_set() or self.bridge.connected is False or self.exclusive_owner is not None:
                     # O dono exclusivo usa a mesma bridge e decide quais ações
                     # são seguras; o detector comum permanece totalmente passivo.
                     time.sleep(app_config.detect_interval)
                     continue
-                # Verificar golden cookie
-                if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
-                    self.golden_cookies_clicked += 1
-                    logger.info("Golden cookie coletado!")
+                # A exclusividade aguarda todo o ciclo de ações em andamento.
+                with self._exclusive_lock:
+                    if self._exclusive_owner is None and not self.paused.is_set() and self.bridge.connected is not False:
+                        self._run_detector_cycle()
 
-                # Verificar fortune cookie
-                if automation_config.enable_fortune_cookie and self.bridge.click_fortune():
-                    logger.info("Fortune cookie clicado!")
-
-                # Verificar rena
-                if automation_config.enable_reindeer and self.bridge.pop_reindeer():
-                    self.reindeer_popped += 1
-                    logger.info("Rena coletada!")
-
-                # O Grimoire regenera mais rápido cheio; só tenta lançar quando
-                # o próprio runtime confirma que a mana segue no máximo.
-                self._run_grimoire_cycle()
-
-                # Verificar wrinklers normais com delay de popagem
-                if automation_config.enable_wrinkler_popper:
-                    wrinklers = self.bridge.get_wrinklers() or []
-                    current_time = time.time()
-                    for wr in wrinklers:
-                        index = wr.get('index')
-                        hp = wr.get('hp', 0)
-                        wr_type = wr.get('type')
-                        if index is None or hp <= 0 or wr_type == 1:
-                            self.wrinkler_seen_at.pop(index, None)
-                            continue
-
-                        if index not in self.wrinkler_seen_at:
-                            self.wrinkler_seen_at[index] = current_time
-                            continue
-
-                        if current_time - self.wrinkler_seen_at[index] >= automation_config.wrinkler_pop_delay:
-                            if self.bridge.pop_wrinkler_by_index(index):
-                                self.wrinklers_popped += 1
-                            self.wrinkler_seen_at.pop(index, None)
-
-                # Verificar Sugar Lump
-                if automation_config.enable_sugar_lump_harvest:
-                    lump_info = self.bridge.get_sugar_lump_status()
-                    if lump_info:
-                        lump_type = lump_info.get('type')
-                        lump_ready = lump_info.get('ready', False)
-                        preserve_flag = False
-                        if isinstance(lump_type, int) and 0 <= lump_type <= 4:
-                            preserve_flag = getattr(
-                                automation_config,
-                                f"preserve_sugar_lump_type_{lump_type}",
-                                False,
-                            )
-
-                        if not preserve_flag or lump_ready:
-                            if self.bridge.harvest_sugar_lump():
-                                self.sugar_lumps_harvested += 1
-                                logger.info(
-                                    f"Sugar Lump tipo {lump_type} coletado (ready={lump_ready})"
-                                )
-
-                # Delay configurável
-                time.sleep(app_config.detect_interval)
+                # Só acelera o polling enquanto o próximo carinho estiver próximo.
+                delay = app_config.detect_interval
+                if automation_config.enable_krumblor_upgrades and self._next_krumblor_check > 0:
+                    delay = min(delay, max(0.01, self._next_krumblor_check - time.monotonic()))
+                self.stop_event.wait(delay)
 
             except Exception as e:
                 logger.error(f"Erro na thread detector: {e}")
                 time.sleep(1)
 
+    def _run_detector_cycle(self):
+        if self.paused.is_set():
+            return
+        # A mesma trava aguarda uma coleta/cast em andamento ao iniciar o farm.
+        with self._exclusive_lock:
+            if self.gc_farm_active:
+                if self.gc_farm_seed:
+                    self.golden_cookies_clicked += self.bridge.collect_gc_farm(
+                        self.gc_farm_seed, automation_config.gc_farm_manual_last_click)
+            elif not self._simple_farm_active and self._exclusive_owner is None:
+                if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
+                    self.golden_cookies_clicked += 1
+                    self._collection_summary.record("Golden Cookies")
+                self._run_grimoire_cycle()
+
+        # Verificar fortune cookie
+        if not self.paused.is_set() and automation_config.enable_fortune_cookie and self.bridge.click_fortune():
+            self._collection_summary.record("Fortunes")
+
+        # Verificar rena
+        if not self.paused.is_set() and automation_config.enable_reindeer and self.bridge.pop_reindeer():
+            self.reindeer_popped += 1
+            self._collection_summary.record("Renas")
+
+        self._run_wrinkler_cycle()
+
+        self._run_sugar_lump_cycle()
+        self._run_krumblor_cycle()
+        if not self.gc_farm_active:
+            self._run_season_cycle()
+
+    def reset_season_schedule(self):
+        """Reavalia a temporada ao ligar ou alterar a preferência."""
+        self._next_season_check = 0.0
+        self._last_season_state = None
+
+    def _run_season_cycle(self, now=None):
+        if self.gc_farm_active:
+            return
+        with self._exclusive_lock:
+            if (self.paused.is_set() or self.stop_event.is_set()
+                    or self._exclusive_owner is not None
+                    or not automation_config.enable_auto_season):
+                return
+            current = time.monotonic() if now is None else now
+            if current < self._next_season_check:
+                return
+            self._next_season_check = current + 60
+            season = automation_config.auto_season
+            result = self.bridge.maintain_season(season)
+            if not isinstance(result, dict):
+                return
+            retry = result.get("retryAfterMs", 60000)
+            if not isinstance(retry, (int, float)) or not 1000 <= retry <= 60000:
+                retry = 60000
+            completed = time.monotonic() if now is None else now
+            self._next_season_check = completed + retry / 1000
+            state = (season, result.get("reason"))
+            if state != self._last_season_state and state[1] != "active":
+                logger.info("Temporadas: %s — %s", SEASONS.get(season, season),
+                            result.get("message", "Aguardando."))
+            self._last_season_state = state
+
+    def request_wrinkler_cash(self, source, target=0, seed=None, ttl=120):
+        """Pedido temporário de uma ação real bloqueada por falta de cookies."""
+        import math
+        with self._cash_request_lock:
+            self._cash_requests.pop(source, None)
+            if seed and math.isfinite(target) and target > 0 and not self.paused.is_set():
+                self._cash_requests[source] = dict(source=source, target=target, seed=seed,
+                                                   expires=time.monotonic() + ttl)
+
+    def _run_wrinkler_cycle(self, now=None):
+        if (self.paused.is_set() or self.stop_event.is_set() or self.exclusive_owner is not None
+                or not automation_config.enable_wrinkler_popper):
+            return False
+        current = time.monotonic() if now is None else now
+        if current < self._next_wrinkler_check:
+            return False
+        self._next_wrinkler_check = current + 2.0
+        with self._cash_request_lock:
+            self._cash_requests = {k: v for k, v in self._cash_requests.items() if v['expires'] > current}
+            requests = [dict(v) for v in self._cash_requests.values()]
+        result = self.bridge.manage_wrinklers(automation_config.wrinkler_free_slots, requests)
+        if not isinstance(result, dict):
+            return False
+        with self._cash_request_lock:
+            for source in result.get('funded', []):
+                # Não apaga um pedido mais recente enviado durante a chamada à bridge.
+                sent = next((v for v in requests if v['source'] == source), None)
+                if self._cash_requests.get(source) == sent:
+                    self._cash_requests.pop(source, None)
+        popped = result.get('popped', [])
+        self.wrinklers_popped += len(popped)
+        vacancies = sum(v['reason'] == 'vacancy' for v in popped)
+        if vacancies:
+            for _ in range(vacancies):
+                self._collection_summary.record("Wrinklers (vagas para Shiny)")
+        cash = sum(v['reason'] == 'cash' for v in popped)
+        if cash:
+            logger.info("Wrinklers: %s normais coletados para liberar caixa para Garden/Banco; Shiny preservados.", cash)
+        blocked = bool(result.get('blocked'))
+        if blocked and not self._wrinkler_blocked:
+            logger.info("Wrinklers: não há normais suficientes para abrir as vagas; Shiny permanecem protegidos.")
+        self._wrinkler_blocked = blocked
+        return bool(popped)
+
+    def reset_krumblor_schedule(self):
+        self._next_krumblor_check = 0.0
+        self._last_krumblor_state = None
+
+    def _run_krumblor_cycle(self, now=None):
+        if (self.paused.is_set() or self.stop_event.is_set()
+                or self.exclusive_owner is not None or not automation_config.enable_krumblor_upgrades):
+            return False
+        current = time.monotonic() if now is None else now
+        if current < self._next_krumblor_check:
+            return False
+        # Reserva o prazo antes da chamada, inclusive se a bridge lançar erro.
+        self._next_krumblor_check = current + 60
+        result = self.bridge.collect_krumblor_upgrade()
+        retry = result.get("retryAfterMs", 60000)
+        if not isinstance(retry, (int, float)) or not 0 < retry <= 900000:
+            retry = 60000
+        if result.get("reason") == "petting":
+            interval = min(5.0, max(0.05, automation_config.krumblor_pet_interval_seconds))
+            remaining = result.get("windowRemainingMs", interval * 1000)
+            if not isinstance(remaining, (int, float)) or not 0 < remaining <= 900000:
+                remaining = interval * 1000
+            retry = min(remaining, interval * 1000)
+        completed = time.monotonic() if now is None else current
+        self._next_krumblor_check = completed + max(0.05, retry / 1000)
+        reason = result.get("reason")
+        drop = result.get("drop", "upgrade")
+        state = (reason, drop if reason != "complete" else None, result.get("collected"))
+        if state != self._last_krumblor_state:
+            if result.get("unlocked"):
+                logger.info("Krumblor: %s liberado (%s/4). Não foi comprado. Próxima faixa: %s.",
+                            drop, result.get("collected", "?"), result.get("nextWindow", "—"))
+            elif reason == "waiting_window":
+                logger.info("Krumblor: %s já liberado ou comprado; próxima faixa às %s.",
+                            drop, result.get("nextWindow", "—"))
+            elif reason == "petting":
+                logger.info("Krumblor: coletando %s nesta faixa.", drop)
+            else:
+                logger.info("Krumblor: %s", result.get("message", "Aguardando."))
+            self._last_krumblor_state = state
+        return result.get("unlocked") is True
+
+    def _run_sugar_lump_cycle(self):
+        if self.paused.is_set() or not automation_config.enable_sugar_lump_harvest:
+            return False
+        status = self.bridge.get_sugar_lump_status()
+        if not status or not status.get("mature") or status.get("overripe"):
+            return False
+        preserved = tuple(t for t in range(5) if getattr(automation_config, f"preserve_sugar_lump_type_{t}"))
+        if status.get("type") in preserved and not status.get("ready"):
+            return False
+        if self.bridge.harvest_sugar_lump(preserved_types=preserved):
+            self.sugar_lumps_harvested += 1
+            logger.info("Sugar Lump %s colhido; colheita garantida=%s", status.get("typeName"), status.get("ready"))
+            return True
+        return False
+
     def _run_grimoire_cycle(self, now: Optional[float] = None) -> bool:
+        if self.gc_farm_active:
+            return False
         """Tenta uma vez por segundo; a bridge decide atomicamente se a mana está cheia."""
-        if not automation_config.enable_grimoire_spell_spam:
+        if self.paused.is_set() or not automation_config.enable_grimoire_spell_spam:
             self._last_grimoire_failure = None
             return False
         current_time = time.monotonic() if now is None else now
@@ -287,33 +519,78 @@ class AutomationRunner:
 
     def clicker_loop(self) -> None:
         """Thread dedicada para clicar no cookie principal."""
-        logger.info(f"Thread clicker iniciada. Pressione {app_config.toggle_key} para ligar/desligar.")
+        logger.debug("Clicker: thread iniciada; atalho %s", app_config.toggle_key)
 
+        deadlines = {"cookie": 0.0, "mouse": 0.0}
+        previous_keys = {"cookie": app_config.toggle_key, "mouse": app_config.mouse_toggle_key}
+        previous_modes = {"cookie": app_config.clicker_mode, "mouse": app_config.mouse_clicker_mode}
+        held = {"cookie": False, "mouse": False}
+        if self.require_fresh_hotkeys:
+            held = {mode: self.input_handler.is_key_pressed(key) for mode, key in previous_keys.items()}
+        hold_started = {"cookie": False, "mouse": False}
         while not self.stop_event.is_set():
             try:
-                if self.is_running:
-                    # Clique direto sem consultar bridge
-                    self.input_handler.click_cookie()
-                    self.cookies_clicked += 1
-                    # Delay configurável
-                    time.sleep(app_config.click_interval)
-
-                # Verificar toggle
-                if self.input_handler.is_key_pressed(app_config.toggle_key):
-                    self.toggle_clicker()
-                    time.sleep(0.3)  # Debounce
-
-                # Pequeno delay quando parado
-                if not self.is_running:
-                    time.sleep(0.01)
-
-            except Exception as e:
-                logger.error(f"Erro na thread clicker: {e}")
-                time.sleep(0.1)
+                keys = {"cookie": app_config.toggle_key, "mouse": app_config.mouse_toggle_key}
+                modes = {"cookie": app_config.clicker_mode, "mouse": app_config.mouse_clicker_mode}
+                for mode, key in keys.items():
+                    down = self.input_handler.is_key_pressed(key)
+                    if key != previous_keys[mode] or modes[mode] != previous_modes[mode]:
+                        previous_keys[mode], held[mode] = key, down
+                        previous_modes[mode] = modes[mode]
+                        hold_started[mode] = False
+                    manual_allowed = (not self.paused.is_set() and not self.hotkey_capture_active.is_set()
+                                      and self.bridge.connected is not False and self._exclusive_owner is None)
+                    if not down or not manual_allowed:
+                        hold_started[mode] = False
+                    if down and not held[mode] and manual_allowed:
+                        if modes[mode] == "toggle":
+                            self.toggle_clicker() if mode == "cookie" else self.toggle_mouse_clicker()
+                        else:
+                            hold_started[mode] = mode == "mouse" or bool(self.cookie_position) or self.update_cookie_position()
+                    setattr(self, "cookie_hold_active" if mode == "cookie" else "mouse_hold_active",
+                            modes[mode] == "hold" and hold_started[mode] and down and manual_allowed)
+                    held[mode] = down
+                # Uma única fila envia down/up completos de cada clique.
+                now = time.monotonic()
+                allowed = (not self.paused.is_set() and not self.hotkey_capture_active.is_set()
+                           and self.bridge.connected is not False)
+                active = {"cookie": (self.is_running or self.cookie_hold_active) and allowed,
+                          "mouse": (self.mouse_clicker_running or self.mouse_hold_active) and allowed and self._exclusive_owner is None}
+                for mode, enabled in active.items():
+                    if not enabled:
+                        deadlines[mode] = now
+                        continue
+                    if now < deadlines[mode]:continue
+                    if mode == "cookie":
+                        if self.bridge.connected is False or self.paused.is_set():
+                            continue
+                        self.input_handler.click_cookie()
+                        self.cookies_clicked += 1
+                        interval = app_config.click_interval
+                    else:
+                        # Leituras lentas do detector não bloqueiam os cliques no cookie.
+                        acquired = self._exclusive_lock.acquire(blocking=False)
+                        interval = 0.01
+                        if acquired:
+                            try:
+                                if (self._exclusive_owner is None and (self.mouse_clicker_running or self.mouse_hold_active)
+                                        and self.bridge.connected is not False
+                                        and not self.paused.is_set() and not self.hotkey_capture_active.is_set()):
+                                    self.mouse_clicker_over_game = self.input_handler.click_at_cursor()
+                                    if self.mouse_clicker_over_game:self.mouse_clicks += 1
+                                    interval = app_config.mouse_click_interval
+                            finally:
+                                self._exclusive_lock.release()
+                    deadlines[mode] = time.monotonic() + interval
+                due = [deadlines[mode] - time.monotonic() for mode in active if active[mode]]
+                self.stop_event.wait(min(0.01, max(0.001, min(due))) if due else 0.01)
+            except Exception as error:
+                logger.error("Erro na thread clicker: %s", error)
+                self.stop_event.wait(0.1)
 
     def start(self) -> None:
         """Inicia as threads de automação em background."""
-        logger.info("Iniciando automações...")
+        logger.debug("Preparando threads de automação")
 
         # Iniciar threads
         self.detector_thread = threading.Thread(target=self.detector_loop, daemon=True, name="Detector")
@@ -322,11 +599,12 @@ class AutomationRunner:
         self.detector_thread.start()
         self.clicker_thread.start()
 
-        logger.info("Threads de automação iniciadas em background")
+        logger.debug("Threads de automação prontas; execução depende do controle geral")
 
     def stop(self) -> None:
         """Para todas as threads."""
         self.stop_event.set()
+        self._collection_summary.flush()
         logger.info("Automações paradas")
 
 

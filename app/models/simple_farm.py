@@ -11,7 +11,7 @@ class EstadoSimpleFarm(str, Enum):
     COLETANDO = "coletando Golden Cookies"
     ALINHANDO = "alinhando FtHoF"
     AGUARDANDO_BUFF = "aguardando buff natural"
-    EXECUTANDO = "executando Dualcast"
+    EXECUTANDO = "aproveitando Click Frenzy"
     INTERROMPIDO = "interrompido"
     ERRO_SEGURO = "erro seguro"
 
@@ -23,20 +23,20 @@ class ConfiguracaoSimpleFarm:
     busca_maxima_spells: int = 250
     intervalo_verificacao: float = 0.2
     duracao_minima_buff: float = 8.0
-    reserva_caixa: float = 0.30
-    investimento_por_ciclo: float = 0.10
+    reserva_caixa: float = 0.80
+    investimento_por_ciclo: float = 0.05
 
     def __post_init__(self) -> None:
         if not 2 <= self.busca_maxima_spells <= 10_000:
-            raise ValueError("A busca deve ficar entre 2 e 10.000 spells")
+            raise ValueError("Analise entre 2 e 10.000 magias futuras.")
         if not 0.1 <= self.intervalo_verificacao <= 10.0:
             raise ValueError("O intervalo deve ficar entre 0,1 e 10 segundos")
         if not 3.0 <= self.duracao_minima_buff <= 60.0:
             raise ValueError("A duração mínima deve ficar entre 3 e 60 segundos")
-        if not 0.10 <= self.reserva_caixa <= 0.90:
-            raise ValueError("A reserva de caixa deve ficar entre 10% e 90%")
-        if not 0.01 <= self.investimento_por_ciclo <= 0.50:
-            raise ValueError("O investimento por ciclo deve ficar entre 1% e 50%")
+        if not 0.15 <= self.reserva_caixa <= 0.99:
+            raise ValueError("A reserva de caixa deve ficar entre 15% e 99%")
+        if not 0.01 <= self.investimento_por_ciclo <= 0.20:
+            raise ValueError("O investimento por ciclo deve ficar entre 1% e 20%")
 
 
 @dataclass(frozen=True)
@@ -45,19 +45,23 @@ class PlanoSimpleFarm:
     versao: str
     cast_atual: int
     cast_inicial: int
-    resultados: Tuple[str, str]
+    resultados: Tuple[str, ...]
     spells_a_pular: int
     qualidade: str
-    torres_iniciais: int
-    torres_finais: int
+    torres_originais: int = 0
+    torres_temporarias: int = 0
+    custo_recompra: float = 0.0
+    decisao: str = ""
 
     @property
     def resumo(self) -> str:
-        efeitos = " → ".join(self.resultados)
-        return (
-            f"cast {self.cast_inicial} ({self.spells_a_pular} skips): {efeitos} "
-            f"| torres {self.torres_iniciais}→{self.torres_finais} | {self.qualidade}"
-        )
+        names = {"click frenzy": "Click Frenzy", "frenzy": "Frenzy",
+                 "building special": "Bônus de construção", "blood frenzy": "Elder Frenzy"}
+        efeitos = " + ".join(names.get(effect, effect) for effect in self.resultados)
+        strategy = "Duas magias" if len(self.resultados) == 2 else "Uma magia"
+        preparation = f"{self.spells_a_pular} magias de preparação" if self.spells_a_pular else "Sequência pronta"
+        return f"{efeitos} · {strategy} · {preparation}"
+
 
 
 @dataclass(frozen=True)
@@ -73,7 +77,7 @@ class RelatorioSimpleFarm:
     cookies_no_banco: Optional[float] = None
     buffs_ativos: Tuple[str, ...] = field(default_factory=tuple)
     golden_cookies_coletados: int = 0
-    dualcasts_executados: int = 0
+    magias_executadas: int = 0
     upgrades_comprados: int = 0
     construcoes_compradas: int = 0
     caixa_reservado: Optional[float] = None

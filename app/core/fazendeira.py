@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 from dataclasses import replace
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 
+from app.core.garden_timing import schedule_parent_plantings
+from app.core.garden_strategies import GARDEN_DROPS, GARDEN_STRATEGIES
+from app.core.garden_layouts import full_plot_layout
+from app.core.garden_golden import golden_layout, golden_soil, GOLDEN, NURSE
 from app.core.garden_catalog import GARDEN_CATALOG, TARGET_SEED_KEYS, GardenRecipe
 from app.models.garden import (
     GardenAction,
@@ -62,7 +67,7 @@ class Fazendeira:
         "shriekbulb": "_estrategia_anel",
         "tidygrass": "_estrategia_mutacao_adjacente",
         "everdaisy": "_estrategia_anel",
-        "ichorpuff": "_estrategia_mutacao_adjacente",
+        "ichorpuff": "_estrategia_ichorpuff",
     }
 
     # Layouts de referência que não podem ser reduzidos ao padrão genérico
@@ -93,6 +98,7 @@ class Fazendeira:
         self.bridge = bridge
         self._clock = clock
         self._last_real_tick_token: Optional[float] = None
+        self._last_budget_wait = False
         self._descendant_counts = self._calculate_descendant_counts()
 
     def capture_snapshot(self) -> GardenSnapshot:
@@ -150,6 +156,7 @@ class Fazendeira:
 
     def build_plan(
         self, snapshot: GardenSnapshot, *, green_aching_thumb_enabled: bool = False,
+        golden_cookies_enabled: bool = False, strategy: Optional[str] = None,
     ) -> GardenPlan:
         """Gera o plano completo antes de qualquer chamada mutável."""
         if snapshot.status.available:
@@ -160,14 +167,23 @@ class Fazendeira:
                 extra = sorted(runtime_keys - catalog_keys)
                 details = []
                 if missing:
-                    details.append("ausentes no runtime: " + ", ".join(missing))
+                    details.append("não encontradas no jogo: " + ", ".join(missing))
                 if extra:
-                    details.append("novas no runtime: " + ", ".join(extra))
+                    details.append("não reconhecidas: " + ", ".join(extra))
                 return GardenPlan(
                     None,
                     explanation="Catálogo incompatível com esta versão do jogo; " + "; ".join(details) + ".",
                     waiting=True,
                 )
+        if strategy is not None:
+            if strategy not in GARDEN_STRATEGIES:
+                return GardenPlan(None,explanation="Selecione uma estratégia válida para o Garden.",waiting=True)
+            green_aching_thumb_enabled = strategy == 'green_aching_thumb'
+            golden_cookies_enabled = strategy == 'golden_cookies'
+        if strategy == 'garden_upgrades' and snapshot.status.available:
+            return self._build_garden_upgrades_plan(snapshot)
+        if golden_cookies_enabled and snapshot.status.available:
+            return self._build_golden_cookies_plan(snapshot)
         if green_aching_thumb_enabled:
             thumbcorn_plan = self._build_green_aching_thumb_plan(snapshot)
             if thumbcorn_plan is not None:
@@ -186,11 +202,12 @@ class Fazendeira:
         goal = self.select_next_goal(snapshot)
         if goal is None:
             explanation = (
-                "Coleção completa: todas as sementes foram confirmadas no snapshot."
+                "Coleção completa: todas as sementes foram desbloqueadas."
                 if snapshot.status.available and not snapshot.missing_seed_keys
                 else snapshot.status.message
             )
-            return GardenPlan(None, explanation=explanation, waiting=True)
+            return GardenPlan(None, explanation=explanation, waiting=True,
+                              completed=snapshot.status.available and not snapshot.missing_seed_keys)
 
         recipe = GARDEN_CATALOG[goal.target_key]
         pending_discoveries = self._pending_discoveries(snapshot)
@@ -218,7 +235,7 @@ class Fazendeira:
                     if (plant.x, plant.y) not in mature_positions
                 ),
             )
-            followup_actions = self._plan_followup_setup(
+            followup_actions, followup_explanation = self._plan_followup_setup(
                 planning_snapshot,
                 followup,
                 protected_positions=protected_positions,
@@ -245,7 +262,7 @@ class Fazendeira:
                 goal, tuple(actions),
                 (
                     f"{len(mature_discoveries)} descoberta(s) madura(s) serão colhidas; em seguida, o layout de "
-                    f"{followup.target_name} será completado no mesmo tick."
+                    f"{followup.target_name} será preparado conforme a maturação dos pais. {followup_explanation}"
                     if followup else
                     "As descobertas maduras serão colhidas; as demais continuarão protegidas."
                 ),
@@ -254,7 +271,7 @@ class Fazendeira:
             oldest = max(target_plants, key=lambda plant: plant.age)
             followup = self._select_followup_goal(snapshot, assumed_unlocks)
             protected = {(plant.x, plant.y) for plant in pending_discoveries}
-            followup_actions = self._plan_followup_setup(
+            followup_actions, followup_explanation = self._plan_followup_setup(
                 snapshot, followup, protected_positions=protected,
             )
             # Enquanto a meta atual cresce, Fertilizer tem precedência sobre
@@ -275,7 +292,7 @@ class Fazendeira:
                     f"{goal.target_name} encontrada com idade {oldest.age:.1f}/{oldest.mature_age:.1f}; "
                     + (
                         f"preservar {len(pending_discoveries)} descoberta(s) em crescimento enquanto "
-                        f"o layout de {followup.target_name} é preparado em paralelo."
+                        f"o layout de {followup.target_name} é preparado em paralelo. {followup_explanation}"
                         if followup else
                         f"preservar {len(pending_discoveries)} descoberta(s) e aguardar maturidade."
                     )
@@ -300,32 +317,208 @@ class Fazendeira:
         dry_run: bool = True,
         automation_enabled: bool = False,
         green_aching_thumb_enabled: bool = False,
+        golden_cookies_enabled: bool = False, strategy: Optional[str] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> GardenCycleResult:
         """Simula ou executa um ciclo; sem autorização, jamais muta o jogo."""
+        should_stop = should_stop or (lambda: False)
         snapshot = self.capture_snapshot()
         plan = self.build_plan(
             snapshot, green_aching_thumb_enabled=green_aching_thumb_enabled,
+            golden_cookies_enabled=golden_cookies_enabled, strategy=strategy,
         )
-        if dry_run or not automation_enabled or not snapshot.status.available:
+        if dry_run or not automation_enabled:
+            costs = {seed.key: seed.cost for seed in snapshot.seeds}
+            plantings = [action for action in plan.actions if action.kind == "plant"]
+            if plantings and snapshot.cookies is not None and all(costs.get(a.seed_key) is not None for a in plantings):
+                required = sum(costs[a.seed_key] for a in plantings)
+                detail = f" Plantios pendentes: {required:.3g} cookies; saldo: {snapshot.cookies:.3g}."
+                if required > snapshot.cookies:
+                    detail += " A troca do layout aguardará dinheiro; colheitas maduras continuam."
+                plan = replace(plan, explanation=plan.explanation + detail, waiting=plan.waiting or required > snapshot.cookies)
+        if dry_run or not automation_enabled or not snapshot.status.available or should_stop():
             return GardenCycleResult(snapshot, plan, True, ())
 
         # ``M.nextStep`` muda somente quando o Garden processa um tick. Ele é
         # usado como token para impedir duas reconciliações reais no mesmo tick.
-        tick_token = snapshot.next_tick_at
+        tick_token = (snapshot.next_tick_at, plan.mode) if snapshot.next_tick_at is not None else None
         if tick_token is not None and tick_token == self._last_real_tick_token:
             return GardenCycleResult(snapshot, plan, False, ())
         if tick_token is not None:
             self._last_real_tick_token = tick_token
 
         results = []
+        layout = []
+        harvested_keys = set()
         for action in plan.actions:
-            result = self._execute_action(action)
-            results.append(result)
-            if result.success:
-                logger.info(f"Garden: {result.message}")
+            if should_stop():
+                break
+            if action.kind == "plant" or (action.kind == "harvest" and not action.require_mature):
+                layout.append(action)
             else:
-                logger.warning(f"Garden: {result.message}")
+                # Descobertas e colheitas maduras não dependem de pagar o próximo layout.
+                result = self._execute_action(action)
+                results.append(result)
+                if plan.mode == 'garden_upgrades' and action.kind == 'harvest' and result.success:
+                    statuses = self.bridge.get_garden_upgrades()
+                    if not statuses:
+                        layout.clear()
+                        plan = replace(plan,actions=(),waiting=True,
+                                       explanation="Aguardando confirmação dos upgrades após a colheita.")
+                        break
+                    before = {u.name for u in snapshot.upgrades if u.obtained}
+                    if any(u.obtained and u.name not in before for u in statuses):
+                        # O drop encerra a colheita desse objetivo imediatamente.
+                        # Não pagar nem limpar o layout antigo depois do desbloqueio.
+                        layout.clear()
+                        snapshot = self.capture_snapshot()
+                        plan = self.build_plan(snapshot,strategy='garden_upgrades')
+                        break
+                if action.kind == 'harvest' and result.success:
+                    harvested_keys.add(action.seed_key)
+                    finite_strategy = None
+                    if plan.mode is None and snapshot.missing_seed_keys and snapshot.missing_seed_keys <= harvested_keys:
+                        finite_strategy = 'plants'
+                    elif plan.mode == 'green_aching_thumb' and snapshot.green_aching_thumb_progress is not None:
+                        count = sum(r.success and r.action == 'harvest' for r in results)
+                        if snapshot.green_aching_thumb_progress + count >= 1000:
+                            finite_strategy = 'green_aching_thumb'
+                    if finite_strategy:
+                        refreshed = self.capture_snapshot()
+                        confirmed = self.build_plan(refreshed,strategy=finite_strategy)
+                        if confirmed.completed:
+                            snapshot,plan = refreshed,confirmed
+                            layout.clear()
+                            break
+        if layout and not should_stop():
+            results.extend(self.bridge.execute_garden_layout(tuple(layout)))
+        budget_wait = any(result.waiting and result.reason == "insufficient_funds" for result in results)
+        grouped = Counter()
+        waiting_logged = False
+        failures = []
+        for result in results:
+            if result.waiting:
+                if not self._last_budget_wait and not waiting_logged:
+                    logger.info("Garden: %s", result.message)
+                    waiting_logged = True
+                else:
+                    logger.debug("Garden: %s", result.message)
+            elif result.success:
+                discovery = (result.action == "harvest" and result.seed_key
+                             and result.seed_key not in snapshot.unlocked_seed_keys)
+                if result.action in {"plant", "harvest"} and not discovery:
+                    grouped[(result.action, result.seed_key)] += 1
+                    logger.debug("Garden: %s", result.message)
+                else:
+                    logger.info("Garden: %s", result.message)
+            else:
+                failures.append(result)
+                logger.debug("Garden: %s", result.message)
+        if grouped:
+            descriptions = []
+            for (action, key), count in grouped.items():
+                recipe = GARDEN_CATALOG.get(key)
+                name = recipe.name if recipe else key or "plantas"
+                verb = "plantou" if action == "plant" else "colheu"
+                descriptions.append(f"{verb} {count} {name}")
+            logger.info("Garden: %s.", "; ".join(descriptions))
+        if failures:
+            logger.warning("Garden: %s ação(ões) não concluída(s). %s", len(failures), failures[0].message)
+        self._last_budget_wait = budget_wait
+        if budget_wait:
+            waiting = next(result for result in results if result.waiting)
+            detail = waiting.message
+            if waiting.required_cookies is not None and waiting.available_cookies is not None:
+                detail += f" Custo: {waiting.required_cookies:.3g}; saldo: {waiting.available_cookies:.3g}."
+            plan = replace(plan, waiting=True, explanation=plan.explanation + " " + detail +
+                           " Nova avaliação no próximo tick do Garden.")
         return GardenCycleResult(snapshot, plan, False, tuple(results))
+
+    def _build_garden_upgrades_plan(self, snapshot: GardenSnapshot) -> GardenPlan:
+        goal = GardenGoal('garden_upgrades','Upgrades do Garden',(),(),
+                          'Liberar os sete upgrades obtidos por colheitas maduras.',(),
+                          'Todos comprados ou disponíveis na loja.','garden_upgrades')
+        if ({u.name for u in snapshot.upgrades} != set(GARDEN_DROPS)
+                or len(snapshot.upgrades)!=len(GARDEN_DROPS)):
+            return GardenPlan(goal,explanation="Aguardando uma leitura completa dos upgrades do Garden.",
+                              waiting=True,mode='garden_upgrades')
+        pending = [u for u in snapshot.upgrades if not u.obtained]
+        progress = f"Upgrades liberados: {len(GARDEN_DROPS)-len(pending)}/{len(GARDEN_DROPS)}. "
+        if not pending:
+            return GardenPlan(goal,explanation=progress+"Todos já foram comprados ou estão disponíveis na loja.",
+                              completed=True,waiting=True,mode='garden_upgrades')
+        available = [u for u in pending if u.plant_key in snapshot.unlocked_seed_keys]
+        if not available:
+            goal = replace(goal,pending_prerequisites=tuple(GARDEN_CATALOG[u.plant_key].name for u in pending))
+            return GardenPlan(goal,explanation=progress+"Desbloqueie as sementes necessárias antes de cultivar os upgrades.",
+                              waiting=True,mode='garden_upgrades')
+        # Uma mutação incidental não troca o objetivo antes do drop confirmado.
+        target = min(available,key=lambda u:list(GARDEN_DROPS).index(u.name))
+        plant_name = GARDEN_CATALOG[target.plant_key].name
+        goal = replace(goal,target_key=target.plant_key,target_name=target.name,
+                       parent_keys=(target.plant_key,),parent_names=(plant_name,))
+        pending_keys = {u.plant_key for u in available}
+        mature = [p for p in self._sorted_plants(snapshot) if p.key in pending_keys and p.mature]
+        harvests = tuple(GardenAction('harvest',
+            'Colher madura para tentar liberar o upgrade que falta.',x=p.x,y=p.y,seed_key=p.key)
+            for p in mature)
+        mature_positions = {(p.x,p.y) for p in mature}
+        after_harvest = replace(snapshot,plants=tuple(
+            p for p in snapshot.plants if (p.x,p.y) not in mature_positions))
+        desired = {pos:target.plant_key for pos in snapshot.unlocked_tiles}
+        # Preservar culturas pendentes em crescimento e preencher as casas colhidas.
+        desired.update(((p.x,p.y),p.key) for p in after_harvest.plants if p.key in pending_keys)
+        actions = harvests + self._reconcile_layout(after_harvest,desired)
+        actions = self._growth_actions(snapshot) + actions
+        growing_other = Counter(p.key for p in snapshot.plants
+                                if p.key in pending_keys and p.key != target.plant_key)
+        reuse = (" Aproveitar as plantas já presentes até a colheita: " +
+                 ", ".join(f"{count}× {GARDEN_CATALOG[key].name}" for key,count in growing_other.items()) + ".") if growing_other else ""
+        explanation = (progress+f"Pendentes: {', '.join(u.name for u in pending)}. "
+                       + f"Cultivar {plant_name} e colher madura até liberar {target.name}. "
+                       "Upgrades já disponíveis na loja não precisam ser cultivados novamente. "
+                       "Sem drop, repor as casas vazias no mesmo ciclo, após validar o saldo do lote. "
+                       "Não compra upgrades nem usa Sugar Lumps." + reuse)
+        return GardenPlan(goal,tuple(actions),explanation,waiting=not actions,mode='garden_upgrades')
+
+    def _build_golden_cookies_plan(self, snapshot: GardenSnapshot) -> GardenPlan:
+        missing = tuple(key for key in (GOLDEN,NURSE) if key not in snapshot.unlocked_seed_keys)
+        goal = GardenGoal(
+            GOLDEN, "Mais Golden Cookies", (GOLDEN,NURSE), ("Golden Clover", "Nursetulip"),
+            "Golden Clover aumenta a frequência; Nursetulip amplifica as plantas vizinhas.",
+            tuple(GARDEN_CATALOG[key].name for key in missing),
+            "Manter o canteiro produzindo o maior bônus de frequência possível.", "golden_cookies",
+        )
+        if missing:
+            return GardenPlan(goal, explanation="Desbloqueie as sementes: " + ", ".join(goal.pending_prerequisites) + ".",
+                              waiting=True,mode="golden_cookies")
+        protected = tuple((p.x,p.y) for p in snapshot.plants
+                          if p.key not in GARDEN_CATALOG or p.key not in snapshot.unlocked_seed_keys)
+        desired = dict(golden_layout(tuple(sorted(snapshot.unlocked_tiles)),tuple(sorted(protected))))
+        actions = list(self._reconcile_layout(snapshot,desired))
+        soil,current,peak = golden_soil(snapshot,desired)
+        available = {s.key for s in snapshot.soils if s.available}
+        if soil not in available:
+            soil = 'fertilizer' if 'fertilizer' in available else snapshot.soil_key
+        if snapshot.frozen:
+            actions.insert(0,GardenAction('set_freeze','Retomar o crescimento dos trevos e tulipas.',freeze=False))
+        elif soil and soil!=snapshot.soil_key and (
+                snapshot.next_soil_at is None or snapshot.next_soil_at<=self._clock()):
+            actions.insert(0,GardenAction('change_soil',
+                'Prolongar e ampliar o bônus dos trevos.' if soil=='clay' else 'Recuperar o crescimento do canteiro.',
+                soil_key=soil))
+        counts = Counter(desired.values())
+        explanation = (
+            f"{counts[GOLDEN]} Golden Clover e {counts[NURSE]} Nursetulip. "
+            f"Potencial no Clay: +{peak*100:.1f}% de frequência. "
+            f"Força atual do conjunto: {current/peak*100 if peak else 0:.0f}% do potencial. "
+            + ("Manter Clay para aproveitar o bônus." if soil=='clay' else "Usar Fertilizer para recuperar o crescimento.")
+            + " Repor plantas que morrerem; manter as saudáveis. Nursetulip reduz o CpS."
+        )
+        if protected:explanation += f" {len(protected)} planta(s) protegida(s) preservada(s)."
+        if soil!=snapshot.soil_key and snapshot.next_soil_at and snapshot.next_soil_at>self._clock():
+            explanation += " A troca de solo aguarda o tempo de recarga."
+        return GardenPlan(goal,tuple(actions),explanation,waiting=not actions,mode="golden_cookies")
 
     def _build_green_aching_thumb_plan(
         self, snapshot: GardenSnapshot,
@@ -340,15 +533,14 @@ class Fazendeira:
             parent_names=("Thumbcorn",),
             reason="Priorizar Thumbcorn para colher plantas maduras até a conquista ser confirmada pelo jogo.",
             pending_prerequisites=(),
-            success_condition="Game.HasAchiev confirma que Green, aching thumb foi obtida.",
+            success_condition="Obter a conquista Green, aching thumb após colher 1.000 plantas maduras.",
             strategy="colheita_thumbcorn",
         )
         if snapshot.green_aching_thumb_won is True:
             return GardenPlan(
                 goal,
                 explanation=(
-                    "Conquista Green, aching thumb confirmada no runtime; encerrar o modo "
-                    "Thumbcorn e retomar o planejamento normal da coleção."
+                    "Conquista Green, aching thumb obtida. Objetivo concluído; desligar a automação do Garden."
                 ),
                 waiting=True,
                 mode="green_aching_thumb",
@@ -363,7 +555,7 @@ class Fazendeira:
                 goal,
                 explanation=(
                     "Modo Green, aching thumb em pausa: "
-                    f"{snapshot.green_aching_thumb_message} Nenhuma ação especial será enviada."
+                    f"{snapshot.green_aching_thumb_message} Aguardando uma nova leitura do Garden."
                 ),
                 waiting=True,
                 mode="green_aching_thumb",
@@ -378,13 +570,15 @@ class Fazendeira:
         replacements = []
         mature_thumbcorn = []
         for position, plant in sorted(plants_by_position.items(), key=lambda item: (item[0][1], item[0][0])):
+            if plant.key not in GARDEN_CATALOG or plant.key not in snapshot.unlocked_seed_keys:
+                continue
             if plant.key == "thumbcorn":
                 if plant.mature:
                     mature_thumbcorn.append(plant)
                 continue
             replacements.append(GardenAction(
                 "harvest",
-                "Substituir a planta existente por Thumbcorn conforme o plano declarado do modo da conquista.",
+                "Substituir a planta existente por Thumbcorn para avançar na conquista.",
                 x=position[0], y=position[1], seed_key=plant.key, require_mature=False,
             ))
 
@@ -411,7 +605,7 @@ class Fazendeira:
         if replacements or plantings:
             actions = self._prepend_operational_actions(snapshot, actions)
         progress = (
-            f" Progresso informado pelo runtime: {snapshot.green_aching_thumb_progress}/1000."
+            f" Progresso: {snapshot.green_aching_thumb_progress}/1000."
             if snapshot.green_aching_thumb_progress is not None else ""
         )
         explanation = (
@@ -436,6 +630,8 @@ class Fazendeira:
             return self.bridge.change_garden_soil(action.soil_key)
         if action.kind == "set_freeze":
             return self.bridge.set_garden_frozen(bool(action.freeze))
+        if action.kind == "boost_mutation":
+            return self.bridge.boost_juicy_queenbeet()
         return GardenActionResult(False, action.kind, "Ação do Garden desconhecida.")
 
     def _pending_discoveries(
@@ -468,13 +664,17 @@ class Fazendeira:
         *,
         protected_positions: Optional[set[Tuple[int, int]]] = None,
         newly_unlocked_keys: Optional[set[str]] = None,
-    ) -> Tuple[GardenAction, ...]:
+    ) -> Tuple[Tuple[GardenAction, ...], str]:
         """Planeja antecipadamente o próximo layout sem tocar na meta protegida."""
         if goal is None or goal.pending_prerequisites:
-            return ()
+            return (), ""
         recipe = GARDEN_CATALOG[goal.target_key]
         method_name = self.ESTRATEGIAS_POR_PLANTA[goal.target_key]
-        actions, _ = getattr(self, method_name)(snapshot, recipe)
+        if newly_unlocked_keys:
+            snapshot = replace(snapshot, seeds=tuple(
+                replace(seed, unlocked=True) if seed.key in newly_unlocked_keys else seed
+                for seed in snapshot.seeds))
+        actions, explanation = getattr(self, method_name)(snapshot, recipe)
         actions = self._prepend_operational_actions(snapshot, actions)
         protected_positions = protected_positions or set()
         plantable_keys = set(snapshot.unlocked_seed_keys)
@@ -489,13 +689,26 @@ class Fazendeira:
             if action.kind == "plant" and action.seed_key not in plantable_keys:
                 continue
             filtered.append(action)
-        return tuple(filtered)
+        return tuple(filtered), explanation
 
     def _estrategia_inicial(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
-        return (), "A semente inicial deveria estar desbloqueada; aguarde uma nova leitura do runtime."
+        return (), "A semente inicial não está disponível. Aguardando uma nova leitura do Garden."
 
     def _estrategia_mutacao_adjacente(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_generic_layout(snapshot, recipe)
+
+    def _estrategia_ichorpuff(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
+        parent_keys = {parent.key for parent in recipe.parents}
+        layout = full_plot_layout(snapshot, recipe, preserve_parent_keys=parent_keys)
+        if layout is None:
+            return self._growth_actions(snapshot), (
+                "Preservar Elderwort e Crumbspore existentes; aguardando espaço livre para Ichorpuff."
+            )
+        desired, centers = layout
+        return self._plan_mutation_layout(
+            snapshot, recipe, desired, centers,
+            f"setup de Ichorpuff aproveitando os pais existentes ({len(centers)} espaços de mutação)",
+        )
 
     def _estrategia_anel(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         return self._plan_parent_layout(snapshot, recipe)
@@ -505,6 +718,10 @@ class Fazendeira:
         if layout is None:
             return self._plan_parent_layout(snapshot, recipe)
         desired, mutation_tiles = layout
+        if recipe.key != "queenbeetLump":
+            expanded = full_plot_layout(snapshot, recipe, desired)
+            if expanded is not None:
+                desired, mutation_tiles = expanded
         return self._plan_mutation_layout(
             snapshot,
             recipe,
@@ -525,26 +742,22 @@ class Fazendeira:
         )
 
     def _estrategia_derivado_erva(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
-        weeds = sorted(
-            (plant for plant in snapshot.plants if plant.key == "meddleweed"),
-            key=lambda plant: (-plant.age, plant.y, plant.x),
+        protected = {(p.x,p.y) for p in snapshot.plants
+                     if p.key not in GARDEN_CATALOG or p.key not in snapshot.unlocked_seed_keys}
+        if "meddleweed" not in snapshot.unlocked_seed_keys:
+            return (), "Aguardando o desbloqueio de Meddleweed para preparar o canteiro."
+        desired = {pos:"meddleweed" for pos in snapshot.unlocked_tiles if pos not in protected}
+        actions = list(self._reconcile_layout(snapshot, desired))
+        mature = sorted((p for p in snapshot.plants if p.key=="meddleweed" and p.mature),
+                        key=lambda p:(-p.age,p.y,p.x))
+        harvests = tuple(GardenAction(
+            "harvest", "Colher Meddleweed madura para tentar gerar Brown mold ou Crumbspore.",
+            x=p.x,y=p.y,seed_key="meddleweed",require_mature=True,
+        ) for p in mature)
+        return (*harvests,*actions), (
+            f"Usar {len(desired)} casas para Meddleweed; colher as maduras e manter as demais crescendo. "
+            "Brown mold e Crumbspore que aparecerem serão preservadas até amadurecer."
         )
-        if not weeds:
-            desired_position = next(iter(sorted(snapshot.unlocked_tiles, key=lambda pos: (pos[1], pos[0]))), None)
-            desired = {desired_position: "meddleweed"} if desired_position else {}
-            actions = self._reconcile_layout(snapshot, desired)
-            if desired_position and "meddleweed" in snapshot.unlocked_seed_keys:
-                return actions, "Manter uma Meddleweed no ponto definido e remover qualquer planta fora do objetivo."
-            return actions, "Aguardando uma Meddleweed disponível; o restante do canteiro ficará vazio."
-        cleanup = list(self._remove_plants_except(snapshot, allowed_positions={(weeds[0].x, weeds[0].y)}))
-        weed = weeds[0]
-        if not weed.mature:
-            return tuple(cleanup), f"Meddleweed com idade {weed.age:.1f}/{weed.mature_age:.1f}; preservar somente ela até amadurecer."
-        action = GardenAction(
-            "harvest", "Arrancar a Meddleweed madura para tentar gerar Brown mold ou Crumbspore.",
-            x=weed.x, y=weed.y, seed_key="meddleweed", require_mature=True,
-        )
-        return (action, *cleanup), "A Meddleweed madura será arrancada; o resultado aleatório será validado no próximo tick."
 
     def _plan_generic_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         """Aplica o layout repetível de duas plantas iguais ou diferentes."""
@@ -572,14 +785,23 @@ class Fazendeira:
     ):
         """Reconcilia um layout e administra crescimento e Wood chips."""
         actions = self._reconcile_layout(snapshot, desired)
+        ring_status = ""
+        if recipe.key == "queenbeetLump":
+            actions, ring_status = self._synchronize_queenbeet_rings(snapshot, desired, mutation_tiles, actions)
+            return self._plan_juicy_boost(snapshot, mutation_tiles, actions, ring_status)
+        timing = ""
+        specialized = recipe.strategy != "mutacao_adjacente" or bool(recipe.maximum_neighbors)
+        if specialized:
+            actions, timing = schedule_parent_plantings(snapshot, recipe, desired, mutation_tiles, actions)
         if actions:
             removals = sum(action.kind == "harvest" for action in actions)
             plantings = sum(action.kind == "plant" for action in actions)
+            planting = "plantar" if specialized else "plantar imediatamente"
             return actions, (
                 f"Reconciliar o {description}: remover {removals} "
-                f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar "
-                f"{len(mutation_tiles)} espaços para a mutação."
-            )
+                f"planta(s) divergente(s), {planting} {plantings} pai(s) e manter "
+                f"{len(mutation_tiles)} espaços livres de propósito para receber a mutação. {timing}"
+            ).strip()
 
         ready_tiles = tuple(
             position for position in mutation_tiles
@@ -587,7 +809,10 @@ class Fazendeira:
         )
         if not ready_tiles:
             return self._growth_actions(snapshot), (
-                f"{description.capitalize()} completo; aguardando a maturidade dos pais."
+                f"{description.capitalize()}: aguardando oito pais maduros e centro livre. {ring_status}"
+                if recipe.key == "queenbeetLump" else
+                timing or (f"{description.capitalize()} completo; aguardando a maturidade dos pais. "
+                           "Os espaços de mutação permanecem livres de propósito.")
             )
         woodchips = next(
             (soil for soil in snapshot.soils if soil.key == "woodchips" and soil.available), None
@@ -601,11 +826,11 @@ class Fazendeira:
                 ),
             ), (
                 f"{len(ready_tiles)} espaços do {description} estão prontos; "
-                "usar Wood chips e aguardar a mutação."
+                "usar Wood chips e aguardar a mutação. " + timing
             )
         return (), (
             f"{len(ready_tiles)} espaços do {description} estão cercados pelos pais exigidos; "
-            "preservar esses espaços vazios e aguardar a mutação."
+            "preservar esses espaços vazios e aguardar a mutação. " + timing
         )
 
     def _maximum_special_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
@@ -647,7 +872,8 @@ class Fazendeira:
             return None
         reference_layout = self._maximum_reference_layout(unlocked, expanded_parents, recipe)
         if reference_layout is not None:
-            return reference_layout
+            expanded = full_plot_layout(snapshot, recipe, reference_layout[0])
+            return (*expanded, reference_layout[2]) if expanded else reference_layout
         minimum_x = min(x for x, _ in unlocked)
         minimum_y = min(y for _, y in unlocked)
         options = []
@@ -696,7 +922,8 @@ class Fazendeira:
         if not options:
             return None
         *_, desired, mutation_tiles, orientation = min(options)
-        return desired, mutation_tiles, orientation
+        expanded = full_plot_layout(snapshot, recipe, desired)
+        return (*expanded, orientation) if expanded else (desired, mutation_tiles, orientation)
 
     def _maximum_reference_layout(
         self,
@@ -757,6 +984,8 @@ class Fazendeira:
     def _mutation_tile_is_ready(
         self, snapshot: GardenSnapshot, position: Tuple[int, int], recipe: GardenRecipe
     ) -> bool:
+        if any((plant.x, plant.y) == position for plant in snapshot.plants):
+            return False
         plants = {
             (plant.x, plant.y): plant for plant in snapshot.plants
             if (plant.x, plant.y) in set(self._neighbors(position))
@@ -768,37 +997,119 @@ class Fazendeira:
             for parent in recipe.parents
         ) and all(present[key] <= maximum for key, maximum in recipe.maximum_neighbors)
 
-    def _plan_parent_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
-        center, desired = self._find_layout(snapshot, recipe)
-        if center is None:
-            return (), "Não existe espaço desbloqueado suficiente para o layout exigido."
-        actions = self._reconcile_layout(snapshot, desired)
-        if not actions:
-            parents = self._plants_around(snapshot, center)
-            required = {parent.key: parent for parent in recipe.parents}
-            mature = Counter(plant.key for plant in parents if plant.mature)
-            present = Counter(plant.key for plant in parents)
-            pending = [
-                f"{GARDEN_CATALOG[key].name} ({(mature if requirement.mature else present)[key]}/{requirement.count} prontos)"
-                for key, requirement in required.items()
-                if (mature if requirement.mature else present)[key] < requirement.count
-            ]
-            if pending:
-                return self._growth_actions(snapshot), "Layout preparado; aguardando maturidade: " + ", ".join(pending) + "."
-            woodchips = next((soil for soil in snapshot.soils if soil.key == "woodchips" and soil.available), None)
-            can_change = snapshot.next_soil_at is None or snapshot.next_soil_at <= self._clock()
-            if woodchips and snapshot.soil_key != "woodchips" and can_change and not snapshot.frozen:
-                return (
-                    GardenAction("change_soil", "Aumentar as tentativas de mutação com lascas de madeira.", soil_key="woodchips"),
-                ), "Pais maduros posicionados; mudar para lascas de madeira e preservar o centro vazio."
-            return (), "Pais maduros posicionados; manter o centro vazio e aguardar a mutação."
+    def _expanded_parent_layout(self, snapshot, recipe):
+        reference = self._maximum_special_layout(snapshot, recipe)
+        if reference is not None:
+            baseline = reference[0]
+        else:
+            _, baseline = self._find_layout(snapshot, recipe)
+        return full_plot_layout(snapshot, recipe, baseline)
 
-        removals = sum(action.kind == "harvest" for action in actions)
-        plantings = sum(action.kind == "plant" for action in actions)
-        return actions, (
-            f"Reconciliar o anel ao redor de ({center[0]}, {center[1]}): remover {removals} "
-            f"planta(s) divergente(s), plantar {plantings} pai(s) e preservar o centro vazio."
+    def _plan_parent_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
+        if recipe.key == "queenbeetLump":
+            center, desired = self._find_layout(snapshot, recipe)
+            if center is None:
+                return (), "Não existe espaço desbloqueado suficiente para o layout exigido."
+            return self._plan_mutation_layout(snapshot, recipe, desired, (center,), "anel de oito Queenbeets")
+        layout = self._expanded_parent_layout(snapshot, recipe)
+        if layout is None:
+            return (), "Não há casas livres suficientes para os pais e um espaço de mutação. As plantas protegidas serão preservadas."
+        desired, centers = layout
+        return self._plan_mutation_layout(
+            snapshot, recipe, desired, centers,
+            f'layout distribuído pelo Garden ({len(centers)} espaços de mutação)',
         )
+
+    def _plan_juicy_boost(self, snapshot, centers, actions, status):
+        """Prioriza círculos prontos e espera apenas um ganho próximo e seguro."""
+        status = f"{len(centers)} espaços para a mutação. " + status
+        occupied = {(p.x, p.y): p for p in snapshot.plants}
+        ready = []
+        upcoming = []
+        for center in centers:
+            parents = [occupied.get(pos) for pos in self._neighbors(center)]
+            if center in occupied or len(parents) != 8 or any(p is None or p.key != "queenbeet" for p in parents):
+                continue
+            if all(p.mature for p in parents):
+                ready.append(parents)
+            elif all(p.average_growth is not None and p.average_growth > 0 for p in parents):
+                eta = max(math.ceil(max(0, p.mature_age-p.age)/p.average_growth) for p in parents)
+                life = min(math.floor((100-p.age-1e-9)/p.maximum_growth)
+                           if p.maximum_growth is not None and p.maximum_growth > 0 else 0 for p in parents)
+                if eta + 2 <= life:
+                    upcoming.append(eta)
+        actions = list(actions)
+        if not ready:
+            return tuple((*self._growth_actions(snapshot), *actions)), "Nenhum círculo com oito Queenbeets maduras e centro livre. " + status
+        # Wood chips já rende mutações nos círculos prontos, mesmo com outros pais jovens.
+        woodchips = next((soil for soil in snapshot.soils if soil.key == "woodchips" and soil.available), None)
+        if woodchips is None:
+            return tuple(actions), "Aguardando Wood chips disponível para usar Sugar Lump. " + status
+        if snapshot.soil_key != "woodchips" and not snapshot.frozen:
+            if snapshot.next_soil_at is None or snapshot.next_soil_at <= self._clock():
+                actions.insert(0, GardenAction("change_soil", "Priorizar os círculos maduros com Wood chips.", soil_key="woodchips"))
+        safe = [parents for parents in ready if all(p.maximum_growth is not None and p.maximum_growth > 0
+                                                 and p.age+p.maximum_growth < 100 for p in parents)]
+        if not safe:
+            return tuple(actions), f"{len(ready)} círculo(s) pronto(s); não gastar lump sem margem segura de vida dos pais. " + status
+        lifetime = min(math.floor((100-p.age-1e-9)/p.maximum_growth) for parents in safe for p in parents)
+        # Espera no máximo um cooldown (15 min) e deixa dois ticks de margem de vida.
+        wait_limit = min(max(1, math.floor(15/woodchips.tick_minutes)), lifetime-2)
+        if upcoming and min(upcoming) <= wait_limit:
+            eta = min(upcoming)
+            return tuple(actions), (
+                f"{len(ready)} círculo(s) pronto(s) em Wood chips; esperar outro círculo por cerca de "
+                f"{eta} tick(s) ({eta*woodchips.tick_minutes:g} min), com margem de vida de {lifetime} ticks. " + status
+            )
+        if snapshot.frozen:
+            actions.insert(0, GardenAction("set_freeze", "Descongelar antes do tick de mutação.", freeze=False))
+            return tuple(actions), "Descongelar e reavaliar antes de gastar Sugar Lump. " + status
+        if snapshot.soil_key != "woodchips" and not any(action.kind == "change_soil" for action in actions):
+            return tuple(actions), "Aguardando o cooldown para mudar para Wood chips antes de gastar Sugar Lump. " + status
+        if snapshot.can_refill_lump is not True or snapshot.sugar_lumps is None or snapshot.sugar_lumps < 1:
+            return tuple(actions), f"{len(ready)} círculo(s) pronto(s) em Wood chips; aguardando lump e cooldown de recarga. " + status
+        actions.append(GardenAction("boost_mutation", f"Usar 1 Sugar Lump com {len(safe)} círculo(s) pronto(s); tentativas de mutação ×3 neste tick."))
+        return tuple(actions), f"{len(ready)} círculo(s) pronto(s): Wood chips e 1 Sugar Lump; sem esperar todos os quadrantes. " + status
+
+    def _synchronize_queenbeet_rings(self, snapshot, desired, centers, actions):
+        """Renova cada anel incompleto em um lote, preservando círculos bloqueados."""
+        occupied = {(plant.x, plant.y): plant for plant in snapshot.plants}
+        actions = list(actions)
+        renewed = blocked = 0
+        for center in centers:
+            ring = set(self._neighbors(center)) & set(desired)
+            if len(ring) != 8:
+                continue
+            quadrant = ring | {center}
+            # Uma descoberta ou espécie desconhecida impede a renovação inteira.
+            # As outras sete plantas não são removidas enquanto ela ocupa o anel.
+            if any(position in occupied and (
+                occupied[position].key not in GARDEN_CATALOG
+                or occupied[position].key not in snapshot.unlocked_seed_keys
+            ) for position in quadrant):
+                actions = [action for action in actions if (action.x, action.y) not in quadrant]
+                blocked += 1
+                continue
+            survivors = [occupied[pos] for pos in ring
+                         if pos in occupied and occupied[pos].key == "queenbeet"]
+            if not 0 < len(survivors) < 8:
+                continue
+            # Nunca repõe apenas o espaço vazio de um grupo que perdeu um pai.
+            actions = [action for action in actions if (action.x, action.y) not in ring]
+            for x, y in sorted(ring, key=lambda pos: (pos[1], pos[0])):
+                current = occupied.get((x, y))
+                if current:
+                    actions.append(GardenAction(
+                        "harvest", "Renovar todo o anel incompleto de Queenbeets.",
+                        x=x, y=y, seed_key=current.key, require_mature=False,
+                    ))
+                actions.append(GardenAction(
+                    "plant", "Replantar as oito Queenbeets do mesmo ciclo.",
+                    x=x, y=y, seed_key="queenbeet",
+                ))
+            renewed += 1
+        detail = f"{renewed} anel(is) incompleto(s) renovado(s) por inteiro; {blocked} anel(is) preservado(s) por planta protegida."
+        return tuple(actions), detail
 
     def _find_layout(self, snapshot: GardenSnapshot, recipe: GardenRecipe):
         unlocked = set(snapshot.unlocked_tiles)
@@ -829,7 +1140,8 @@ class Fazendeira:
         actions = list(self._remove_plants_except(snapshot, allowed_layout=desired))
         for position, key in sorted(desired.items(), key=lambda item: (item[0][1], item[0][0])):
             current = occupied.get(position)
-            if current is not None and current.key == key:
+            if current is not None and (current.key == key or current.key not in GARDEN_CATALOG
+                                        or current.key not in snapshot.unlocked_seed_keys):
                 continue
             actions.append(GardenAction(
                 "plant", f"Plantar {GARDEN_CATALOG[key].name} na posição definida do layout.",
@@ -850,6 +1162,8 @@ class Fazendeira:
         allowed_positions = allowed_positions or set()
         actions = []
         for plant in self._sorted_plants(snapshot):
+            if plant.key not in GARDEN_CATALOG or plant.key not in snapshot.unlocked_seed_keys:
+                continue
             position = (plant.x, plant.y)
             keep = (
                 allowed_layout.get(position) == plant.key
@@ -875,7 +1189,7 @@ class Fazendeira:
         if snapshot.frozen and not any(action.kind == "set_freeze" for action in result):
             result.insert(0, GardenAction("set_freeze", "Descongelar o Garden para permitir crescimento e mutações.", freeze=False))
         desired = self._desired_soil(snapshot, actions)
-        if desired and desired != snapshot.soil_key and not snapshot.frozen:
+        if desired and desired != snapshot.soil_key and not snapshot.frozen and not any(a.kind == "change_soil" for a in result):
             result.insert(0, GardenAction("change_soil", f"Usar {desired} na etapa atual.", soil_key=desired))
         return tuple(result)
 
@@ -884,7 +1198,28 @@ class Fazendeira:
         can_change = snapshot.next_soil_at is None or snapshot.next_soil_at <= self._clock()
         if not can_change:
             return None
+        if any(action.kind == "plant" for action in actions) and "woodchips" in available:
+            goal = self.select_next_goal(snapshot)
+            if (goal and goal.target_key != 'queenbeetLump'
+                    and not any(p.key == goal.target_key for p in snapshot.plants)):
+                recipe = GARDEN_CATALOG[goal.target_key]
+                layout = self._find_generic_layout(snapshot, recipe)
+                if layout is None:
+                    expanded = self._expanded_parent_layout(snapshot, recipe)
+                    centers = expanded[1] if expanded else ()
+                else:
+                    _, centers, _ = layout
+                removed = {(a.x, a.y) for a in actions if a.kind == 'harvest'}
+                if any(self._mutation_tile_is_ready(snapshot, c, recipe)
+                       and not (set(self._neighbors(c)) & removed) for c in centers):
+                    return 'woodchips'
         if any(action.kind == "plant" for action in actions) and "fertilizer" in available:
+            layout = self._maximum_special_layout(snapshot, GARDEN_CATALOG["queenbeetLump"])
+            if (layout and "queenbeetLump" not in snapshot.unlocked_seed_keys
+                    and any(action.kind == "plant" and action.seed_key == "queenbeet" for action in actions)):
+                if any(self._mutation_tile_is_ready(snapshot, center, GARDEN_CATALOG["queenbeetLump"])
+                       for center in layout[1]):
+                    return "woodchips" if "woodchips" in available else None
             return "fertilizer"
         return None
 

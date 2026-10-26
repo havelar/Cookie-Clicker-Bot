@@ -60,9 +60,9 @@ erro seguro. O progresso depende de snapshots e polling configurável, não de
 esperas fixas. O intervalo padrão e mínimo é de 0,1 segundo. O timeout
 interrompe sem forçar ascensão.
 
-A execução real nasce desativada, requer a opção “Habilitar automação real” e
-exibe confirmação a cada início. O modo de simulação apenas lê o runtime e
-descreve o próximo passo. “Parar imediatamente” impede que uma nova ação
+O controle começa em **Desligada**. **Ligar** inicia a execução após a confirmação
+da ascensão; **Atualizar prévia** apenas lê o runtime e descreve o próximo passo.
+**Desligar** impede que uma nova ação
 mutável comece; uma chamada já entregue ao runtime não pode ser desfeita.
 
 ## Limitações

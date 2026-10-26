@@ -1,63 +1,49 @@
-# Automação do combo endgame
+# Farm de combos
 
-A aba **Combo** prepara e tenta um Quadcast para a conquista **And a little extra**. O objetivo padrão é `1e72` cookies assados na ascensão atual. A execução real começa desabilitada e sempre pede confirmação.
+A aba **Combo → Combo avançado** prepara e repete sequências de quatro magias. Não há meta de biscoitos nem parada por conquista: depois da janela de cliques, coleta os biscoitos restantes identificados, recompõe torres e prédios vendidos e prepara outra tentativa. Se faltar saldo livre para a recomposição, aguarda sem repetir o combo. O farm termina ao desligar, esgotar o orçamento de torrões ou detectar uma falha que exige revisão.
 
-## Como iniciar
+## Configuração principal
 
-1. Abra a aba **Combo** e clique em **Atualizar prévia**. A prévia apenas lê o runtime.
-2. Confira o plano vivo, principalmente o cast inicial e os quatro resultados previstos.
-3. Mantenha o Cookie Clicker e o bot abertos, marque **Habilitar execução real** e clique em **Iniciar e deixar rodando**.
-4. Confirme o aviso. O bot cria um backup automático chamado `antes-do-combo`, pausa as demais automações e solicita ao Windows que não suspenda o computador enquanto o modo estiver ativo. A tela pode apagar normalmente.
+- **Gastar no máximo nesta sessão:** limite total de torrões desde o clique em Ligar. Inclui recargas de alinhamento, a recarga final e o frenesi de açúcar. O contador não reinicia entre combos. Zero impede gastos e encerra a execução. Cada tentativa usa pelo menos um torrão; com somente um restante, não ativa o frenesi de açúcar.
+- **Manter reservado em biscoitos:** protege uma parte do saldo das compras de temporada, torres, construções, sementes e interruptor dourado. A reserva é calculada ao iniciar e atualizada ao concluir os ciclos, sem diminuir por causa das compras. Uma compra que não couber aguarda; o interruptor dourado opcional na finalização é ignorado se não couber. A reserva não impede vendas e sacrifícios de construções necessários ao combo.
+- **Permitir preparar o Garden para o combo:** desmarcado não consulta nem altera plantas, solo ou congelamento. Marcado permite converter culturas desbloqueadas para o canteiro de coleta. Plantas fora do catálogo e descobertas bloqueadas são sempre preservadas.
 
-O plano não é fixado no momento do clique. A seed, a season, o contador de spells, a mana, os buffs e os shimmers são relidos antes de cada ação; se o estado mudar, a janela é calculada novamente.
+As preferências são persistidas. **Opções avançadas** começa recolhida e guarda alcance de busca, bônus de construção desejados, intervalo de verificação, duração mínima de efeitos, renovação da busca, empréstimos, frenesi de açúcar, tratamento final das tulipas e pausa manual. O acompanhamento mostra os combos concluídos e os torrões gastos na sessão.
 
-## Pausar para acompanhar a tentativa
+## Execução e espera
 
-Marque **Pausar quando faltarem 3 skips e aguardar Retomar** antes de iniciar.
-Ao chegar a três skips ou menos, o modo fica **pausado — aguardando você**.
-Não lança spells, gasta lumps, coleta cookies nem altera prédios ou Garden nessa
-pausa. As demais automações continuam bloqueadas e o jogo segue normalmente:
-a mana regenera, as plantas envelhecem e os buffs podem expirar.
+Ao ligar, o bot confirma os gastos, cria um backup chamado antes-do-combo, pausa as outras automações e impede a suspensão do computador. O backup não é restaurado automaticamente. A tela pode apagar normalmente.
 
-Quando estiver pronto para acompanhar, clique em **Retomar combo**. O bot relê
-o jogo, recalcula a janela, termina o alinhamento e volta a buscar os buffs
-naturais necessários; retomar não dispara o Quadcast imediatamente. Essa pausa
-acontece uma vez por execução. **Parar imediatamente** continua encerrando o
-modo, inclusive enquanto está pausado. A opção é salva e vem desmarcada por
-padrão.
+A sequência contém frenesi de cliques, frenesi ancestral e pelo menos um bônus de construção. O padrão busca dois bônus de construções distintas no total. A previsão compara as duas famílias de temporadas com um gerador aleatório isolado e escolhe pelo ganho estimado em relação ao tempo de preparo e à exigência de efeitos naturais. A estimativa é comparativa, não uma garantia de ganho ou tempo. Não existe limite de produção que encerre o farm.
 
-## Estratégia executada
+O plano é mantido enquanto suas condições forem válidas; mudanças de identificação do save, chance de falha ou contador ultrapassado exigem revalidação. Se o save mudar durante a execução, a automação interrompe. O Voo do dragão aguarda terminar antes de buscar uma sequência que precise do frenesi de cliques.
 
-- Procura quatro FtHoF consecutivos contendo Elder Frenzy, Click Frenzy e pelo menos um Building Special.
-- O padrão é **2 Building Specials distintos no total**: um natural e um de FtHoF. A janela já alinhada na season atual tem prioridade sobre gastar mais skips por um plano teoricamente maior.
-- Alinha o contador com Haggler's Charm, a spell determinística segura de menor custo. Quando há Sugar Lump, orçamento e refill disponível, lança skips até a mana restante não pagar outra spell e só então recarrega. Sem refill disponível, espera a barra cheia antes de cada skip para favorecer a regeneração. Sempre para os skips ao chegar à janela planejada. A recarga respeita o cooldown de 15 minutos e o orçamento informado.
-- Configura Valentine, Golden Switch desligado, Pantheon, auras de preparação, 601 Wizard Towers e o escritório necessário para os loans.
-- Monta Golden Clover + Nursetulip. Usa Fertilizer para crescer e Clay quando pelo menos metade do canteiro e metade das Nursetulips estiverem maduras. O Garden é opcional para o disparo: assim que a pilha natural estiver pronta, não consulta nem altera o Garden antes do Quadcast.
-- Coleta Golden/Wrath Cookies naturais enquanto procura Dragon Harvest + os BS necessários. Frenzy pode vir da própria sequência de FtHoF. Se o Frenzy natural tem margem suficiente, mantém o cookie redundante em tela para Dragon's Fortune; caso contrário, ativa o Frenzy da spell.
-- Trata Cookie Storm como evento natural: drena somente os drops identificados pela engine e continua preparando o combo.
-- Recompra pelo menos 601 Cursors depois dos sacrifícios necessários para liberar os loans, preservando essa venda no Godzamok.
-- Revalida tudo em uma única chamada antes do Quadcast. Só então executa `601 → 1 → 601 → 1`, ativa os multiplicadores finais, vende os prédios seguros para Godzamok e inicia o clicker.
+O preparo configura temporada, interruptor dourado desligado, Panteão, auras, 601 torres de magos de nível 10 e escritório dos empréstimos. O alinhamento usa Encanto do pechincheiro e reserva torrões para a tentativa final. Sem orçamento para recarregar durante o alinhamento, aguarda a regeneração natural. A execução exige mana cheia e recarga disponível. Os juros dos empréstimos aguardam terminar. O intervalo de renovação da busca não desliga o farm nem reinicia seu orçamento.
 
-O clicker é armado **antes** dessa chamada para aproveitar os buffs curtos. A margem natural padrão é 12 s, o intervalo de verificação é 0,2 s e o limite de preparação/busca é 180 minutos. O limite encerra a busca sem forçar uma tentativa incompleta; não é uma garantia de sucesso. A pausa manual continua aguardando Retomar; o prazo decorrido é conferido ao retomar.
+A sequência final usa 601 → 1 → 601 → 1 torres. Confirma bônus de construções distintas antes de gastar os multiplicadores finais, preserva os prédios desses bônus nas vendas e abre o frenesi ancestral por último. O clicker aproveita a janela útil, com margem para latência. O frenesi de açúcar só é usado quando ainda está disponível nesta ascensão e cabe no orçamento. Nos próximos ciclos, a automação continua sem ele.
 
-Depois dos casts, o bot ativa os BS e conta **prédios distintos**, antes de gastar Sugar Frenzy/loans. Uma duplicação encerra a tentativa parcial, informa o lump de refill já usado e preserva os boosts de uso único. Sugar Frenzy usa a ativação normal do jogo e só é confirmada com buff ativo e débito de um lump; loans em juros ou prestes a vencer bloqueiam antes dos casts. A janela de cliques considera os buffs necessários e a vida dos cookies preservados, desconta 1 s de margem e inclui a latência da chamada. Mesmo que a meta seja atingida antes, aproveita o restante da janela.
+## Garden autorizado
 
-Os buffs exibidos no painel incluem seus segundos restantes. As durações verificadas, os cenários de espera e suas limitações estão em [Revalidação de 03/10/2026](revalidacao-combo-2026-10-03.md).
+O canteiro livre de 6×6 usa faixas alternadas de 18 trevos dourados e 18 tulipas nutridoras. Plantas saudáveis do cultivo de coleta são preservadas, e espaços disponíveis são repostos em lote com validação de saldo e layout antes da primeira remoção. Fertilizante cresce até 60% do efeito potencial em Argila; depois mantém Argila até cair abaixo de 40%, evitando alternância por uma reposição isolada. Um congelamento manual é preservado; congelar desativa os benefícios do Garden.
 
-Ao reabrir o bot pela primeira vez nesta revisão, os antigos valores padrão `3 BS / 1 s / 15 s` são migrados para `2 BS / 0,2 s / 12 s`. Outros valores são preservados. Depois dessa migração, alterações manuais são respeitadas. Um processo já aberto precisa ser reiniciado para carregar o código novo.
+Com a otimização final habilitada, após confirmar os bônus de construções distintas pode remover tulipas para retirar a penalidade de produção. Isso só ocorre se todo o canteiro contiver trevos e tulipas desbloqueados. Outras culturas, descobertas, dados desconhecidos ou congelamento fazem essa etapa ser ignorada. Os efeitos são recalculados, e não há replantio durante a janela de cliques. A próxima preparação recompõe o cultivo conforme o orçamento.
 
-Um Building Special de Wizard Towers não é aceito, pois deixaria de existir durante as vendas. Prédios associados a qualquer Building Special ativo também são preservados.
+## Planejador para combos manuais
 
-## Exclusividade e recuperação
+Abra **Combo → Planejador** para consultar as próximas 50, 100, 250 ou 500 magias de Forçar a Mão do Destino. **Magias antes: 0** corresponde ao próximo lançamento; o valor 5 significa avançar o contador em cinco magias antes de lançar aquele Forçar a Mão do Destino. A coluna **Contador** mostra o valor absoluto usado na previsão. Magias de preparação, como Encanto do pechincheiro, também avançam esse contador quando lançadas normalmente.
 
-Enquanto o modo está ativo, o detector comum, o spam do Grimoire, Stock Market, Garden normal, Auto Ascensão, coleta de lumps e atalhos manuais do clicker ficam pausados ou bloqueados. Ao terminar, os timers comuns voltam a funcionar; o clicker fica parado.
+As colunas **0 biscoitos** a **3 biscoitos** mostram os resultados conforme a quantidade de biscoitos dourados em tela antes do lançamento, incluindo biscoitos da ira. A coluna correspondente à quantidade atual fica destacada. Cada biscoito em tela acrescenta 15 pontos percentuais à chance de falha. **[falha]** indica que a magia cria um biscoito da ira, podendo inclusive resultar em Frenesi ancestral. Passe o mouse no resultado para ver a chance de falha e o tipo do biscoito.
 
-Se um buff expirar, aparecer um cookie ou a previsão mudar antes dos gastos, o bot desarma o clicker e revalida no próximo ciclo. Dragonflight e efeitos negativos incompatíveis também aguardam expirar. Inconsistências estruturais e falhas parciais entram em **erro seguro**. Numa falha parcial, o bot registra os lumps já gastos, não repete a tentativa automaticamente e tenta restaurar as Wizard Towers. Use **Parar imediatamente** para pedir uma parada cooperativa; uma operação atômica que já começou termina antes da thread encerrar.
+O seletor **Previsão** compara a temporada atual, as temporadas comuns ou Páscoa/Dia dos Namorados. Ele apenas muda a comparação: não troca a temporada no jogo. O Planejador considera os efeitos atuais que alteram a chance de falha, Voo do dragão e a quantidade de construções. Frenesi de cliques, Frenesi ancestral, Bônus de construção e Torrões de açúcar aparecem em destaque. O prédio de um bônus de construção só é definido ao abrir o biscoito.
 
-## Limitações
+**Acompanhar magias automaticamente** consulta a cada dois segundos enquanto o painel está visível. Conforme você usa magias, as quantidades de magias restantes são recalculadas a partir do contador novo. Desmarque para consultar somente pelo botão **Atualizar**. A consulta funciona com o bot pausado, não lança magias, não consome mana ou Torrões de açúcar e usa um gerador aleatório isolado. Ela aguarda durante restaurações e recuperação da conexão. Para executar o combo manualmente, desligue as automações que lançam magias ou coletam biscoitos dourados; o Planejador não altera essas preferências por conta própria.
 
-- O bot não garante que a combinação aleatória natural aparecerá durante uma única noite.
-- O jogo, o bot e a conexão CDP precisam permanecer abertos.
-- Trocas do Pantheon usam worship swaps normais; não gastam Sugar Lumps.
-- Sugar Frenzy e os loans são recursos de tentativa final e podem ter efeitos/penalidades posteriores no save.
-- O backup automático é obrigatório para o início real, mas a restauração continua sendo uma decisão manual.
+As previsões mantêm as condições atuais para cada linha. Efeitos que expirem, novas construções ou mudanças de temporada podem alterar a sequência. O acompanhamento automático atualiza essas condições, mas não garante que uma previsão continuará válida após mudanças no jogo.
+
+## Pausa manual e falhas
+
+A opção avançada de pausa aguarda **Retomar combo** antes das últimas três magias de preparação de cada ciclo. Enquanto aguarda, o bot não lança magias, coleta biscoitos nem altera o Garden ou prédios; o jogo segue normalmente. Ao retomar, relê o jogo e revalida a sequência.
+
+Falhas parciais ou resultados divergentes interrompem o farm, sem repetir automaticamente os gastos. Uma duplicação de construção nos bônus de magia encerra a tentativa parcial antes dos multiplicadores finais. Restaurações de prédios usam limites idempotentes e precisam ser confirmadas antes do próximo combo. Cookies expirados entre ciclos não são recriados; apenas os resíduos identificados na execução anterior são coletados.
+
+O jogo e a conexão precisam permanecer abertos. O orçamento é por sessão: desligar e ligar novamente inicia uma nova contagem. As proteções de descobertas do Garden permanecem ativas em todos os ciclos.

@@ -1,3 +1,4 @@
+import threading
 """Testes da automação de mana máxima do Grimoire."""
 import os
 import unittest
@@ -82,6 +83,8 @@ class GrimoireRunnerTests(unittest.TestCase):
             {"cast": True, "reason": "cast", "spellName": "Stretch Time"},
         ])
         runner = object.__new__(AutomationRunner)
+        runner.gc_farm_active = False
+        runner.paused = threading.Event()
         runner.bridge = bridge
         runner._last_grimoire_attempt_at = 0.0
         runner._last_grimoire_failure = None
@@ -107,7 +110,7 @@ class GrimoireUiTests(unittest.TestCase):
             if window.tabs.tabText(index) == "Configurações"
         ))
 
-        self.assertEqual(window.grimoire_spell_spam_checkbox.text(), "Spammar Skill")
+        self.assertEqual(window.grimoire_spell_spam_checkbox.text(), "Usar magia com mana cheia")
         self.assertEqual(window.grimoire_spell_combo.count(), 9)
         self.assertEqual(window.grimoire_spell_combo.isEnabled(),
                          automation_config.enable_grimoire_spell_spam)

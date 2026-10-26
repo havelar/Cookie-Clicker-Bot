@@ -1,86 +1,118 @@
 # Simple Farm
 
-O **Simple Farm** é o modo econômico da aba **Combo**. Ele existe para acumular
-cookies no começo da ascensão antes de preparar o combo endgame.
+O **Simple Farm** é um farm de apoio da aba **Combo**: acumula cookies enquanto
+Garden, Banco e as coletas comuns continuam funcionando. Não exige uma
+configuração específica do Pantheon.
 
-## O que ele faz
+## Execução
 
-- mantém o autoclick desligado durante a produção comum e o ativa somente em
-  janelas fortes de clique;
-- pausa as outras automações enquanto detém o modo exclusivo;
-- coleta Golden Cookies naturais;
-- reconhece Cookie Storm e drena somente os drops da tempestade, sem parar o modo;
-- procura, pela seed atual, o próximo par seguro de `Force the Hand of Fate`
-  contendo pelo menos um `Click Frenzy`;
-- alinha o contador com `Haggler's Charm`, uma vez por barra e somente com a
-  mana completamente cheia;
-- aguarda um multiplicador natural (`Frenzy`, `Dragon Harvest`,
-  `Building Special`, `Click Frenzy` ou `Elder Frenzy`);
-- executa o Dualcast vendendo e recomprando Wizard Towers na mesma operação;
-- aproveita Godzamok automaticamente quando ele já está no slot Diamond;
-- reinveste uma parcela configurável do excedente em upgrades e construções;
-- cria um backup antes da execução real.
+- Coleta Golden Cookies naturais e drops de Cookie Storm.
+- Aproveita janelas fortes com cliques extras, preservando o clicker manual.
+- Prevê `Click Frenzy` de `Force the Hand of Fate` na season atual. Procura e
+  alinha primeiro Dual Cast quando a magia consecutiva traz um multiplicador complementar:
+  `Building Special`, `Elder Frenzy` ou `Frenzy` ainda não ativo, em qualquer ordem.
+- Não compra torres extras só para viabilizar Dual Cast. Se existir um par útil
+  dentro do alcance, usa Haggler’s Charm para chegar nele, mesmo que um Click
+  Frenzy isolado apareça antes.
+- Quando precisa avançar o contador, usa `Haggler’s Charm` somente com mana cheia
+  e fora de buffs de produção/clique. Essa magia pode dar desconto ou encarecer
+  upgrades temporariamente; as compras sempre consultam o preço atual.
+- Espera mana cheia e um multiplicador natural de produção com duração suficiente.
+  Para duas magias, vende o mínimo necessário de Wizard Towers, lança a segunda,
+  recompra **todas** as torres e só então abre os dois cookies. Calcula a mana
+  conforme quantidade, nível e aura atuais, sem mudar esses ajustes.
+- Se não houver par complementar viável dentro do alcance configurado, ou se a
+  recompra não couber no orçamento, aproveita o primeiro Click Frenzy isolado.
+  Se o primeiro resultado do par é apenas o multiplicador de apoio, replaneja
+  antes de gastar qualquer recurso.
+- Preserva mana se `Click Frenzy` ou `Dragonflight` já estiver ativo.
+- Continua coletando e comprando mesmo sem previsão útil ou minigames desbloqueados.
 
-Os pontos mínimos de Dualcast seguem o nível das Wizard Towers. No nível 10,
-por exemplo, o mínimo é `501 → 1`. Se houver mais de 501 torres, a operação
-restaura exatamente a quantidade original depois do segundo cast.
+Dual Cast significa duas magias, não dois multiplicadores de Click Frenzy.
+Repetir Click Frenzy apenas prolonga o buff, portanto não motiva a venda de torres.
+Building Special pode repetir um prédio já beneficiado; o prédio só é conhecido
+quando o cookie abre, então o ganho adicional não é garantido.
 
-## Garantias fixas
+A previsão considera a chance extra de backfire do primeiro cookie em tela.
+Venda, segunda magia, recompra e abertura acontecem numa única avaliação do jogo:
+Garden e Banco continuam ligados, mas não podem intercalar gastos no meio dessa
+operação. Em caso de falha após a venda, tenta restaurar as torres antes de parar
+com diagnóstico; uma recompra incompleta nunca é anunciada como sucesso.
 
-O Simple Farm não possui opções que relaxem estas regras:
+## Caixa e compras
 
-- não gasta Sugar Lumps;
-- não usa loans;
-- não planta, colhe, congela nem troca o solo do Garden;
-- não move espíritos do Pantheon;
-- não troca auras, season ou Golden Switch;
-- não executa o Dualcast se não puder garantir a recompra das torres;
-- não usa o forecast enquanto Dragonflight estiver ativo.
+Por padrão, reserva **80% do maior saldo observado durante esta execução**.
+A configuração aceita de 15% a 99%. Use 15% quando o objetivo for reinvestir
+agressivamente; Garden e Banco continuam podendo gastar o saldo restante.
+A reserva efetiva considera também `6.000 × CpS`, para Lucky.
 
-O Pantheon é somente lido para exibição. A configuração manual recomendada é
-`Godzamok / Mokalsium / Muridal`, respectivamente em Diamond, Ruby e Jade.
+A cada **15 segundos**, pode investir até **5% do saldo atual** (configurável
+entre 1% e 20%), limitado ao excedente da reserva. Esse teto vale para a soma
+de todas as compras do ciclo, não para cada item.
 
-## Reinvestimento e caixa
+O Dual Cast é uma oportunidade rara e usa uma regra própria: o valor **integral**
+da recompra precisa caber no excedente da reserva antes da venda, sem depender do
+dinheiro recebido pela venda nem de ganhos futuros do combo. Ele não consome o
+teto de compras de 15 segundos, mas depois do Dual Cast o farm aguarda 15 segundos
+antes de novas compras. O custo líquido costuma ser menor, mas não é zero.
+Compras sucessivas não reduzem a reserva percentual já estabelecida.
 
-Por padrão, o modo protege **30% do maior caixa observado** desde que foi
-iniciado e limita cada ciclo de investimento a **10% do caixa atual**. A
-reserva nunca diminui durante a sessão. O valor efetivamente protegido é o
-maior entre:
+Exemplo: com 1 milhão de cookies, o padrão protege 800 mil e permite gastar
+até 50 mil no ciclo. Se o Banco ou Garden reduzir o saldo a 700 mil, o farm
+continua coletando, mas suspende suas próprias compras até recuperar caixa.
+A reserva não bloqueia o dinheiro das outras automações. Ao parar e iniciar
+o farm novamente, a referência passa a ser o saldo da nova execução.
 
-- a reserva percentual;
-- `6.000 × CpS`, para preservar um banco útil para Lucky;
-- o preço necessário para recomprar todas as Wizard Towers do Dualcast.
+Dentro do orçamento:
 
-O comprador tenta primeiro um upgrade normal e seguro. Kitten e upgrades de
-clique recebem prioridade porque o autoclick explora as janelas mais fortes. Interações
-especiais, toggles, pesquisas e upgrades guardados no cofre são ignorados.
-`Sugar Frenzy` e `Chocolate egg` são bloqueados explicitamente: o primeiro
-quebraria a garantia de zero lumps e o segundo deve ser preservado para o fim
-da ascensão.
-Quando nenhum upgrade cabe no orçamento, são compradas até 25 construções por
-ciclo, sempre recalculando o melhor ganho de CpS por cookie gasto. Wizard
-Towers só entram nessa compra enquanto faltarem torres para o ponto mínimo do
-Dualcast; depois disso ficam protegidas contra crescimento desnecessário do
-custo de recompra.
+1. Até metade pode comprar um upgrade de produção. Upgrades de cookies com
+   bônus global em % vêm primeiro; depois kittens, upgrades de construções e
+   de clique. Entre upgrades percentuais da mesma classe, prefere maior bônus
+   por preço quando a potência é numérica; potências calculadas usam uma
+   estimativa conservadora.
+2. O restante pode comprar até 25 construções, priorizando o ganho estimado de
+   CpS por cookie gasto. Se não houver upgrade elegível, todo o orçamento pode
+   ir para construções. Não há meta obrigatória de Wizard Towers.
 
-Compras são adiadas enquanto houver um multiplicador curto ativo, para não
-atrasar o Dualcast ou a janela de cliques.
+Toggles, pesquisas, upgrades no cofre, ações especiais, compras com lumps e
+Chocolate egg ficam fora do comprador. Durante buffs úteis, compras aguardam.
+O saldo e os preços são conferidos novamente no jogo dentro da mesma operação,
+pois Garden e Banco podem ter gasto desde a leitura anterior.
 
-## Autoclick sob demanda
+Os cinco valores da estratégia — alcance de magias, intervalo, duração mínima do
+buff, reserva e teto de compras — são salvos automaticamente ao serem alterados
+e voltam iguais no próximo início do aplicativo.
 
-O clicker é ligado imediatamente antes do Dualcast e enquanto existir
-`Click Frenzy`, `Dragonflight`, `Elder Frenzy`, `Cursed Finger` ou o buff de
-Godzamok. Ele também é usado quando pelo menos dois multiplicadores de produção
-estão empilhados. Um Frenzy isolado não mantém o clicker ligado. Assim que a
-janela forte termina, o modo o desliga novamente.
+O retorno de construções é uma estimativa baseada no CpS atual por unidade;
+não é uma simulação exata de todas as sinergias. Os logs mostram compras,
+saldo, reserva e o motivo de aguardar quando não há orçamento.
 
-## Uso
+## Convivência com outras automações
 
-1. Abra **Combo → Simple Farm**.
-2. Clique em **Atualizar prévia** para conferir o próximo par e os skips.
-3. Marque **Habilitar execução real**.
-4. Clique em **Iniciar Simple Farm** e confirme.
-5. Use **Parar** quando quiser devolver o controle às demais automações.
+O Simple Farm coordena somente Golden Cookies e Grimoire: durante a execução,
+o coletor comum de Golden Cookies e o spam de skills cedem essas duas tarefas
+ao farm. Suas preferências não são alteradas e voltam a valer ao parar.
+Fortunes, renas, wrinklers e coleta de lumps continuam conforme configurados.
+Garden e Banco mantêm seus timers, workers e controles ativos.
 
-O intervalo padrão é `0,2 s`. Isso permite reagir rapidamente a Golden Cookies
-sem transformar o forecast em um loop excessivamente pesado.
+O farm só vende Wizard Towers temporariamente para Dual Cast. Nunca gasta Sugar
+Lumps, usa loans, vende outros prédios ou altera Garden,
+Pantheon, auras, season ou Golden Switch. As automações independentes continuam
+responsáveis por suas próprias ações. Auto Ascensão e Combo Endgame não rodam
+junto, pois mudam o estado necessário para o farm.
+
+O clicker extra só atua em buffs de clique ou combinações fortes de produção.
+Um clicker ligado manualmente continua ligado quando o buff ou o farm termina.
+
+## Interface
+
+Passe o mouse no campo **ou no rótulo** de cada configuração para ler o tooltip.
+Os nomes indicam a unidade e distinguem a verificação rápida das compras a cada
+15 segundos. O acompanhamento mantém o layout anterior, mas mostra
+**Próxima oportunidade** e **Magias**. A oportunidade informa se haverá uma ou
+duas magias, a quantidade temporária de torres e o custo da recompra. O tooltip
+explica a decisão; após executar, o log informa o custo líquido e a restauração.
+
+Use **Atualizar prévia** para uma leitura sem ações. **Ligar** inicia o farm e
+cria um backup antes de começar. **Desligar** encerra apenas o farm de apoio;
+o controle mostra **Desligando…** até a operação atual terminar.

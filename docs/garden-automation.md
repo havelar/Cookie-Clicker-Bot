@@ -3,13 +3,17 @@
 ## Escopo e segurança
 
 A `Fazendeira`, em `app/core/fazendeira.py`, coordena a coleta das 34 sementes do
-Garden. A automação real começa desativada. O bot sempre cria um plano completo
+Garden. O controle começa em **Desligada**. **Ligar** inicia os ciclos automáticos;
+**Desligar** impede novas ações e aguarda o lote em andamento terminar. O bot sempre cria um plano completo
 antes de modificar o jogo e o modo **Simular próximo tick** nunca chama uma
 operação mutável da bridge.
 
 A estratégia funciona como reconciliação de estado:
 
 - a cada tick escolhe uma meta e calcula o layout completo antes de agir;
+- nunca remove espécies fora do catálogo, mesmo se outra automação solicitar
+  uma limpeza ou colheita; descobertas ainda não desbloqueadas só podem ser
+  colhidas maduras para liberar sua semente, nunca removidas como limpeza;
 - preserva toda planta que já está na posição correta do layout;
 - remove, mesmo imaturas, plantas erradas, plantas fora do layout e mutações
   indesejadas; se uma posição correta estava ocupada, limpa e replanta no mesmo
@@ -30,11 +34,113 @@ A estratégia funciona como reconciliação de estado:
   automaticamente, pois isso pode matar Cheapcaps;
 - não sacrifica o Garden, não compra upgrades e não altera saves.
 
+## Plantio imediato na coleção normal
+
+Na estratégia **Todas as Plantas** (`plants`), as receitas comuns de mutação
+adjacente, sem limites especiais de vizinhança, incluem todos os pais no mesmo
+plano assim que suas sementes estão desbloqueadas e as casas do layout
+estão disponíveis. Não se adiam plantios para alinhar maturidade ou tempo de
+vida. A prioridade é iniciar o cultivo e as tentativas de mutação o quanto antes;
+as exigências de maturidade e de vizinhança de cada receita continuam valendo.
+
+As casas reservadas para receber mutações permanecem vazias de propósito.
+Descobertas ainda não desbloqueadas e espécies fora do catálogo continuam
+protegidas. Essa prioridade também vale para os pais do próximo setup preparado
+enquanto uma descoberta amadurece. A execução depende do saldo para o lote
+inteiro, validado atomicamente antes de qualquer limpeza ou plantio.
+
+As receitas comuns não usam o agendamento de plantios de `garden_timing.py`.
+Receitas especiais do catálogo, como Everdaisy, Golden clover e as que limitam
+vizinhos, mantêm seu planejamento próprio, inclusive o agendamento quando aplicável.
+Os modos Upgrades do Garden, Golden Clovers e Green Thumb mantêm seus próprios
+planejadores. A Juicy queenbeet conserva a renovação dos círculos e a decisão de
+aguardar ou acelerar tentativas, descritas a seguir.
+
+## Círculos de Juicy queenbeet
+
+Para Juicy queenbeet, cada centro precisa estar vazio e cercado por **oito
+Queenbeets maduras**. No Garden 6×6, os quatro círculos são independentes. Se
+um círculo perder um pai, as sobreviventes daquele círculo são colhidas e as
+oito são replantadas juntas, em um único lote com orçamento validado antes da
+primeira remoção. Os outros círculos são preservados. Se ainda houver outro
+círculo pronto, Wood chips permanece ativo durante a renovação.
+
+Uma descoberta ainda não desbloqueada ou espécie fora do catálogo bloqueia
+a renovação de todo o círculo que ocupa: não se remove a planta protegida nem
+se preenche apenas parte do grupo. O restante do Garden pode continuar sendo
+preparado. A proteção também vale para Thumbcorn e Combo; Auto Ascensão é
+bloqueada se apagaria espécies desconhecidas ou descobertas não desbloqueadas.
+
+Plantar o círculo junto alinha o início do crescimento; variações aleatórias
+de idade ainda podem fazer as oito plantas amadurecerem em ticks diferentes.
+
+### Sugar Lump para a mutação
+
+Com pelo menos um círculo completo e maduro, a Fazendeira prioriza Wood chips,
+mesmo se os outros quadrantes tiverem pais jovens. Nunca gasta um lump em
+Fertilizer nem considera um círculo com um pai imaturo como pronto.
+
+Antes do gasto, estima a chegada do próximo círculo pela planta que mais
+demora a maturar, usando o crescimento médio por tick informado pelo runtime.
+A vida restante dos pais já prontos é estimada pelo crescimento máximo. Só
+espera o próximo círculo se ele puder ficar pronto em até 15 minutos e houver
+dois ticks de margem de vida, reavaliando a estimativa a cada tick. Nesse tempo,
+os círculos prontos continuam tentando mutações em Wood chips.
+
+Sem um ganho próximo e seguro pela espera, usa **1 Sugar Lump** para acionar
+um tick extra com tentativas de mutação ×3 (além do multiplicador de Wood chips).
+Respeita o cooldown nativo compartilhado com o Grimoire; após cada recarga,
+uma nova leitura decide quando gastar novamente. Para ao encontrar a Juicy ou
+desbloquear sua semente. Prévia e automação desligada nunca gastam lumps.
+
+A bridge revalida o solo, as oito plantas maduras, margem de vida, saldo e
+cooldown antes do débito. O tick extra é cancelado se houver espécie fora do
+catálogo ou se ele puder matar uma descoberta ainda não desbloqueada. As
+decisões de espera e cada gasto aparecem no acompanhamento e no log.
+
+## Replantio no modo Upgrades do Garden
+
+As colheitas maduras e os plantios nas casas liberadas são previstos no mesmo
+ciclo. Depois de cada colheita, o bot confirma se algum upgrade foi liberado.
+Se nenhum drop sair, executa o lote de replantio sem esperar outro tick,
+incluindo casas que já estavam vazias. As plantas pendentes ainda em crescimento
+permanecem no lugar.
+
+Se um upgrade for liberado, o restante do plano antigo é cancelado e o objetivo
+é recalculado. Uma falha na consulta dos upgrades também cancela o replantio.
+O lote continua sujeito à validação atômica de saldo e canteiros pela bridge;
+as colheitas maduras não dependem de dinheiro para replantar.
+
+## Saldo insuficiente e retomada
+
+Antes de limpar ou substituir o layout, a automação soma os preços atuais de
+**todos os plantios pendentes**, usando o custo informado pelo próprio Garden.
+Se não puder pagar o lote inteiro, preserva as plantas existentes e não começa
+um plantio parcial. No próximo tick, lê novamente o estado e tenta retomar.
+
+As colheitas maduras já previstas no plano continuam antes dessa decisão:
+sementes novas não são perdidas por falta de dinheiro para o próximo layout,
+e a colheita pode ajudar a financiá-lo. Plantas corretas e descobertas ainda
+imaturas continuam protegidas pelas regras do planejador. Não há empréstimos,
+gasto de lumps ou congelamento para resolver falta de saldo.
+
+A conferência do saldo, dos preços e dos canteiros ocorre imediatamente antes
+das remoções, na mesma chamada JavaScript que executa limpeza e plantio.
+Banco e Simple Farm não podem gastar entre essa conferência e o lote. Se o
+canteiro tiver mudado desde o planejamento ou uma semente não estiver
+liberada, a limpeza não começa. Resultados inesperados durante o lote
+interrompem as ações restantes, sem tentar restaurar o save.
+
+A interface mostra **Garden: aguardando dinheiro** em amarelo, com custo,
+saldo e quanto falta. É uma espera normal, não um erro; avisos iguais não
+são repetidos no log a cada tick. Falhas reais continuam em vermelho.
+A simulação também mostra o custo estimado e o saldo, sem executar ações.
+
 ## Modo Green, aching thumb
 
 O checkbox **Green, aching thumb** prioriza temporariamente Thumbcorn para obter a
 conquista de colher 1.000 plantas maduras. Ele também respeita a separação entre
-planejamento e execução: com **Automação real** desligada, o modo produz somente
+planejamento e execução: com o controle em **Desligada**, o modo produz somente
 prévia e jamais chama uma operação mutável da bridge.
 
 Enquanto Thumbcorn ainda estiver bloqueado, a Fazendeira continua a coleção
@@ -130,7 +236,7 @@ no catálogo e nos testes associados.
 3. A prioridade favorece receitas prontas que liberam mais dependências;
    mutações já presentes no canteiro têm precedência.
 4. Uma estratégia explicitamente mapeada para a planta gera o plano.
-5. Em simulação, o fluxo termina. Em modo real explicitamente habilitado, todas
+5. Em simulação, o fluxo termina. Com a automação ligada, todas
    as ações do plano são enviadas no mesmo tick e novamente validadas no
    JavaScript; não existe limite parcial de ações por ciclo.
 
@@ -153,7 +259,7 @@ mesmo tick.
   jogo Steam; diferenças da versão embarcada aparecerão como falhas defensivas.
 - O planejador usa uma receita preferencial por planta quando o runtime oferece
   alternativas. As alternativas ficam documentadas no catálogo.
-- Habilitar **Automação real** autoriza explicitamente a limpeza de layouts
+- Clicar em **Ligar** inicia a limpeza de layouts
   antigos e de plantas que não correspondam ao objetivo atual.
 - Probabilidades raras, principalmente a Juicy queenbeet, podem
   exigir muitos ticks. O snapshot, e não uma previsão local, é sempre a evidência

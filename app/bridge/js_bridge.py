@@ -2,6 +2,7 @@
 Bridge para comunicação com o runtime JavaScript do Cookie Clicker.
 """
 import json
+import math
 import time
 import threading
 from typing import Optional, Any, Dict, List
@@ -12,7 +13,19 @@ except ImportError:
     raise ImportError("pychrome não encontrado. Instale com 'pip install pychrome'")
 
 from app.config.settings import app_config
+from app.bridge.simple_farm_scripts import SIMPLE_FARM_HELPERS
+from app.bridge.visual_sync import GAME_VISUAL_SYNC
+from app.bridge.krumblor_scripts import KRUMBLOR_PET_SCRIPT
+from app.bridge.season_scripts import AUTO_SEASON_SCRIPT
+from app.bridge.planner_scripts import FTHOF_PLANNER_SCRIPT
+from app.core.seasons import SEASONS
+from app.bridge.wrinkler_scripts import WRINKLER_SCRIPT
+from app.bridge.sugar_lump_scripts import SUGAR_LUMP_HELPERS
+from app.core.garden_catalog import GARDEN_CATALOG
+from app.core.garden_strategies import GARDEN_DROPS
 from app.models.garden import (
+    GardenAction,
+    GardenUpgrade,
     GardenActionResult,
     GardenPlant,
     GardenSeed,
@@ -75,10 +88,28 @@ class CookieClickerBridge:
         self.browser: Optional[pychrome.Browser] = None
         self.tab: Optional[pychrome.Tab] = None
         self.connected = False
+        self.managed_connection = False
         # pychrome não garante acesso concorrente seguro ao mesmo websocket.
         self._runtime_lock = threading.RLock()
 
-    def connect(self) -> bool:
+    def maintain_season(self, season: str) -> Dict[str, Any]:
+        """Ativa a temporada escolhida apenas quando ela não está ativa."""
+        if season not in SEASONS:
+            return {"reason": "invalid", "message": "Escolha uma temporada válida.", "retryAfterMs": 60000}
+        result = self._execute_game_action(AUTO_SEASON_SCRIPT.replace("__SEASON__", json.dumps(season)))
+        if not isinstance(result, dict) or not isinstance(result.get("reason"), str):
+            return {"reason": "unavailable", "message": "Não foi possível consultar a temporada.", "retryAfterMs": 60000}
+        return result
+
+    def collect_krumblor_upgrade(self) -> Dict[str, Any]:
+        """Um carinho, somente se faltar o drop atual; nunca compra upgrades."""
+        result = self.execute_js(KRUMBLOR_PET_SCRIPT)
+        if not isinstance(result, dict) or not isinstance(result.get("reason"), str):
+            return {"reason": "unavailable", "message": "Não foi possível consultar Krumblor.",
+                    "retryAfterMs": 60000, "pet": False, "unlocked": False}
+        return result
+
+    def connect(self, tab_id: Optional[str] = None) -> bool:
         """
         Conecta ao remote debugging do CEF.
 
@@ -88,19 +119,21 @@ class CookieClickerBridge:
         with self._runtime_lock:
             try:
                 self.browser = pychrome.Browser(url=f"http://{self.host}:{self.port}")
-                tabs = self.browser.list_tab()
+                tabs = self.browser.list_tab(timeout=self.timeout)
                 if not tabs:
                     logger.error("Nenhuma aba encontrada no remote debugging")
                     return False
 
-                # Assume a primeira aba é o jogo
-                self.tab = tabs[0]
+                self.tab = next((tab for tab in tabs if tab.id == tab_id), None) if tab_id else tabs[0]
+                if self.tab is None:
+                    logger.error("A aba do jogo não está disponível no debugger")
+                    return False
                 # Evita despejar cada pacote CDP no console quando a variável
                 # de ambiente DEBUG estiver definida no processo.
                 self.tab.debug = False
                 self.tab.start()
                 self.connected = True
-                logger.info("Conectado ao CEF do Cookie Clicker via CDP")
+                logger.debug("Bridge: conexão CDP estabelecida")
                 return True
             except Exception as e:
                 logger.error(f"Erro ao conectar ao remote debugging: {e}")
@@ -118,7 +151,7 @@ class CookieClickerBridge:
             self.browser = None
             self.tab = None
             self.connected = False
-            logger.info("Desconectado do remote debugging")
+            logger.debug("Bridge: conexão CDP encerrada")
 
     def execute_js(self, code: str) -> Optional[Any]:
         """
@@ -132,12 +165,14 @@ class CookieClickerBridge:
         """
         with self._runtime_lock:
             if not self.connected or not self.tab:
+                if self.managed_connection:
+                    return None
                 logger.warning("Bridge não conectado. Tentando reconectar...")
                 if not self.connect():
                     return None
 
             try:
-                result = self.tab.Runtime.evaluate(expression=code, returnByValue=True)
+                result = self.tab.Runtime.evaluate(expression=code, returnByValue=True, _timeout=self.timeout)
                 if 'result' in result and 'value' in result['result']:
                     return result['result']['value']
                 elif result.get('result', {}).get('type') == 'undefined':
@@ -145,15 +180,66 @@ class CookieClickerBridge:
                     # Isso não é uma falha de CDP e não deve poluir o log.
                     return None
                 elif 'exceptionDetails' in result:
-                    logger.error(f"Erro JS: {result['exceptionDetails']}")
+                    details = result['exceptionDetails']
+                    description = details.get('exception', {}).get('description') or details.get('text') or 'Erro sem descrição'
+                    logger.error("Jogo: erro de JavaScript: %s", str(description).splitlines()[0][:240])
+                    logger.debug("Detalhes do erro JavaScript: %r", details)
                     return None
                 else:
-                    logger.error(f"Resposta inesperada do CDP: {result!r}")
+                    logger.error("Bridge: o debugger retornou uma resposta inválida.")
+                    logger.debug("Resposta CDP completa: %r", result)
                     return None
             except Exception as e:
                 logger.error(f"Erro ao executar JS: {e}")
-                self.connected = False  # Marcar como desconectado para tentar reconectar
+                self.connected = False  # O supervisor pausa e valida o jogo antes de retomar.
                 return None
+
+    def get_connection_snapshot(self):
+        """Consulta identidade e prontidão sem alterar o save ou repetir ações."""
+        return self.execute_js("""(() => {
+            if (!globalThis.Game || !Game.ready || !Game.Objects
+                || typeof Game.WriteSave !== 'function') return null;
+            return {identity: String(Game.fullDate) + ':' + String(Game.seed),
+                    ascending: !!Game.OnAscend,
+                    cookies: Game.cookies, lumps: Game.lumps,
+                    buildings: Game.BuildingsOwned, upgrades: Game.UpgradesOwned};
+        })()""")
+
+    def set_combo_cash_floor(self, amount: float) -> None:
+        """Reserva local da sessão exclusiva; não altera o save."""
+        value = float(amount)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError('Reserva de biscoitos inválida.')
+        self._combo_cash_floor = value
+
+    def _execute_game_action(self, code: str) -> Optional[Any]:
+        """Executa uma ação uma vez e sincroniza a UI, inclusive após falha parcial."""
+        script = """(() => {
+            %s
+            const comboCashFloor=%s;
+            const before=typeof Game==='undefined'?null:[Game.dragonAura,Game.dragonAura2];
+            let result;
+            try { result=(%s); }
+            finally {
+                const warnings=syncGameVisuals(before);
+                if (warnings.length && result && typeof result==='object') {
+                    const items=Array.isArray(result)?result:[result];
+                    for (const item of items) {
+                        if (!item || typeof item!=='object') continue;
+                        item.uiWarnings=warnings;
+                        if (item.message) item.message+='; aviso: atualização visual pendente';
+                    }
+                }
+            }
+            return result;
+        })()""" % (GAME_VISUAL_SYNC, json.dumps(getattr(self, "_combo_cash_floor", 0.0)), code)
+        result = self.execute_js(script)
+        items = result if isinstance(result, list) else [result]
+        for item in items:
+            if isinstance(item, dict) and item.get("uiWarnings"):
+                logger.warning("Atualização visual pendente após ação: %s", "; ".join(item["uiWarnings"]))
+                break
+        return result
 
     # === Helpers específicos do Cookie Clicker ===
 
@@ -273,7 +359,7 @@ class CookieClickerBridge:
         """Compra um Heavenly Upgrade simples, elegível e confirma a mudança."""
         if isinstance(upgrade_id, bool) or not isinstance(upgrade_id, int) or upgrade_id < 0:
             return self._invalid_ascension_action("comprar_heavenly", "Identificador inválido")
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const id=%d, fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message,id},extra);
             if (!globalThis.Game || !Game.OnAscend)
@@ -306,7 +392,7 @@ class CookieClickerBridge:
 
     def reincarnate(self) -> ResultadoAcaoAscensao:
         """Reencarna somente a partir da tela de ascensão e verifica a saída dela."""
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const fail=(reason,message)=>({ok:false,reason,message});
             if (!globalThis.Game || typeof Game.Reincarnate!=='function')
                 return fail('unavailable','API de reencarnação indisponível');
@@ -328,7 +414,7 @@ class CookieClickerBridge:
 
     def buy_all_normal_upgrades(self) -> ResultadoAcaoAscensao:
         """Aciona uma vez o botão nativo de comprar todos e verifica as compras."""
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message,quantity:0},extra);
             if (!globalThis.Game || Game.OnAscend || Number(Game.AscendTimer)>0
@@ -385,7 +471,7 @@ class CookieClickerBridge:
                 "comprar_lote_construcoes", "Parâmetros do lote de construções inválidos"
             )
         ordered_ids = sorted(set(building_ids), reverse=True)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const ids=%s, limit=%d, fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message,quantity:0},extra);
             if (!globalThis.Game || Game.OnAscend || Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
@@ -437,13 +523,20 @@ class CookieClickerBridge:
         minimum = self._optional_float(minimum_prestige_gain)
         if minimum is None or minimum < 0:
             return self._invalid_ascension_action("ascender", "Ganho mínimo de prestígio inválido")
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const minimum=%s, fail=(reason,message,extra={}) =>
                 Object.assign({ok:false,reason,message},extra);
             if (!globalThis.Game || typeof Game.Ascend!=='function' || typeof Game.HowMuchPrestige!=='function')
                 return fail('unavailable','API de ascensão indisponível');
             if (Game.OnAscend || Number(Game.AscendTimer)>0 || Number(Game.ReincarnateTimer)>0)
                 return fail('wrong_screen','O jogo não está pronto para ascender');
+            const catalog=new Set(%s);
+            const garden=Game.Objects && Game.Objects.Farm && Game.Objects.Farm.minigame;
+            if (garden && Array.isArray(garden.plot) && garden.plot.some(row=>row.some(tile=>{
+                if (!Array.isArray(tile) || Number(tile[0])<=0) return false;
+                const plant=garden.plantsById && garden.plantsById[Number(tile[0])-1];
+                return !plant || !catalog.has(String(plant.key)) || !plant.unlocked;
+            }))) return fail('protected_plant','Ascensão bloqueada: há planta protegida no Garden (fora do catálogo ou semente não desbloqueada)');
             const current=Number(Game.prestige||0);
             const total=Number(Game.HowMuchPrestige(Number(Game.cookiesReset||0)+Number(Game.cookiesEarned||0)));
             const gain=Math.max(0,total-current);
@@ -455,7 +548,7 @@ class CookieClickerBridge:
             return {ok,reason:ok?'verified':'ambiguous_result',
                 message:ok?'Ascensão iniciada e verificada':'O jogo não confirmou o início da ascensão',
                 before:gain,after:gain};
-        })()""" % json.dumps(minimum))
+        })()""" % (json.dumps(minimum), json.dumps(sorted(GARDEN_CATALOG))))
         result = self._parse_ascension_action(payload, "ascender")
         self._log_ascension_action(result)
         return result
@@ -493,7 +586,7 @@ class CookieClickerBridge:
         """Lança uma magia somente se a mana continuar cheia no runtime."""
         if isinstance(spell_id, bool) or not isinstance(spell_id, int) or spell_id < 0:
             return {"cast": False, "reason": "invalid_spell", "message": "Skill inválida"}
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const spellId = %d;
             const fail = (reason, message, extra = {}) =>
                 Object.assign({cast:false, reason, message}, extra);
@@ -546,7 +639,7 @@ class CookieClickerBridge:
         })()""")
         return payload if isinstance(payload, str) and payload else None
 
-    def get_combo_snapshot(self) -> Dict[str, Any]:
+    def get_combo_snapshot(self, *, require_minigames: bool = True) -> Dict[str, Any]:
         """Lê em uma avaliação todo o estado usado pelo planejador de combo."""
         payload = self.execute_js("""(() => {
             const unavailable = message => ({available:false, message});
@@ -554,10 +647,10 @@ class CookieClickerBridge:
             const tower=Game.Objects['Wizard tower'];
             const temple=Game.Objects['Temple'];
             const bank=Game.Objects['Bank'];
-            const M=tower && tower.minigameLoaded ? tower.minigame : null;
-            const P=temple && temple.minigameLoaded ? temple.minigame : null;
-            const B=bank && bank.minigameLoaded ? bank.minigame : null;
-            if (!M || !P || !B) return unavailable('Grimoire, Pantheon ou Stock Market não está carregado');
+            const M=tower && tower.minigameLoaded ? tower.minigame : {};
+            const P=temple && temple.minigameLoaded ? temple.minigame : {};
+            const B=bank && bank.minigameLoaded ? bank.minigame : {};
+            if (__REQUIRE_MINIGAMES__ && (!tower || !tower.minigameLoaded || !temple || !temple.minigameLoaded || !bank || !bank.minigameLoaded)) return unavailable('Grimoire, Pantheon ou Stock Market não está carregado');
             const finite=(value,fallback=0)=>Number.isFinite(Number(value))?Number(value):fallback;
             const fps=Math.max(1,finite(Game.fps,30));
             const skip=M.spellsById && M.spellsById[4];
@@ -570,6 +663,7 @@ class CookieClickerBridge:
                 screen:Game.OnAscend?'ascend':((finite(Game.AscendTimer)>0||finite(Game.ReincarnateTimer)>0)?'transition':'game'),
                 version:String(Game.version), seed:String(Game.seed || ''), season:String(Game.season || ''),
                 seasonSwitchAvailable:!!(lovesick && lovesick.unlocked),
+                fthofFailBase:M.spellsById && M.spellsById[1] ? finite(M.getFailChance(M.spellsById[1]))-0.15*(Number(Game.shimmerTypes.golden.n)||0):null,
                 cookies:finite(Game.cookies), cookiesEarned:finite(Game.cookiesEarned),
                 cookiesPs:finite(Game.cookiesPs), mouseCps:finite(Game.computedMouseCps),
                 achievementWon:!!(achievement && achievement.won),
@@ -581,8 +675,8 @@ class CookieClickerBridge:
                 magic:finite(M.magic), magicM:finite(M.magicM),
                 skipSpellCost:skip && typeof M.getSpellCost==='function' ? finite(M.getSpellCost(skip),Infinity):Infinity,
                 fthofCost:M.spellsById && M.spellsById[1] ? finite(M.getSpellCost(M.spellsById[1]),Infinity):Infinity,
-                wizardTowers:Math.max(0,Math.trunc(finite(tower.amount))),
-                wizardTowerLevel:Math.max(0,Math.trunc(finite(tower.level))),
+                wizardTowers:Math.max(0,Math.trunc(finite(tower && tower.amount))),
+                wizardTowerLevel:Math.max(0,Math.trunc(finite(tower && tower.level))),
                 auras:[Math.trunc(finite(Game.dragonAura)),Math.trunc(finite(Game.dragonAura2))],
                 pantheonSwaps:Math.max(0,Math.trunc(finite(P.swaps))),
                 pantheonSlots:Array.from(P.slot || []).map(value=>Math.trunc(finite(value,-1))),
@@ -606,10 +700,69 @@ class CookieClickerBridge:
                     amount:Math.max(0,Math.trunc(finite(object.amount))), level:Math.max(0,Math.trunc(finite(object.level)))
                 }))
             };
-        })()""")
+        })()""".replace("__REQUIRE_MINIGAMES__", "true" if require_minigames else "false"))
         return payload if isinstance(payload, dict) else {
             "available": False, "message": "Resposta inválida do snapshot de combo"
         }
+
+    def forecast_fthof_planner(self, count: int = 100, season_mode: str = "current") -> Dict[str, Any]:
+        """Lista os próximos resultados sem lançar magias nem alterar o jogo."""
+        if isinstance(count, bool) or not isinstance(count, int) or not 10 <= count <= 500:
+            return {"ok": False, "message": "Escolha entre 10 e 500 próximas magias."}
+        if season_mode not in ("current", "normal", "seasonal"):
+            return {"ok": False, "message": "Escolha uma comparação de temporada válida."}
+        script = FTHOF_PLANNER_SCRIPT.replace("__COUNT__", str(count)).replace("__MODE__", json.dumps(season_mode))
+        result = self.execute_js(script)
+        return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível consultar o Grimório."}
+
+    def forecast_combo_candidates(self, max_ahead: int, required_total_bs: int) -> Dict[str, Any]:
+        """Busca nas duas famílias sazonais com RNG isolado; retorna alternativas."""
+        if isinstance(max_ahead, bool) or not isinstance(max_ahead, int) or not 4 <= max_ahead <= 100_000:
+            return {"ok": False, "message": "Alcance de busca inválido."}
+        if not 1 <= required_total_bs <= 6:
+            return {"ok": False, "message": "Quantidade de bônus inválida."}
+        prefix = FTHOF_PLANNER_SCRIPT[:FTHOF_PLANNER_SCRIPT.index('const rows=Array.from')]
+        tail = r"""
+const candidates=[];
+for (let offset=0;offset<=count-4;offset++) {
+    const results=[0,1,2,3].map(i=>predict(current+offset+i,i).effect);
+    if (!results.includes('click frenzy') || !results.includes('blood frenzy')) continue;
+    const bs=results.filter(v=>v==='building special').length;
+    const natural=Math.max(0,__REQUIRED__-bs);
+    if (!bs || natural>2) continue;
+    candidates.push({startCast:current+offset,skipCount:offset,results,
+        spellBuildingSpecials:bs,naturalBuildingSpecials:natural});
+}
+return {ok:true,seed,version:String(G.version),currentCast:current,failBase,candidates};
+})()"""
+        body = (prefix + tail).replace("__COUNT__", str(max_ahead)).replace("__REQUIRED__", str(required_total_bs))
+        normal = body.replace("__MODE__", json.dumps("normal"))
+        seasonal = body.replace("__MODE__", json.dumps("seasonal"))
+        script = """(() => {
+const G=globalThis.Game;
+if (!G || !G.ready) return {ok:false,message:'Jogo indisponível.'};
+const all=[];
+for (const [family,read] of [[false,()=>__NORMAL__],[true,()=>__SEASONAL__]]) {
+    const current=String(G.season||'');
+    const same=(current==='easter'||current==='valentines')===family;
+    let season=current;
+    if (!same) {
+        const alternatives=Object.entries(G.seasons||{}).filter(([key,v])=>
+            (key==='easter'||key==='valentines')===family && G.Upgrades &&
+            G.Upgrades[v.trigger] && G.Upgrades[v.trigger].unlocked && !G.Upgrades[v.trigger].bought);
+        alternatives.sort((a,b)=>Number(G.Upgrades[a[1].trigger].getPrice())-Number(G.Upgrades[b[1].trigger].getPrice()));
+        if (!alternatives.length) continue;
+        season=alternatives[0][0];
+    }
+    const result=read();
+    if (!result.ok) return result;
+    for (const candidate of result.candidates) all.push(Object.assign(candidate,{
+        seed:result.seed,version:result.version,currentCast:result.currentCast,failBase:result.failBase,season}));
+}
+return {ok:true,candidates:all};
+})()""".replace("__NORMAL__", normal).replace("__SEASONAL__", seasonal)
+        result = self.execute_js(script)
+        return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível buscar as sequências."}
 
     def forecast_combo_window(self, max_ahead: int, required_total_bs: int) -> Dict[str, Any]:
         """Procura a melhor janela de Quadcast sem alterar contador, mana ou save."""
@@ -691,11 +844,17 @@ class CookieClickerBridge:
             "ok": False, "message": "Resposta inválida do forecast"
         }
 
-    def forecast_simple_farm_pair(self, max_ahead: int) -> Dict[str, Any]:
-        """Encontra o próximo Dualcast econômico com Click Frenzy na season atual."""
+    def forecast_simple_farm_spell(
+        self, max_ahead: int, *, cash_floor: float = 0, max_spend_fraction: float = 0.05,
+        reserve_fraction: float = 0.80, spent_in_window: float = 0,
+    ) -> Dict[str, Any]:
+        """Prefere um par complementar acessível; mantém CF único como alternativa."""
         if isinstance(max_ahead, bool) or not isinstance(max_ahead, int) or not 2 <= max_ahead <= 10_000:
             return {"ok": False, "message": "Alcance do Simple Farm inválido"}
+        if not self._valid_simple_farm_budget(cash_floor, max_spend_fraction, reserve_fraction, spent_in_window):
+            return {"ok": False, "message": "Orçamento da magia inválido"}
         script = """(() => {
+            const cashFloor=__FLOOR__, fraction=__FRACTION__, reserveFraction=__RESERVE__, spentInWindow=__SPENT__;
             const maxAhead=__MAX_AHEAD__;
             const fail=message=>({ok:false,message});
             const tower=globalThis.Game && Game.Objects ? Game.Objects['Wizard tower'] : null;
@@ -704,359 +863,239 @@ class CookieClickerBridge:
             if (!M || !spell || typeof Math.seedrandom!=='function')
                 return fail('Grimoire ou seedrandom indisponível');
             const current=Math.trunc(Number(M.spellsCastTotal));
-            const level=Math.trunc(Number(tower.level));
-            const spots={1:[321,21],2:[314,14],3:[308,8],4:[303,3],5:[401,1],
-                6:[401,1],7:[401,1],8:[501,1],9:[501,1],10:[501,1]};
-            if (!spots[level]) return fail('Simple Farm suporta Wizard Towers entre os níveis 1 e 10');
             const onscreen=Number(Game.shimmerTypes && Game.shimmerTypes.golden && Game.shimmerTypes.golden.n)||0;
             let failBase=Number(M.getFailChance(spell))-0.15*onscreen;
             if (!Number.isFinite(current) || !Number.isFinite(failBase))
                 return fail('Estado do Grimoire inválido');
-            failBase=Math.max(0,Math.min(1,failBase));
-            const seasonal=Game.season==='valentines'||Game.season==='easter';
-            function outcome(cast,existing) {
-                const oldRandom=Math.random;
-                try {
-                    Math.seedrandom(String(Game.seed)+'/'+cast);
-                    const success=Math.random()<1-(failBase+0.15*existing);
-                    Math.random(); Math.random(); if (seasonal) Math.random();
-                    let choices;
-                    if (success) {
-                        choices=['frenzy','multiply cookies','click frenzy'];
-                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
-                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
-                        if (Math.random()<0.15) choices=['cookie storm drop'];
-                        if (Math.random()<0.0001) choices.push('free sugar lump');
-                    } else {
-                        choices=['clot','ruin cookies'];
-                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
-                        if (Math.random()<0.003) choices.push('free sugar lump');
-                        if (Math.random()<0.1) choices=['blab'];
-                    }
-                    return choices[Math.floor(Math.random()*choices.length)];
-                } finally { Math.random=oldRandom; }
+            __HELPERS__
+            const dual=dualPlan();
+            let single=null;
+            for (let offset=0;offset<maxAhead;offset++) {
+                const first=predict(current+offset,0);
+                const results=offset+1<maxAhead ? [first,predict(current+offset+1,1)] : [first];
+                const pair=dual.ok && complementary(results);
+                if (pair) return {ok:true,seed:String(Game.seed),version:String(Game.version),
+                    currentCast:current,startCast:current+offset,skipCount:offset,
+                    results,dual,quality:'Dual Cast complementar',
+                    decision:'Par complementar priorizado; Haggler’s Charm alinhará esta janela'};
+                if (first==='click frenzy' && !single) single={startCast:current+offset,skipCount:offset};
             }
-            const useful=new Set(['frenzy','multiply cookies','click frenzy','building special','blood frenzy']);
-            for (let offset=0;offset<=maxAhead-2;offset++) {
-                const results=[outcome(current+offset,0),outcome(current+offset+1,1)];
-                const cf=results.filter(value=>value==='click frenzy').length;
-                if (cf<1 || !results.every(value=>useful.has(value))) continue;
-                const quality=cf===2?'Duplo Click Frenzy':
-                    (results.includes('blood frenzy')?'Click Frenzy + Elder Frenzy':
-                    (results.includes('building special')?'Click Frenzy + Building Special':
-                    (results.includes('frenzy')?'Click Frenzy + Frenzy':'Click Frenzy + Lucky')));
-                return {ok:true,seed:String(Game.seed),version:String(Game.version),
-                    currentCast:current,startCast:current+offset,skipCount:offset,results,quality,
-                    minimumTowers:spots[level][0],finalTowers:spots[level][1],towerLevel:level};
-            }
-            return fail('Nenhum par seguro com Click Frenzy foi encontrado');
+            if (single) return Object.assign({ok:true,seed:String(Game.seed),version:String(Game.version),
+                currentCast:current,results:['click frenzy'],dual:null,
+                quality:'Click Frenzy com uma magia',
+                decision:dual.message||'Nenhum par complementar no alcance; usando uma magia'},single);
+            return fail('Nenhum Click Frenzy encontrado no alcance; farm continua sem magia');
         })()""".replace("__MAX_AHEAD__", str(max_ahead))
+        script = (script.replace("__HELPERS__", SIMPLE_FARM_HELPERS)
+                  .replace("__FLOOR__", repr(float(cash_floor)))
+                  .replace("__FRACTION__", repr(float(max_spend_fraction)))
+                  .replace("__RESERVE__", repr(float(reserve_fraction)))
+                  .replace("__SPENT__", repr(float(spent_in_window))))
         payload = self.execute_js(script)
         return payload if isinstance(payload, dict) else {
             "ok": False, "message": "Resposta inválida do forecast do Simple Farm"
         }
 
-    def execute_simple_farm_dualcast(
-        self,
-        *,
-        expected_cast: int,
-        expected_results: List[str],
-        minimum_buff_seconds: float,
-        minimum_towers: int,
-        final_towers: int,
+    def execute_simple_farm_spell(
+        self, *, expected_cast: int, minimum_buff_seconds: float,
+        cash_floor: float = 0, max_spend_fraction: float = 0.05,
+        reserve_fraction: float = 0.80, spent_in_window: float = 0,
     ) -> Dict[str, Any]:
-        """Executa dois FtHoF, restaura torres e prova que nenhum lump foi gasto."""
-        allowed = {"frenzy", "multiply cookies", "click frenzy", "building special", "blood frenzy"}
-        if isinstance(expected_cast, bool) or not isinstance(expected_cast, int) or expected_cast < 0:
-            return {"ok": False, "message": "Contador inicial inválido"}
-        if (
-            not isinstance(expected_results, list) or len(expected_results) != 2
-            or any(value not in allowed for value in expected_results)
-            or expected_results.count("click frenzy") < 1
-        ):
-            return {"ok": False, "message": "Resultados do Dualcast inválidos"}
-        if not 3 <= minimum_buff_seconds <= 60:
-            return {"ok": False, "message": "Duração mínima de buff inválida"}
-        if (
-            isinstance(minimum_towers, bool) or not isinstance(minimum_towers, int)
-            or isinstance(final_towers, bool) or not isinstance(final_towers, int)
-            or minimum_towers < 2 or not 1 <= final_towers < minimum_towers
-        ):
-            return {"ok": False, "message": "Ponto de Dualcast inválido"}
+        """Revalida custos e previsão; restaura torres antes de abrir o par de cookies."""
+        if (isinstance(expected_cast, bool) or not isinstance(expected_cast, int)
+                or expected_cast < 0 or not 3 <= minimum_buff_seconds <= 60):
+            return {"ok": False, "message": "Parâmetros da magia inválidos"}
+        if not self._valid_simple_farm_budget(cash_floor, max_spend_fraction, reserve_fraction, spent_in_window):
+            return {"ok": False, "message": "Orçamento da magia inválido"}
         script = """(() => {
-            const expectedCast=__EXPECTED_CAST__, expectedResults=__EXPECTED_RESULTS__;
-            const minimum=__MINIMUM__, minimumTowers=__MIN_TOWERS__, finalTowers=__FINAL_TOWERS__;
-            const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
+            const cashFloor=__FLOOR__, fraction=__FRACTION__, reserveFraction=__RESERVE__, spentInWindow=__SPENT__;
+            const expectedCast=__CAST__, minimum=__MINIMUM__;
+            const fail=(message,extra={waiting:true})=>Object.assign({ok:false,message},extra);
+            if (!globalThis.Game || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer)
+                return fail('Jogo em transição');
             const tower=Game.Objects && Game.Objects['Wizard tower'];
-            const temple=Game.Objects && Game.Objects['Temple'];
             const M=tower && tower.minigameLoaded ? tower.minigame : null;
-            const P=temple && temple.minigameLoaded ? temple.minigame : null;
-            const spell=M && M.spellsById ? M.spellsById[1] : null;
-            if (!M || !spell) return fail('Grimoire indisponível');
+            const spell=M && M.spellsById && M.spellsById[1];
+            if (!spell || typeof Math.seedrandom!=='function') return fail('Grimoire indisponível');
+            if (Number(M.spellsCastTotal)!==expectedCast) return fail('Contador de spells mudou');
+            if (!(Number(M.magicM)>0) || Number(M.magic)<Number(M.magicM) ||
+                Number(M.magic)<Number(M.getSpellCost(spell))) return fail('Aguardando mana suficiente e cheia');
+            if ((Game.shimmers||[]).some(s=>s && s.type==='golden')) return fail('Golden Cookie em tela');
+            const buffs=Object.values(Game.buffs||{});
+            const has=type=>buffs.some(b=>b && b.type && b.type.name===type && b.time>0);
+            if (has('dragonflight') || has('click frenzy')) return fail('Buff de clique já ativo; preservando mana');
             const fps=Math.max(1,Number(Game.fps)||30);
-            const castNow=Math.trunc(Number(M.spellsCastTotal)||0);
-            const original=Math.trunc(Number(tower.amount)||0);
-            const lumpsBefore=Math.trunc(Number(Game.lumps)||0);
-            const pantheonBefore=P && Array.isArray(P.slot)?Array.from(P.slot).map(Number):[];
-            if (castNow!==expectedCast) return fail('Contador de spells mudou antes do Dualcast');
-            if (original<minimumTowers)
-                return fail(`São necessárias ${minimumTowers} Wizard Towers`,{waiting:true,original,minimumTowers});
-            if (Number(M.magic)+1e-7<Number(M.magicM))
-                return fail('Mana ainda não está completamente cheia',{waiting:true});
-            if ((Game.shimmers||[]).some(item=>item && item.type==='golden'))
-                return fail('Há um Golden Cookie em tela antes do Dualcast');
-            if (Game.hasBuff && Game.hasBuff('Dragonflight'))
-                return fail('Dragonflight alteraria o resultado previsto',{waiting:true});
-            const trigger=Object.values(Game.buffs||{}).find(buff=>buff && buff.type &&
-                ['frenzy','dragon harvest','building buff','click frenzy','blood frenzy'].includes(String(buff.type.name)) &&
-                Number(buff.time)/fps>=minimum);
-            if (!trigger) return fail('O multiplicador natural terminou antes do Dualcast',{waiting:true});
-
-            const seasonal=Game.season==='valentines'||Game.season==='easter';
-            const failBase=Math.max(0,Math.min(1,Number(M.getFailChance(spell))));
-            function predict(cast,existing) {
-                const oldRandom=Math.random;
-                try {
-                    Math.seedrandom(String(Game.seed)+'/'+cast);
-                    const success=Math.random()<1-(failBase+0.15*existing);
-                    Math.random(); Math.random(); if (seasonal) Math.random();
-                    let choices;
-                    if (success) {
-                        choices=['frenzy','multiply cookies','click frenzy'];
-                        if (Math.random()<0.1) choices.push('cookie storm','cookie storm','blab');
-                        if (Number(Game.BuildingsOwned)>=10 && Math.random()<0.25) choices.push('building special');
-                        if (Math.random()<0.15) choices=['cookie storm drop'];
-                        if (Math.random()<0.0001) choices.push('free sugar lump');
-                    } else {
-                        choices=['clot','ruin cookies'];
-                        if (Math.random()<0.1) choices.push('cursed finger','blood frenzy');
-                        if (Math.random()<0.003) choices.push('free sugar lump');
-                        if (Math.random()<0.1) choices=['blab'];
-                    }
-                    return choices[Math.floor(Math.random()*choices.length)];
-                } finally { Math.random=oldRandom; }
-            }
-            const predicted=[predict(expectedCast,0),predict(expectedCast+1,1)];
-            if (predicted.some((value,index)=>value!==expectedResults[index]))
-                return fail('Forecast mudou antes do Dualcast',{predicted,expectedResults});
-
-            let rebuyPrice=0;
-            try {
-                for (let i=finalTowers;i<original;i++)
-                    rebuyPrice+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
-                rebuyPrice=Math.ceil(Number(Game.modifyBuildingPrice(tower,rebuyPrice)));
-            } catch (_) { rebuyPrice=Infinity; }
-            if (!Number.isFinite(rebuyPrice) || rebuyPrice>Number(Game.cookies))
-                return fail('Cookies insuficientes para garantir a recompra das Wizard Towers',
-                    {waiting:true,rebuyPrice,cookies:Number(Game.cookies)});
-
+            if (!buffs.some(b=>b && b.type &&
+                ['frenzy','dragon harvest','building buff','blood frenzy'].includes(b.type.name) &&
+                Number(b.time)/fps>=minimum)) return fail('Aguardando multiplicador de produção');
+            const failBase=Number(M.getFailChance(spell));
+            if (!Number.isFinite(failBase)) return fail('Chance de backfire inválida');
+            __HELPERS__
+            const first=predict(expectedCast,0), second=predict(expectedCast+1,1);
+            const plan=dualPlan();
+            const useDual=plan.ok && complementary([first,second]);
+            if (!useDual && first!=='click frenzy') return fail('Par indisponível; replanejando sem gastar recursos');
+            const expected=useDual?[first,second]:[first];
             const created=[];
-            function castOne(index) {
-                const before=new Set((Game.shimmers||[]).map(item=>Number(item.id)));
-                const cost=Number(M.getSpellCost(spell));
-                if (!Number.isFinite(cost) || Number(M.magic)<cost)
-                    return {ok:false,message:`Mana insuficiente no FtHoF ${index+1}`,cost,magic:Number(M.magic)};
-                if (M.castSpell(spell)!==true) return {ok:false,message:`FtHoF ${index+1} foi recusado`};
-                const shimmer=(Game.shimmers||[]).find(item=>item && item.type==='golden' && !before.has(Number(item.id)));
-                if (!shimmer) return {ok:false,message:`Cookie do FtHoF ${index+1} não foi localizado`};
-                const force=String(shimmer.force||'');
-                if (force!==expectedResults[index])
-                    return {ok:false,message:`Resultado divergente no FtHoF ${index+1}`,force,expected:expectedResults[index]};
-                created.push({id:Number(shimmer.id),force,shimmer});
-                return {ok:true};
+            let casts=0, error='', restorationError='';
+            const cookiesBefore=Number(Game.cookies), original=Number(tower.amount), buyMode=Game.buyMode;
+            function castOne(effect) {
+                const before=new Set((Game.shimmers||[]).map(s=>s.id));
+                if (Number(M.magic)<Number(M.getSpellCost(spell)) || M.castSpell(spell)!==true)
+                    throw Error('O jogo recusou a magia');
+                casts++;
+                const cookie=(Game.shimmers||[]).find(s=>s && s.type==='golden' && !before.has(s.id));
+                if (!cookie || cookie.force!==effect) throw Error('Resultado inesperado da magia; verifique o jogo');
+                created.push(cookie);
             }
-            function restore() {
-                const missing=Math.max(0,original-Math.trunc(Number(tower.amount)||0));
-                if (!missing) return true;
-                const buyMode=Game.buyMode;
-                try { Game.buyMode=1; tower.buy(missing); }
+            try {
+                castOne(first);
+                if (useDual) {
+                    tower.sell(original-plan.targetTowers);
+                    if (Number(tower.amount)!==plan.targetTowers) throw Error('Venda de torres não confirmada');
+                    M.computeMagicM();
+                    castOne(second);
+                }
+            } catch (e) { error=String(e.message||e); }
+            finally {
+                // Mesmo com uma falha no segundo cast, recompra antes de devolver o controle.
+                try {
+                    const missing=original-Number(tower.amount);
+                    if (missing>0) { Game.buyMode=1; tower.buy(missing); }
+                    if (Number(tower.amount)!==original) throw Error('Recompra incompleta das Wizard Towers');
+                    if (useDual) M.computeMagicM();
+                } catch (e) { restorationError=String(e.message||e); }
                 finally { Game.buyMode=buyMode; }
-                if (typeof M.computeMagicM==='function') M.computeMagicM();
-                return Math.trunc(Number(tower.amount)||0)===original;
             }
+            const details={waiting:false,casts,dualcast:useDual,before:cookiesBefore,after:Number(Game.cookies),
+                spent:Math.max(0,cookiesBefore-Number(Game.cookies)),rebuy:useDual?plan.rebuy:0,
+                reserve:plan.reserve,results:expected,magic:Number(M.magic),magicM:Number(M.magicM),
+                spellsCastTotal:Number(M.spellsCastTotal)};
+            if (restorationError || error) return fail([error,restorationError].filter(Boolean).join('; '),details);
+            if (useDual && Number(Game.cookies)<plan.reserve) return fail('Saldo abaixo da reserva após recompra',details);
+            try { for (const cookie of created) cookie.pop(); }
+            catch (e) { return fail('Falha ao abrir cookies: '+String(e.message||e),details); }
+            return Object.assign({ok:true,message:useDual
+                ? 'Dual Cast concluído; todas as torres recompradas e reserva preservada'
+                : 'Click Frenzy ativado com uma magia; '+(plan.message||'sem par complementar')},details);
+        })()""".replace("__CAST__", str(expected_cast)).replace("__MINIMUM__", repr(float(minimum_buff_seconds)))
 
-            const first=castOne(0);
-            if (!first.ok) return fail(first.message,first);
-            tower.sell(original-finalTowers);
-            if (Math.trunc(Number(tower.amount)||0)!==finalTowers) {
-                restore();
-                return fail('A venda das Wizard Towers não foi confirmada',{casted:1});
-            }
-            if (typeof M.computeMagicM==='function') M.computeMagicM();
-            if (Number(M.magic)>Number(M.magicM)) M.magic=Number(M.magicM);
-            const second=castOne(1);
-            if (!second.ok) {
-                restore();
-                return fail(second.message,Object.assign({},second,{casted:1}));
-            }
-            if (!restore()) return fail('A recompra das Wizard Towers não foi confirmada',{casted:2});
+        script = (script.replace("__HELPERS__", SIMPLE_FARM_HELPERS)
+                  .replace("__FLOOR__", repr(float(cash_floor)))
+                  .replace("__FRACTION__", repr(float(max_spend_fraction)))
+                  .replace("__RESERVE__", repr(float(reserve_fraction)))
+                  .replace("__SPENT__", repr(float(spent_in_window))))
+        payload = self._execute_game_action(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida da magia"}
 
-            const priority={'multiply cookies':0,'frenzy':1,'building special':2,'click frenzy':3,'blood frenzy':4};
-            created.sort((a,b)=>(priority[a.force]??9)-(priority[b.force]??9));
-            for (const item of created) item.shimmer.pop();
-            const pantheonAfter=P && Array.isArray(P.slot)?Array.from(P.slot).map(Number):[];
-            if (Math.trunc(Number(Game.lumps)||0)!==lumpsBefore)
-                return fail('Garantia violada: a quantidade de Sugar Lumps mudou',{lumpsBefore,lumpsAfter:Number(Game.lumps)});
-            if (JSON.stringify(pantheonAfter)!==JSON.stringify(pantheonBefore))
-                return fail('Garantia violada: o Pantheon mudou durante o Dualcast');
-            return {ok:true,message:'Dualcast concluído sem Sugar Lumps',results:created.map(item=>item.force),
-                originalTowers:original,finalTowers:Number(tower.amount),sold:original-finalTowers,
-                lumpsBefore,lumpsAfter:Number(Game.lumps),pantheonSlots:pantheonAfter,
-                godzamokDiamond:pantheonAfter[0]===2,trigger:String(trigger.name||trigger.type.name),rebuyPrice};
-        })()"""
-        replacements = {
-            "__EXPECTED_CAST__": str(expected_cast),
-            "__EXPECTED_RESULTS__": json.dumps(expected_results),
-            "__MINIMUM__": repr(float(minimum_buff_seconds)),
-            "__MIN_TOWERS__": str(minimum_towers),
-            "__FINAL_TOWERS__": str(final_towers),
-        }
-        for marker, value in replacements.items():
-            script = script.replace(marker, value)
-        payload = self.execute_js(script)
-        return payload if isinstance(payload, dict) else {
-            "ok": False, "message": "Resposta inválida do Dualcast do Simple Farm"
-        }
+    @staticmethod
+    def _valid_simple_farm_budget(cash_floor, fraction, reserve, spent):
+        values = (cash_floor, fraction, reserve, spent)
+        return (all(not isinstance(v, bool) and isinstance(v, (int, float)) for v in values)
+                and 0 <= cash_floor < float("inf") and 0 <= spent < float("inf")
+                and 0.01 <= fraction <= 0.20 and 0.15 <= reserve <= 0.99)
 
     def reinvest_simple_farm(
-        self, cash_floor: float, max_spend_fraction: float, minimum_towers: int,
+        self, cash_floor: float, max_spend_fraction: float, reserve_fraction: float = 0.80,
     ) -> Dict[str, Any]:
-        """Compra um upgrade ou lote de construções sem cruzar o caixa protegido."""
-        if (
-            isinstance(cash_floor, bool) or not isinstance(cash_floor, (int, float))
-            or not 0 <= cash_floor < float("inf")
-            or isinstance(max_spend_fraction, bool)
-            or not isinstance(max_spend_fraction, (int, float))
-            or not 0.01 <= max_spend_fraction <= 0.50
-            or isinstance(minimum_towers, bool) or not isinstance(minimum_towers, int)
-            or not 2 <= minimum_towers <= 10_000
-        ):
+        """Compra produção com orçamento único e reserva conferida no saldo vivo."""
+        values = (cash_floor, max_spend_fraction, reserve_fraction)
+        if (any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values)
+                or not 0 <= cash_floor < float("inf")
+                or not 0.01 <= max_spend_fraction <= 0.20
+                or not 0.15 <= reserve_fraction <= 0.99):
             return {"ok": False, "message": "Orçamento de reinvestimento inválido"}
         script = """(() => {
-            const cashFloor=__CASH_FLOOR__, fraction=__FRACTION__, minimumTowers=__MIN_TOWERS__;
+            const cashFloor=__FLOOR__, fraction=__FRACTION__, reserveFraction=__RESERVE__;
             const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
-            if (!globalThis.Game || !Game.ObjectsById) return fail('Runtime do jogo indisponível');
-            const before=Number(Game.cookies);
-            const lumpsBefore=Math.trunc(Number(Game.lumps)||0);
-            if (!Number.isFinite(before) || before<=0) return fail('Caixa ainda está vazio',{waiting:true});
-            const tower=Game.Objects && Game.Objects['Wizard tower'];
-            const level=tower?Math.trunc(Number(tower.level)||0):0;
-            const spots={1:[321,21],2:[314,14],3:[308,8],4:[303,3],5:[401,1],
-                6:[401,1],7:[401,1],8:[501,1],9:[501,1],10:[501,1]};
-            let rebuyReserve=0;
-            if (tower && spots[level] && Number(tower.amount)>=spots[level][0]) {
-                const finalTowers=spots[level][1], original=Math.trunc(Number(tower.amount)||0);
-                try {
-                    for (let i=finalTowers;i<original;i++)
-                        rebuyReserve+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
-                    rebuyReserve=Math.ceil(Number(Game.modifyBuildingPrice(tower,rebuyReserve)));
-                } catch (_) { rebuyReserve=Infinity; }
-            }
-            if (!Number.isFinite(rebuyReserve))
-                return fail('Não foi possível reservar a recompra das Wizard Towers',{waiting:true});
+            if (!globalThis.Game || !Game.ObjectsById) return fail('Runtime indisponível');
+            if (Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer)
+                return fail('Jogo em transição',{waiting:true});
+            const before=Number(Game.cookies), lumpsBefore=Number(Game.lumps);
+            if (!Number.isFinite(before) || before<=0) return fail('Caixa vazio',{waiting:true});
+            // A avaliação inteira é atômica; Garden/Banco podem ter gasto desde o snapshot.
+            const buffs=Object.values(Game.buffs||{});
+            if (buffs.some(b=>b && b.time>0 && b.type &&
+                ['frenzy','dragon harvest','building buff','click frenzy','blood frenzy',
+                 'dragonflight','devastation','cursed finger'].includes(b.type.name)))
+                return fail('Aproveitando buff; compras adiadas',{waiting:true});
             const luckyReserve=Math.max(0,Number(Game.cookiesPs)||0)*6000;
-            const reserve=Math.max(cashFloor,luckyReserve,rebuyReserve);
+            const reserve=Math.max(cashFloor,before*reserveFraction,luckyReserve);
             const budget=Math.max(0,Math.min(before*fraction,before-reserve));
-            if (budget<1) return fail('Todo o caixa disponível está protegido',{waiting:true,
-                before,reserve,budget,luckyReserve,rebuyReserve});
-
-            function allowedUpgrade(upgrade) {
-                if (!upgrade || upgrade.bought || typeof upgrade.buy!=='function') return false;
-                const name=String(upgrade.name||'').toLowerCase();
-                if (name==='sugar frenzy' || name==='chocolate egg') return false;
-                if (Number(upgrade.priceLumps)>0) return false;
-                if (['toggle','tech','prestige'].includes(String(upgrade.pool||''))) return false;
-                if (upgrade.clickFunction || upgrade.choicesFunction) return false;
-                try { if (typeof upgrade.isVaulted==='function' && upgrade.isVaulted()) return false; }
-                catch (_) { return false; }
-                try { if (typeof upgrade.canBuy==='function' && !upgrade.canBuy()) return false; }
-                catch (_) { return false; }
+            let spent=0, upgrades=0, buildings=0;
+            const items=[];
+            const remaining=()=>Math.max(0,Math.min(budget-spent,Number(Game.cookies)-reserve));
+            if (budget<1) return fail('Acumulando caixa; reserva para as outras farms preservada',
+                {waiting:true,before,after:before,reserve,budget});
+            function priority(u) {
+                if (u.pool==='cookie' && u.power) return 0; // produção global em %
+                if (String(u.name).toLowerCase().includes('kitten')) return 1;
+                if (u.buildingTie) return 2;
+                if (/mouse|finger/i.test(String(u.name))) return 3;
+                return 9;
+            }
+            function allowed(u) {
+                if (!u || u.bought || typeof u.buy!=='function' || priority(u)===9) return false;
+                const name=String(u.name||'').toLowerCase();
+                if (name==='sugar frenzy' || name==='chocolate egg' || Number(u.priceLumps)>0) return false;
+                if (['toggle','tech','prestige'].includes(String(u.pool||''))) return false;
+                if (u.clickFunction || u.choicesFunction) return false;
+                try {
+                    if (typeof u.isVaulted==='function' && u.isVaulted()) return false;
+                    if (typeof u.canBuy==='function' && !u.canBuy()) return false;
+                } catch (_) { return false; }
                 return true;
             }
-            function upgradePriority(upgrade) {
-                const name=String(upgrade.name||'').toLowerCase();
-                const description=String(upgrade.desc||'').toLowerCase();
-                if (name.includes('kitten')) return 0;
-                if (name.includes('mouse') || name.includes('finger') || description.includes('click')) return 1;
-                if (upgrade.buildingTie) return 2;
-                return 3;
-            }
-            const upgrades=Array.from(Game.UpgradesInStore||[]).filter(allowedUpgrade).map(upgrade=>{
+            // Até metade do orçamento para um upgrade; o restante fica para buildings.
+            const candidates=Array.from(Game.UpgradesInStore||[]).filter(allowed).map(u=>{
                 let price=Infinity;
-                try { price=Number(upgrade.getPrice()); } catch (_) {}
-                return {upgrade,price,priority:upgradePriority(upgrade)};
-            }).filter(item=>Number.isFinite(item.price) && item.price>=0 && item.price<=budget &&
-                before-item.price>=reserve).sort((a,b)=>a.priority-b.priority || a.price-b.price ||
-                Number(a.upgrade.id)-Number(b.upgrade.id));
-            if (upgrades.length) {
-                const selected=upgrades[0], cookiesBefore=Number(Game.cookies);
-                let accepted=0;
-                try { accepted=selected.upgrade.buy(); } catch (_) {}
-                const after=Number(Game.cookies), spent=Math.max(0,cookiesBefore-after);
-                const ok=accepted===1 && !!selected.upgrade.bought && after+1e-7>=reserve &&
-                    spent<=budget+1 && Math.trunc(Number(Game.lumps)||0)===lumpsBefore;
-                return ok
-                    ? {ok:true,kind:'upgrade',message:`Upgrade ${selected.upgrade.name} comprado`,
-                        name:String(selected.upgrade.name),count:1,spent,before,after,reserve,budget,
-                        luckyReserve,rebuyReserve,lumpsBefore,lumpsAfter:Number(Game.lumps)}
-                    : fail('A compra do upgrade não respeitou as garantias de orçamento',
-                        {accepted,spent,before,after,reserve,budget});
+                try { price=Number(u.getPrice()); } catch (_) {}
+                const power=typeof u.power==='number' && u.power>0 ? u.power : 1;
+                return {u,price,rank:priority(u),value:power/Math.max(1,price)};
+            }).filter(c=>Number.isFinite(c.price) && c.price>=0 && c.price<=budget/2 && c.price<=remaining())
+              .sort((a,b)=>a.rank-b.rank || b.value-a.value || a.price-b.price);
+            if (candidates.length) {
+                const c=candidates[0], old=Number(Game.cookies);
+                c.u.buy();
+                const paid=old-Number(Game.cookies);
+                if (!c.u.bought || paid<0 || Number(Game.cookies)<reserve || paid>budget)
+                    return fail('Compra de upgrade não confirmada dentro do orçamento');
+                spent+=paid; upgrades++;
+                items.push(String(c.u.name));
             }
-
-            const bought={};
-            const names={};
-            let spent=0, purchases=0;
             const buyMode=Game.buyMode;
             try {
                 Game.buyMode=1;
-                while (purchases<25) {
-                    const liveReserve=Math.max(reserve,Math.max(0,Number(Game.cookiesPs)||0)*6000);
-                    const remaining=Math.min(budget-spent,Number(Game.cookies)-liveReserve);
-                    if (remaining<1) break;
-                    const candidates=Object.values(Game.ObjectsById||{}).filter(object=>
-                        object && (Number(object.id)!==7 || Number(object.amount)<minimumTowers) &&
-                        object.unlocked!==0 && typeof object.buy==='function'
-                    ).map(object=>{
+                while (buildings<25 && remaining()>=1) {
+                    const choices=Object.values(Game.ObjectsById).filter(o=>o && o.unlocked!==0 &&
+                        typeof o.buy==='function').map(o=>{
                         let price=Infinity;
-                        try { price=Number(object.getPrice()); } catch (_) {}
-                        const amount=Math.max(0,Number(object.amount)||0);
-                        let gain=amount>0 ? Number(object.storedTotalCps)/amount : Number(object.storedCps);
-                        if (!Number.isFinite(gain) || gain<=0) gain=Math.max(1e-300,Number(object.baseCps)||0);
-                        const requiredTower=Number(object.id)===7 && amount<minimumTowers;
-                        return {object,price,gain,roi:gain/price,requiredTower};
-                    }).filter(item=>Number.isFinite(item.price) && item.price>0 && item.price<=remaining)
-                      .sort((a,b)=>Number(b.requiredTower)-Number(a.requiredTower) || b.roi-a.roi ||
-                        a.price-b.price || Number(b.object.id)-Number(a.object.id));
-                    if (!candidates.length) break;
-                    const selected=candidates[0], amountBefore=Number(selected.object.amount);
-                    const cookiesBefore=Number(Game.cookies);
-                    selected.object.buy(1);
-                    const amountAfter=Number(selected.object.amount), cookiesAfter=Number(Game.cookies);
-                    if (amountAfter!==amountBefore+1 || cookiesAfter>=cookiesBefore) break;
-                    const paid=cookiesBefore-cookiesAfter;
-                    if (spent+paid>budget+1 || cookiesAfter+1e-7<reserve) break;
-                    spent+=paid; purchases++;
-                    const id=String(selected.object.id);
-                    bought[id]=(bought[id]||0)+1;
-                    names[id]=String(selected.object.name||id);
+                        try { price=Number(o.getPrice()); } catch (_) {}
+                        const amount=Number(o.amount)||0;
+                        const gain=amount>0 ? Number(o.storedTotalCps)/amount : Number(o.storedCps||o.baseCps);
+                        return {o,price,gain,roi:gain/price};
+                    }).filter(c=>Number.isFinite(c.price) && c.price>0 && Number.isFinite(c.gain) &&
+                        c.gain>0 && c.price<=remaining()).sort((a,b)=>b.roi-a.roi || a.price-b.price);
+                    if (!choices.length) break;
+                    const c=choices[0], amount=Number(c.o.amount), old=Number(Game.cookies);
+                    c.o.buy(1);
+                    const paid=old-Number(Game.cookies);
+                    if (Number(c.o.amount)!==amount+1 || paid<0 || spent+paid>budget || Number(Game.cookies)<reserve)
+                        return fail('Compra de construção não confirmada dentro do orçamento');
+                    spent+=paid; buildings++;
                 }
             } finally { Game.buyMode=buyMode; }
             const after=Number(Game.cookies);
-            if (!purchases) return fail('Nenhum upgrade ou construção possui retorno dentro do orçamento',
-                {waiting:true,before,after,reserve,budget,luckyReserve,rebuyReserve});
-            const items=Object.keys(bought).map(id=>({id:Number(id),name:names[id],count:bought[id]}));
-            if (Math.trunc(Number(Game.lumps)||0)!==lumpsBefore)
-                return fail('Garantia violada: Sugar Lumps mudaram durante o reinvestimento',
-                    {lumpsBefore,lumpsAfter:Number(Game.lumps)});
-            return {ok:true,kind:'buildings',message:`${purchases} construção(ões) comprada(s) por ROI`,
-                count:purchases,items,spent,before,after,reserve,budget,luckyReserve,rebuyReserve};
-        })()""".replace("__CASH_FLOOR__", repr(float(cash_floor))).replace(
+            if (Number(Game.lumps)!==lumpsBefore) return fail('Quantidade de Sugar Lumps mudou na compra');
+            if (!upgrades && !buildings) return fail('Acumulando caixa; nenhuma compra de produção cabe no orçamento',
+                {waiting:true,before,after,reserve,budget});
+            return {ok:true,upgrades,buildings,spent,before,after,reserve,budget,
+                message:`Comprados: ${upgrades} upgrade(s)${items.length?' ('+items.join(', ')+')':''} e ${buildings} construção(ões) por retorno de CpS`};
+        })()""".replace("__FLOOR__", repr(float(cash_floor))).replace(
             "__FRACTION__", repr(float(max_spend_fraction))
-        ).replace("__MIN_TOWERS__", str(minimum_towers))
-        payload = self.execute_js(script)
-        return payload if isinstance(payload, dict) else {
-            "ok": False, "message": "Resposta inválida do reinvestimento do Simple Farm"
-        }
+        ).replace("__RESERVE__", repr(float(reserve_fraction)))
+        payload = self._execute_game_action(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do reinvestimento"}
 
     def pop_combo_natural_shimmer(self, shimmer_id: int) -> Dict[str, Any]:
         """Coleta somente o shimmer natural esperado, nunca um FtHoF."""
@@ -1097,9 +1136,35 @@ class CookieClickerBridge:
             "ok": False, "message": "Resposta inválida ao drenar Cookie Storm"
         }
 
+    def collect_combo_leftovers(self, leftovers) -> Dict[str, Any]:
+        """Coleta somente os biscoitos identificados na tentativa anterior."""
+        items = []
+        for item in leftovers:
+            if not isinstance(item, dict) or not isinstance(item.get('id'), (int, float)) or not isinstance(item.get('force'), str):
+                return {"ok": False, "message": "Identificação dos biscoitos restantes inválida."}
+            items.append(dict(id=int(item['id']), force=item['force']))
+        script = """(() => {
+            const wanted=__ITEMS__;
+            if (!globalThis.Game || Game.OnAscend || Game.AscendTimer)
+                return {ok:false,message:'Jogo indisponível ao concluir o combo.'};
+            const cookies=[];
+            for (const expected of wanted) {
+                const cookie=(Game.shimmers||[]).find(s=>Number(s.id)===expected.id);
+                if (!cookie) continue;
+                if (cookie.type!=='golden' || String(cookie.force||'')!==expected.force || typeof cookie.pop!=='function')
+                    return {ok:false,message:'Um biscoito restante mudou; execução interrompida.'};
+                cookies.push(cookie);
+            }
+            for (const cookie of cookies) cookie.pop();
+            return {ok:true,count:cookies.length};
+        })()""".replace('__ITEMS__', json.dumps(items))
+        result = self._execute_game_action(script)
+        return result if isinstance(result, dict) else {"ok": False, "message": "Não foi possível concluir a coleta do combo."}
+
     def set_combo_season(self, season: str) -> Dict[str, Any]:
         """Troca para Valentine/Easter pela API nativa e confirma a season."""
-        triggers = {"valentines": "Lovesick biscuit", "easter": "Bunny biscuit"}
+        triggers = {"valentines": "Lovesick biscuit", "easter": "Bunny biscuit",
+                    "christmas": "Festive biscuit", "halloween": "Ghostly biscuit", "fools": "Fool's biscuit"}
         if season not in triggers:
             return {"ok": False, "message": "Season não suportada pelo modo Combo"}
         script = """(() => {
@@ -1109,11 +1174,14 @@ class CookieClickerBridge:
             if (!upgrade || !upgrade.unlocked || typeof upgrade.buy!=='function')
                 return {ok:false,message:'Season switcher não está disponível'};
             const before=Number(Game.cookies);
+            const price=typeof upgrade.getPrice==='function'?Number(upgrade.getPrice()):Infinity;
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para esta compra.'};
             const accepted=upgrade.buy()===1;
             const ok=String(Game.season||'')===season;
             return {ok,message:ok?'Season alterada e verificada':'O jogo não confirmou a troca de season',accepted,before,after:Number(Game.cookies)};
         })()""".replace("__SEASON__", json.dumps(season)).replace("__NAME__", json.dumps(triggers[season]))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao trocar season"}
 
     def set_combo_golden_switch(self, enabled: bool) -> Dict[str, Any]:
@@ -1128,16 +1196,19 @@ class CookieClickerBridge:
             const name=desired?'Golden switch [off]':'Golden switch [on]';
             const upgrade=Game.Upgrades && Game.Upgrades[name];
             if (!upgrade || typeof upgrade.buy!=='function') return {ok:false,message:'Toggle do Golden Switch indisponível'};
+            const price=typeof upgrade.getPrice==='function'?Number(upgrade.getPrice()):Infinity;
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para o interruptor dourado.'};
             const accepted=upgrade.buy()===1;
             const after=Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]');
             return {ok:after===desired,message:after===desired?'Golden Switch alterado e verificado':'O jogo recusou o Golden Switch',accepted,enabled:after};
         })()""".replace("__DESIRED__", "true" if enabled else "false")
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Golden Switch"}
 
     def upgrade_combo_office_once(self) -> Dict[str, Any]:
         """Compra Cursors se necessário e avança exatamente um nível de escritório."""
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const bank=Game.Objects && Game.Objects['Bank'];
             const cursor=Game.Objects && Game.Objects['Cursor'];
             const M=bank && bank.minigameLoaded ? bank.minigame : null;
@@ -1152,8 +1223,8 @@ class CookieClickerBridge:
             if (missing>0) {
                 let price=Infinity;
                 try { price=Number(cursor.getSumPrice(missing)); } catch (_) {}
-                if (!Number.isFinite(price) || price>Number(Game.cookies))
-                    return {ok:false,message:`Cookies insuficientes para comprar ${missing} Cursors`};
+                if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                    return {ok:false,waiting:true,message:`Reserva protegida; aguardando saldo para ${missing} Cursors`};
                 const buyMode=Game.buyMode;
                 try { Game.buyMode=1; cursor.buy(missing); }
                 finally { Game.buyMode=buyMode; }
@@ -1192,7 +1263,7 @@ class CookieClickerBridge:
             const ok=Number(M.slot[slot])===Number(god.id);
             return {ok,message:ok?'Espírito movido e verificado':'O Pantheon não confirmou o slot',slots:Array.from(M.slot),swaps:Number(M.swaps)};
         })()""".replace("__DESIRED__", json.dumps(desired_slots))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Pantheon"}
 
     def set_combo_auras(self, primary: int, secondary: int) -> Dict[str, Any]:
@@ -1225,7 +1296,7 @@ class CookieClickerBridge:
             const ok=after[0]===desired[0] && after[1]===desired[1];
             return {ok,message:ok?'Auras configuradas e verificadas':'O jogo não confirmou as auras',before,after,sacrifices};
         })()""".replace("__PRIMARY__", str(primary)).replace("__SECONDARY__", str(secondary))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao configurar auras"}
 
     def set_combo_wizard_towers(self, target: int) -> Dict[str, Any]:
@@ -1243,8 +1314,8 @@ class CookieClickerBridge:
                 const quantity=target-before;
                 let price=Infinity;
                 try { price=Number(tower.getSumPrice(quantity)); } catch (_) {}
-                if (!Number.isFinite(price) || price>Number(Game.cookies))
-                    return {ok:false,message:'Cookies insuficientes para recomprar Wizard Towers',before,price};
+                if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                    return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para recomprar torres',before,price};
                 const buyMode=Game.buyMode;
                 try { Game.buyMode=1; tower.buy(quantity); }
                 finally { Game.buyMode=buyMode; }
@@ -1252,7 +1323,7 @@ class CookieClickerBridge:
             const after=Math.trunc(Number(tower.amount)||0);
             return {ok:after===target,message:after===target?'Wizard Towers ajustadas e verificadas':'Quantidade final de Wizard Towers divergente',before,after};
         })()""".replace("__TARGET__", str(target))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida ao ajustar Wizard Towers"}
 
     def ensure_combo_building_minimum(self, building_id: int, minimum: int) -> Dict[str, Any]:
@@ -1273,8 +1344,8 @@ class CookieClickerBridge:
             const quantity=minimum-before;
             let price=Infinity;
             try { price=Number(object.getSumPrice(quantity)); } catch (_) {}
-            if (!Number.isFinite(price) || price>Number(Game.cookies))
-                return {ok:false,message:'Cookies insuficientes para recompor o estoque de Godzamok',id,before,price};
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return {ok:false,waiting:true,message:'Reserva protegida; aguardando saldo para repor construções',id,before,price};
             const buyMode=Game.buyMode;
             try { Game.buyMode=1; object.buy(quantity); }
             finally { Game.buyMode=buyMode; }
@@ -1283,7 +1354,7 @@ class CookieClickerBridge:
                 message:after>=minimum?'Estoque de Godzamok recomposto e verificado':'O jogo não confirmou a recomposição do prédio',
                 id,before,after,bought:Math.max(0,after-before),price};
         })()""".replace("__ID__", str(building_id)).replace("__MINIMUM__", str(minimum))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {
             "ok": False, "message": "Resposta inválida ao recompor prédio para Godzamok"
         }
@@ -1308,7 +1379,7 @@ class CookieClickerBridge:
             const ok=accepted && after===before+1;
             return {ok,message:ok?'Spell de alinhamento confirmada':'O contador não avançou exatamente uma vez',before,after,cost,magic:Number(M.magic)};
         })()""".replace("__EXPECTED__", str(expected_cast)).replace("__SPELL_ID__", str(spell_id))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida no alinhamento"}
 
     def refill_combo_magic(self, expected_cast: int) -> Dict[str, Any]:
@@ -1334,7 +1405,7 @@ class CookieClickerBridge:
             const ok=Number(Game.lumps)===lumpsBefore-1 && Number(M.magic)>before;
             return {ok,message:ok?'Mana recarregada com um Sugar Lump':'Recarga de mana não foi confirmada',before,after:Number(M.magic),lumpsSpent:ok?1:0};
         })()""".replace("__EXPECTED__", str(expected_cast))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida na recarga"}
 
     def execute_combo_quadcast(
@@ -1346,6 +1417,7 @@ class CookieClickerBridge:
         required_natural_bs: int,
         use_sugar_frenzy: bool,
         use_loans: bool,
+        optimize_garden: bool = False,
     ) -> Dict[str, Any]:
         """Executa e verifica a janela crítica em uma única avaliação síncrona."""
         allowed = {
@@ -1366,7 +1438,7 @@ class CookieClickerBridge:
         script = """(() => {
             const expectedCast=__EXPECTED_CAST__,expectedResults=__EXPECTED_RESULTS__;
             const minimum=__MINIMUM__,requiredNaturalBs=__NATURAL_BS__;
-            const useSugar=__USE_SUGAR__,useLoans=__USE_LOANS__;
+            const useSugar=__USE_SUGAR__,useLoans=__USE_LOANS__,optimizeGarden=__OPTIMIZE_GARDEN__;
             const fail=(message,extra={})=>Object.assign({ok:false,message},extra);
             const wait=message=>fail(message,{retryable:true,mutated:false,lumpsSpent:0});
             const tower=Game.Objects && Game.Objects['Wizard tower'];
@@ -1457,8 +1529,8 @@ class CookieClickerBridge:
                     price+=Number(tower.basePrice)*Math.pow(Number(Game.priceIncrease),Math.max(0,i-Number(tower.free||0)));
                 price=Math.ceil(Number(Game.modifyBuildingPrice(tower,price)));
             } catch (_) { price=Infinity; }
-            if (!Number.isFinite(price) || price>Number(Game.cookies))
-                return fail('Saldo insuficiente para a recompra conservadora das Wizard Towers',{price,cookies:Number(Game.cookies)});
+            if (!Number.isFinite(price) || price>Number(Game.cookies)-comboCashFloor)
+                return wait('Reserva protegida; aguardando saldo para a recompra das torres');
 
             const created=[];
             function castOne(index) {
@@ -1528,12 +1600,42 @@ class CookieClickerBridge:
                 }
                 Game.recalculateGains=1;
             }
+            // O canteiro de coleta deixa de ser necessário após identificar os BS.
+            // Só remove tulipas desbloqueadas se TODO o canteiro contém apenas
+            // trevos/tulipas conhecidos. Não toca em culturas ou descobertas.
+            let gardenRemoved=0;
+            const farm=Game.Objects && Game.Objects.Farm;
+            const garden=farm && farm.minigameLoaded && farm.minigame;
+            if (optimizeGarden && garden && !garden.freeze && Array.isArray(garden.plot)
+                    && garden.plants && garden.plants.nursetulip && garden.plants.nursetulip.unlocked
+                    && typeof garden.harvest==='function') {
+                const occupied=[];
+                let safe=true;
+                for (let y=0;y<garden.plot.length;y++) for (let x=0;x<garden.plot[y].length;x++) {
+                    const tile=garden.plot[y][x];
+                    if (!tile || !tile[0]) continue;
+                    const plant=garden.plantsById && garden.plantsById[tile[0]-1];
+                    if (!plant || !plant.unlocked || !['goldenClover','nursetulip'].includes(plant.key)) safe=false;
+                    occupied.push({x,y,plant});
+                }
+                if (safe) for (const tile of occupied) if (tile.plant.key==='nursetulip') {
+                    if (garden.harvest(tile.x,tile.y)) gardenRemoved++;
+                }
+                if (gardenRemoved) {
+                    if (typeof garden.computeBoostPlot==='function') garden.computeBoostPlot();
+                    if (typeof garden.computeEffs==='function') garden.computeEffs();
+                    Game.recalculateGains=1;
+                }
+            }
             setAuras(16,15); // Dragon's Fortune + Radiant Appetite
 
             let goldenSwitch=false;
             const switchUpgrade=Game.Upgrades && Game.Upgrades['Golden switch [off]'];
             if (switchUpgrade && !Array.from(Game.UpgradesInStore||[]).some(item=>item && item.name==='Golden switch [on]')) {
-                try { goldenSwitch=switchUpgrade.buy()===1; } catch (_) { goldenSwitch=false; }
+                try {
+                    const price=typeof switchUpgrade.getPrice==='function'?Number(switchUpgrade.getPrice()):Infinity;
+                    if (Number.isFinite(price) && price<=Number(Game.cookies)-comboCashFloor) goldenSwitch=switchUpgrade.buy()===1;
+                } catch (_) { goldenSwitch=false; }
             }
 
             let lumpsSpent=1,sugarFrenzy=false;
@@ -1581,6 +1683,7 @@ class CookieClickerBridge:
             if (!cf || !ef) return fail('CF ou EF desapareceu antes do clique final',{lumpsSpent,created:created.map(item=>[item.id,item.force])});
             cf.shimmer.pop();
             ef.shimmer.pop();
+            if (typeof Game.CalculateGains==='function') Game.CalculateGains();
             const clickBuff=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='click frenzy');
             const elderBuff=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='blood frenzy');
             const devastation=Object.values(Game.buffs||{}).find(buff=>buff.type && buff.type.name==='devastation');
@@ -1597,7 +1700,7 @@ class CookieClickerBridge:
                 return fail('A janela útil expirou durante a execução',{lumpsSpent,mutated:true});
             return {ok:true,message:'Quadcast e multiplicadores finais confirmados',
                 results:created.map(item=>item.force),lumpsSpent,clickSeconds,sold,protectedIds:Array.from(protectedIds),
-                goldenSwitch,sugarFrenzy,loans,preserved:(Game.shimmers||[]).filter(item=>item.type==='golden').map(item=>({id:Number(item.id),force:String(item.force||'')})),
+                goldenSwitch,sugarFrenzy,loans,gardenRemoved,preserved:(Game.shimmers||[]).filter(item=>item.type==='golden').map(item=>({id:Number(item.id),force:String(item.force||'')})),
                 buffs:Object.values(Game.buffs||{}).map(buff=>String(buff.name||'')),wizardTowers:Number(tower.amount)};
         })()"""
         replacements = {
@@ -1607,10 +1710,11 @@ class CookieClickerBridge:
             "__NATURAL_BS__": str(required_natural_bs),
             "__USE_SUGAR__": "true" if use_sugar_frenzy else "false",
             "__USE_LOANS__": "true" if use_loans else "false",
+            "__OPTIMIZE_GARDEN__": "true" if optimize_garden else "false",
         }
         for marker, value in replacements.items():
             script = script.replace(marker, value)
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         return payload if isinstance(payload, dict) else {"ok": False, "message": "Resposta inválida do Quadcast"}
 
     def get_stock_market_status(self) -> StockMarketStatus:
@@ -1658,20 +1762,27 @@ class CookieClickerBridge:
             if (!ready) return unavailable(true, 'Garden desbloqueado, mas ainda não carregado');
             const finiteOrNull = value => Number.isFinite(Number(value)) ? Number(value) : null;
             const unlockedTiles = [];
+            const growthMultipliers = [];
+            const dragonBoost=1+0.05*(typeof Game.auraMult==='function'?Game.auraMult('Supreme Intellect'):0);
             const plants = [];
             for (let y=0; y<6; y++) for (let x=0; x<6; x++) {
                 if (!M.isTileUnlocked(x,y)) continue;
                 unlockedTiles.push([x,y]);
+                const tileBoost=finiteOrNull(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0]);
+                if (tileBoost !== null) growthMultipliers.push([x,y,tileBoost]);
                 const tile = M.plot[y] && M.plot[y][x];
                 if (!Array.isArray(tile) || Number(tile[0]) < 1) continue;
                 const seed = M.plantsById[Number(tile[0])-1];
                 if (!seed) continue;
                 const age = Number(tile[1]);
                 const matureAge = Number(seed.mature);
+                const growthBoost=Number(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0]);
                 plants.push({
                     x,y, seedId:Number(seed.id), key:String(seed.key || ''),
                     name:String(seed.name || seed.key || ''), age:finiteOrNull(age),
                     matureAge:finiteOrNull(matureAge),
+                    averageGrowth:finiteOrNull((Number(seed.ageTick)+Number(seed.ageTickR)/2)*growthBoost*dragonBoost),
+                    maximumGrowth:finiteOrNull(Math.ceil((Number(seed.ageTick)+Number(seed.ageTickR))*growthBoost*dragonBoost)),
                     mature:Number.isFinite(age) && Number.isFinite(matureAge) && age>=matureAge,
                     weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
                 });
@@ -1701,22 +1812,33 @@ class CookieClickerBridge:
                 farmLevel:Math.max(0,Math.trunc(Number(farm.level)||0)),
                 farmAmount:Math.max(0,Math.trunc(Number(farm.amount)||0)),
                 soilKey:currentSoil ? String(currentSoil.key || '') : null,
+                sugarLumps:finiteOrNull(Game.lumps),
+                canRefillLump:typeof Game.canRefillLump==='function'?!!Game.canRefillLump():null,
+                lumpRefillSeconds:typeof Game.getLumpRefillRemaining==='function'?finiteOrNull(Game.getLumpRefillRemaining()/Game.fps):null,
                 soilName:currentSoil ? String(currentSoil.name || currentSoil.key || '') : null,
                 frozen:!!M.freeze,
                 nextTickAt:finiteOrNull(M.nextStep), tickSeconds:finiteOrNull(M.stepT),
                 nextSoilAt:finiteOrNull(M.nextSoil),
                 gameSeed:typeof Game.seed === 'string' ? Game.seed : null,
                 gameVersion:Game.version === undefined ? null : String(Game.version),
+                gardenUpgrades:__GARDEN_DROPS__.map(name=>{
+                    const u=Game.Upgrades && Game.Upgrades[name];
+                    return {name,available:!!u,unlocked:u?!!u.unlocked:null,bought:u?!!u.bought:null};
+                }),
                 greenAchingThumbWon,
                 greenAchingThumbProgress,
                 greenAchingThumbMessage,
                 plotWidth:xs.length ? Math.max(...xs)-Math.min(...xs)+1 : 0,
                 plotHeight:ys.length ? Math.max(...ys)-Math.min(...ys)+1 : 0,
-                unlockedTiles,
+                unlockedTiles, growthMultipliers,
+                cookies:finiteOrNull(Game.cookies),
                 seeds:M.plantsById.map(seed=>({
                     id:Number(seed.id), key:String(seed.key || ''),
                     name:String(seed.name || seed.key || ''), unlocked:!!seed.unlocked,
                     plantable:seed.plantable !== false, matureAge:finiteOrNull(seed.mature),
+                    averageGrowth:finiteOrNull((Number(seed.ageTick)+Number(seed.ageTickR)/2)*dragonBoost),
+                    maximumGrowth:finiteOrNull(Math.ceil((Number(seed.ageTick)+Number(seed.ageTickR))*dragonBoost)),
+                    cost:typeof M.getCost==='function' ? finiteOrNull(M.getCost(seed)) : null,
                     weed:!!seed.weed, fungus:!!seed.fungus, immortal:!!seed.immortal
                 })),
                 plants,
@@ -1728,16 +1850,40 @@ class CookieClickerBridge:
                     available:Number(farm.amount||0)>=Number(soil.req||0)
                 }))
             };
-        })()""")
+        })()""".replace("__GARDEN_DROPS__", json.dumps(list(GARDEN_DROPS))))
         return self._parse_garden_snapshot(payload)
+
+    def get_garden_upgrades(self):
+        """Relê somente os sete drops; não compra nem desbloqueia nada."""
+        payload = self.execute_js("""(() => {
+            if (!globalThis.Game || !Game.Upgrades) return null;
+            return __NAMES__.map(name=>{
+                const u=Game.Upgrades[name];
+                return {name,available:!!u,unlocked:u?!!u.unlocked:null,bought:u?!!u.bought:null};
+            });
+        })()""".replace("__NAMES__", json.dumps(list(GARDEN_DROPS))))
+        return self._parse_garden_upgrades(payload)
+
+    @staticmethod
+    def _parse_garden_upgrades(payload):
+        if not isinstance(payload,list) or len(payload)!=len(GARDEN_DROPS):
+            return ()
+        by_name = {item.get("name"):item for item in payload if isinstance(item,dict)}
+        if set(by_name)!=set(GARDEN_DROPS):
+            return ()
+        if any(item.get("available") is not True or not isinstance(item.get("unlocked"),bool)
+               or not isinstance(item.get("bought"),bool) for item in by_name.values()):
+            return ()
+        return tuple(GardenUpgrade(name,GARDEN_DROPS[name][0],item["unlocked"],item["bought"])
+                     for name,item in by_name.items())
 
     def plant_garden_seed(self, seed_key: str, x: int, y: int) -> GardenActionResult:
         """Planta uma semente desbloqueada somente em um canteiro vazio."""
         if not self._valid_garden_key(seed_key) or not self._valid_garden_position(x, y):
             return GardenActionResult(False, "plant", "Parâmetros de plantio inválidos.", x=x, y=y)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const key=%s, x=%d, y=%d;
-            const fail=message=>({ok:false,message,x,y,seedKey:key});
+            const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:key},extra);
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
             const M=farm && farm.minigameLoaded ? farm.minigame : null;
             if (!M || !Array.isArray(M.plot) || typeof M.useTool!=='function')
@@ -1750,8 +1896,14 @@ class CookieClickerBridge:
             if (seed.plantable===false) return fail('Esta semente não pode ser plantada');
             if (!Array.isArray(M.plot[y][x]) || Number(M.plot[y][x][0])!==0)
                 return fail('Canteiro ocupado; nenhuma planta foi substituída');
+            const cost=typeof M.getCost==='function' ? Number(M.getCost(seed)) : NaN;
+            const cookies=Number(Game.cookies);
+            if (!Number.isFinite(cost) || cost<0 || !Number.isFinite(cookies))
+                return fail('Não foi possível conferir o custo do plantio');
+            if (cookies<cost) return fail('Aguardando dinheiro para plantar',
+                {waiting:true,reason:'insufficient_funds',requiredCookies:cost,availableCookies:cookies});
             if (typeof M.canPlant==='function' && !M.canPlant(seed))
-                return fail('Recursos insuficientes ou plantio recusado pelo jogo');
+                return fail('Plantio recusado pelo jogo');
             let accepted=false;
             try { accepted=M.useTool(Number(seed.id),x,y)===true; }
             catch (error) { return fail(`Falha ao plantar: ${error && error.message ? error.message : error}`); }
@@ -1764,6 +1916,108 @@ class CookieClickerBridge:
         })()""" % (json.dumps(seed_key), x, y))
         return self._parse_garden_action(payload, "plant", x=x, y=y, seed_key=seed_key)
 
+    def execute_garden_layout(self, actions, *, cash_floor=None) -> tuple[GardenActionResult, ...]:
+        """Confere o lote inteiro antes de limpar; executa sem intercalar outras farms."""
+        if not isinstance(actions, (list, tuple)) or not 1 <= len(actions) <= 72:
+            return (GardenActionResult(False, "layout", "Lote de Garden inválido."),)
+        if cash_floor is not None and (isinstance(cash_floor, bool) or not isinstance(cash_floor, (int, float))
+                                      or not math.isfinite(cash_floor) or cash_floor < 0):
+            return (GardenActionResult(False, "layout", "Reserva de Garden inválida."),)
+        payload_actions = []
+        seen = set()
+        for action in actions:
+            if isinstance(action, GardenAction) and action.kind == "harvest" and action.seed_key not in GARDEN_CATALOG:
+                return (GardenActionResult(False, "layout", "Planta fora do catálogo protegida; lote cancelado."),)
+            if (not isinstance(action, GardenAction) or action.kind not in {"plant", "harvest"}
+                    or (action.kind == "harvest" and action.require_mature)
+                    or not self._valid_garden_key(action.seed_key)
+                    or not self._valid_garden_position(action.x, action.y)
+                    or (action.kind, action.x, action.y) in seen):
+                return (GardenActionResult(False, "layout", "Ação de layout inválida."),)
+            seen.add((action.kind, action.x, action.y))
+            payload_actions.append(dict(kind=action.kind, x=action.x, y=action.y, seedKey=action.seed_key))
+        script = """(() => {
+            const actions=__ACTIONS__, results=[], catalog=new Set(__CATALOG__);
+            const fail=(message,extra={})=>results.concat([Object.assign({ok:false,action:'layout',message},extra)]);
+            if (!globalThis.Game || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer)
+                return fail('Jogo indisponível ou em transição');
+            const farm=Game.Objects && Game.Objects.Farm;
+            const M=farm && farm.minigameLoaded ? farm.minigame : null;
+            if (!M || !Array.isArray(M.plot) || typeof M.getCost!=='function' ||
+                    typeof M.useTool!=='function' || typeof M.harvest!=='function')
+                return fail('Garden indisponível ou API incompatível');
+            const plantings=actions.filter(a=>a.kind==='plant');
+            if (plantings.length && M.freeze) return fail('Garden está congelado');
+            const removals=new Map(actions.filter(a=>a.kind==='harvest').map(a=>[a.x+','+a.y,a]));
+            const plantAt=(x,y)=>{
+                const tile=M.plot[y] && M.plot[y][x];
+                return Array.isArray(tile) && Number(tile[0])>0 ? M.plantsById[Number(tile[0])-1] : null;
+            };
+            // Valida também o estado dos canteiros antes de remover a primeira planta.
+            let required=0;
+            for (const a of actions) {
+                if (!M.isTileUnlocked(a.x,a.y) || !Array.isArray(M.plot[a.y] && M.plot[a.y][a.x]))
+                    return fail('Canteiro bloqueado ou inválido');
+                const current=plantAt(a.x,a.y), removal=removals.get(a.x+','+a.y);
+                if (Number(M.plot[a.y][a.x][0])>0 && !current) return fail('Planta sem identificação protegida; lote cancelado');
+                if (a.kind==='harvest') {
+                    if (current && !catalog.has(String(current.key))) return fail('Planta fora do catálogo protegida; lote cancelado');
+                    if (current && !current.unlocked) return fail('Descoberta ainda não desbloqueada protegida; lote cancelado');
+                    if (!current || current.key!==a.seedKey) return fail('O canteiro mudou; replanejar antes de remover');
+                } else {
+                    const seed=M.plants && M.plants[a.seedKey];
+                    if (!seed || !seed.unlocked || seed.plantable===false)
+                        return fail('Semente indisponível; nenhuma planta foi removida');
+                    if (current && (!removal || removal.seedKey!==current.key))
+                        return fail('Canteiro ocupado por planta não prevista para remoção');
+                    const cost=M.getCost(seed);
+                    if (!Number.isFinite(cost) || cost<0) return fail('Custo de semente inválido; layout preservado');
+                    required+=cost;
+                }
+            }
+            const available=Number(Game.cookies)-comboCashFloor;
+            if (!Number.isFinite(required) || !Number.isFinite(available) || available<0)
+                return fail('Orçamento indisponível; layout preservado');
+            if (available<required) return fail('Aguardando dinheiro para completar o layout; plantas preservadas',
+                {waiting:true,reason:'insufficient_funds',requiredCookies:required,availableCookies:available});
+            // O custo nativo usa o CpS deste frame. Nenhuma outra automação roda entre
+            // esta validação, as remoções e os plantios. Nunca antecipamos receita de colheita.
+            const ordered=actions.filter(a=>a.kind==='harvest').concat(plantings);
+            for (const a of ordered) {
+                try {
+                    if (a.kind==='harvest') {
+                        const current=plantAt(a.x,a.y);
+                        if (!current || current.key!==a.seedKey) return fail('Planta mudou durante a limpeza; lote interrompido');
+                        if (M.harvest(a.x,a.y,1)!==true || (plantAt(a.x,a.y) && plantAt(a.x,a.y).key===a.seedKey))
+                            return fail('A remoção não foi confirmada; lote interrompido para preservar o canteiro');
+                    } else {
+                        const seed=M.plants[a.seedKey];
+                        if (Number(M.plot[a.y][a.x][0])!==0) return fail('Canteiro ocupado; plantio cancelado');
+                        const cost=M.getCost(seed);
+                        if (!Number.isFinite(cost) || cost<0) return fail('Custo mudou para um valor inválido');
+                        if (Number(Game.cookies)-comboCashFloor<cost) return fail('Aguardando dinheiro; custo mudou durante o lote',
+                            {waiting:true,reason:'insufficient_funds',requiredCookies:cost,availableCookies:Number(Game.cookies)});
+                        if (M.useTool(Number(seed.id),a.x,a.y)!==true ||
+                                !plantAt(a.x,a.y) || plantAt(a.x,a.y).key!==a.seedKey)
+                            return fail('O jogo não confirmou o plantio; lote interrompido');
+                        M.toCompute=true;
+                    }
+                    results.push({ok:true,action:a.kind,x:a.x,y:a.y,seedKey:a.seedKey,
+                        message:a.kind==='plant'?'Semente plantada e verificada':'Remoção confirmada para o novo layout'});
+                } catch (error) { return fail('Falha no layout: '+String(error && error.message || error)); }
+            }
+            return results;
+        })()""".replace("__ACTIONS__", json.dumps(payload_actions)).replace("__CATALOG__", json.dumps(sorted(GARDEN_CATALOG)))
+        if cash_floor is not None:
+            script = script.replace('comboCashFloor', json.dumps(cash_floor))
+        payload = self._execute_game_action(script)
+        if not isinstance(payload, list) or not payload or any(not isinstance(item, dict) for item in payload):
+            return (GardenActionResult(False, "layout", "Resposta inválida do lote de Garden."),)
+        return tuple(self._parse_garden_action(
+            item, str(item.get("action") or "layout"),
+            x=self._optional_int(item.get("x")), y=self._optional_int(item.get("y")),
+        ) for item in payload)
+
     def harvest_garden_tile(
         self, x: int, y: int, *, expected_key: Optional[str] = None,
         require_mature: bool = True,
@@ -1773,8 +2027,8 @@ class CookieClickerBridge:
             return GardenActionResult(False, "harvest", "Semente esperada inválida.", x=x, y=y)
         if not self._valid_garden_position(x, y) or not isinstance(require_mature, bool):
             return GardenActionResult(False, "harvest", "Parâmetros de colheita inválidos.", x=x, y=y)
-        payload = self.execute_js("""(() => {
-            const x=%d,y=%d,expected=%s,requireMature=%s;
+        payload = self._execute_game_action("""(() => {
+            const x=%d,y=%d,expected=%s,requireMature=%s,catalog=new Set(%s);
             const fail=(message,extra={})=>Object.assign({ok:false,message,x,y,seedKey:expected},extra);
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
             const M=farm && farm.minigameLoaded ? farm.minigame : null;
@@ -1785,6 +2039,8 @@ class CookieClickerBridge:
             const before=Array.isArray(tile) && Number(tile[0])>0 ? M.plantsById[Number(tile[0])-1] : null;
             if (!before) return fail('Canteiro vazio');
             const beforeKey=String(before.key||'');
+            if (!catalog.has(beforeKey)) return fail('Planta fora do catálogo protegida; colheita cancelada',{beforeKey});
+            if (!requireMature && !before.unlocked) return fail('Descoberta protegida; só pode ser colhida madura para desbloquear a semente',{beforeKey});
             if (expected!==null && beforeKey!==expected)
                 return fail('Planta divergente; colheita cancelada',{beforeKey});
             if (requireMature && Number(tile[1])<Number(before.mature))
@@ -1801,14 +2057,78 @@ class CookieClickerBridge:
             return {ok,message:ok
                 ? (unlocked?'Planta colhida e semente confirmada':'Planta colhida; semente ainda não confirmada')
                 :'O jogo não confirmou a colheita',x,y,seedKey:beforeKey,beforeKey,afterKey};
-        })()""" % (x, y, json.dumps(expected_key), "true" if require_mature else "false"))
+        })()""" % (x, y, json.dumps(expected_key), "true" if require_mature else "false", json.dumps(sorted(GARDEN_CATALOG))))
         return self._parse_garden_action(payload, "harvest", x=x, y=y, seed_key=expected_key)
+
+    def boost_juicy_queenbeet(self) -> GardenActionResult:
+        """Usa a recarga nativa uma vez, somente com um anel vivo e Wood chips."""
+        payload = self._execute_game_action("""(() => {
+            const fail=(message,waiting=false)=>({ok:false,message,waiting,action:'boost_mutation'});
+            const farm=globalThis.Game && Game.Objects && Game.Objects.Farm;
+            const M=farm && farm.minigameLoaded && farm.minigame;
+            if (!M || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer || !Array.isArray(M.plot))
+                return fail('Garden indisponível para o bônus');
+            if (M.freeze) return fail('Garden congelado; nenhum lump gasto',true);
+            const soil=M.soilsById && M.soilsById[Number(M.soil)];
+            if (!soil || soil.key!=='woodchips') return fail('Aguardando Wood chips antes de gastar o lump',true);
+            if (!Game.prefs || typeof Game.refillLump!=='function' || typeof Game.canRefillLump!=='function'
+                    || typeof Game.auraMult!=='function') return fail('API de recarga incompatível');
+            if (Number(M.loopsMult)>1) return fail('Tick bônus já pendente; nenhum lump adicional gasto',true);
+            if (Number(Game.lumps)<1 || !Game.canRefillLump()) return fail('Aguardando lump ou cooldown compartilhado',true);
+            const catalog=new Set(__CATALOG__);
+            const boost=1+0.05*Number(Game.auraMult('Supreme Intellect'));
+            const at=(x,y)=>{
+                const t=M.plot[y] && M.plot[y][x];
+                const p=t && Number(t[0])>0 && M.plantsById[Number(t[0])-1];
+                return {t,p};
+            };
+            const maxGrowth=(x,y,p)=>Math.ceil((Number(p.ageTick)+Number(p.ageTickR))*
+                Number(M.plotBoost && M.plotBoost[y] && M.plotBoost[y][x] && M.plotBoost[y][x][0])*boost);
+            // Não acelera um tick que mataria uma descoberta protegida.
+            for(let y=0;y<M.plot.length;y++) for(let x=0;x<M.plot[y].length;x++) {
+                const {t,p}=at(x,y);
+                if (!t || !Number(t[0])) continue;
+                if (!p || !catalog.has(String(p.key))) return fail('Planta fora do catálogo protegida; nenhum tick extra acionado');
+                if (p.key==='queenbeetLump' || (M.plants.queenbeetLump && M.plants.queenbeetLump.unlocked))
+                    return fail('Juicy queenbeet já encontrada; bônus dispensado');
+                if (!p.unlocked && !p.immortal && (!Number.isFinite(maxGrowth(x,y,p)) || Number(t[1])+maxGrowth(x,y,p)>=100))
+                    return fail('Tick extra ameaçaria uma descoberta protegida');
+            }
+            let ready=0;
+            for(let y=1;y<M.plot.length-1;y++) for(let x=1;x<M.plot[y].length-1;x++) {
+                if (!M.isTileUnlocked(x,y) || Number(M.plot[y][x][0])!==0) continue;
+                let valid=true;
+                for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) {
+                    if (!dx&&!dy) continue;
+                    const {t,p}=at(x+dx,y+dy);
+                    const growth=p?maxGrowth(x+dx,y+dy,p):NaN;
+                    if (!M.isTileUnlocked(x+dx,y+dy) || !p || p.key!=='queenbeet' || !p.unlocked
+                            || Number(t[1])<Number(p.mature) || !Number.isFinite(growth) || growth<=0
+                            || Number(t[1])+growth>=100) valid=false;
+                }
+                if(valid) ready++;
+            }
+            if (!ready) return fail('Nenhum círculo com oito pais maduros e margem segura; nenhum lump gasto',true);
+            const before=Number(Game.lumps),ask=Game.prefs.askLumps;
+            let applied=false;
+            try {
+                Game.prefs.askLumps=0;
+                Game.refillLump(1,()=>{
+                    M.loopsMult=3;M.nextSoil=Date.now();M.nextStep=Date.now();applied=true;
+                });
+            } finally { Game.prefs.askLumps=ask; }
+            const ok=applied && Number(Game.lumps)===before-1 && Number(M.loopsMult)===3;
+            return {ok,action:'boost_mutation',message:ok
+                ?`1 Sugar Lump usado com ${ready} círculo(s) em Wood chips; tick extra com mutações ×3`
+                :'Recarga não confirmada; não repetir sem reavaliar o jogo'};
+        })()""".replace("__CATALOG__", json.dumps(sorted(GARDEN_CATALOG))))
+        return self._parse_garden_action(payload, "boost_mutation")
 
     def change_garden_soil(self, soil_key: str) -> GardenActionResult:
         """Troca o solo somente quando o requisito e o cooldown permitem."""
         if not self._valid_garden_key(soil_key):
             return GardenActionResult(False, "change_soil", "Solo inválido.", soil_key=soil_key)
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const key=%s;
             const fail=message=>({ok:false,message,soilKey:key});
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
@@ -1832,7 +2152,7 @@ class CookieClickerBridge:
         """Congela ou descongela o Garden e verifica o estado resultante."""
         if not isinstance(frozen, bool):
             return GardenActionResult(False, "set_freeze", "Estado de congelamento inválido.")
-        payload = self.execute_js("""(() => {
+        payload = self._execute_game_action("""(() => {
             const desired=%s;
             const fail=message=>({ok:false,message});
             const farm=globalThis.Game && Game.Objects ? Game.Objects['Farm'] : null;
@@ -2009,7 +2329,7 @@ class CookieClickerBridge:
             const executedTotal = price * executed * (side === 'buy' ? overhead : 1);
             return {ok:true,message:isMaximum ? `${action} máxima executada` : `${action} executada`,before,after,executed,price,total:executedTotal};
         })()""" % (side, asset_id, quantity, str(is_maximum_order).lower(), json.dumps(guards, allow_nan=False))
-        payload = self.execute_js(script)
+        payload = self._execute_game_action(script)
         if not isinstance(payload, dict):
             message = "Bridge desconectado ou resposta inválida do CDP"
             logger.error(f"Stock Market: {message}")
@@ -2130,6 +2450,9 @@ class CookieClickerBridge:
                 seed_id, key, str(raw.get("name") or key), bool(raw.get("unlocked")),
                 bool(raw.get("plantable", True)), mature_age, bool(raw.get("weed")),
                 bool(raw.get("fungus")), bool(raw.get("immortal")),
+                cost=self._optional_float(raw.get("cost")),
+                average_growth=self._optional_float(raw.get("averageGrowth")),
+                maximum_growth=self._optional_float(raw.get("maximumGrowth")),
             ))
         if not seeds:
             return GardenSnapshot(GardenStatus(False, True, "Catálogo de sementes ausente ou inválido no runtime"))
@@ -2151,6 +2474,8 @@ class CookieClickerBridge:
                 x, y, seed_id, key, str(raw.get("name") or key), age, mature_age,
                 bool(raw.get("mature")), bool(raw.get("weed")), bool(raw.get("fungus")),
                 bool(raw.get("immortal")),
+                average_growth=self._optional_float(raw.get("averageGrowth")),
+                maximum_growth=self._optional_float(raw.get("maximumGrowth")),
             ))
 
         soils = []
@@ -2175,8 +2500,23 @@ class CookieClickerBridge:
             if x is not None and y is not None and self._valid_garden_position(x, y):
                 unlocked_tiles.append((x, y))
 
+        growth_multipliers = []
+        for raw in payload.get("growthMultipliers", ()):
+            if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+                continue
+            x, y = self._optional_int(raw[0]), self._optional_int(raw[1])
+            multiplier = self._optional_float(raw[2])
+            if (x is not None and y is not None and self._valid_garden_position(x, y)
+                    and multiplier is not None and multiplier > 0):
+                growth_multipliers.append((x, y, multiplier))
+
         return GardenSnapshot(
             status=status,
+            growth_multipliers=tuple(growth_multipliers),
+            cookies=self._optional_float(payload.get("cookies")),
+            sugar_lumps=self._optional_float(payload.get("sugarLumps")),
+            can_refill_lump=payload.get("canRefillLump") if isinstance(payload.get("canRefillLump"), bool) else None,
+            lump_refill_seconds=self._optional_float(payload.get("lumpRefillSeconds")),
             farm_level=self._optional_int(payload.get("farmLevel")),
             farm_amount=self._optional_int(payload.get("farmAmount")),
             soil_key=str(payload["soilKey"]) if self._valid_garden_key(payload.get("soilKey")) else None,
@@ -2197,6 +2537,7 @@ class CookieClickerBridge:
                 payload.get("greenAchingThumbWon")
                 if isinstance(payload.get("greenAchingThumbWon"), bool) else None
             ),
+            upgrades=self._parse_garden_upgrades(payload.get("gardenUpgrades")),
             green_aching_thumb_progress=self._optional_int(payload.get("greenAchingThumbProgress")),
             green_aching_thumb_message=str(
                 payload.get("greenAchingThumbMessage")
@@ -2224,6 +2565,10 @@ class CookieClickerBridge:
             soil_key=str(runtime_soil) if runtime_soil else None,
             before_key=str(payload.get("beforeKey")) if payload.get("beforeKey") is not None else None,
             after_key=str(payload.get("afterKey")) if payload.get("afterKey") is not None else None,
+            waiting=payload.get("waiting") is True,
+            reason=str(payload.get("reason") or ""),
+            required_cookies=CookieClickerBridge._optional_float(payload.get("requiredCookies")),
+            available_cookies=CookieClickerBridge._optional_float(payload.get("availableCookies")),
         )
 
     @staticmethod
@@ -2352,7 +2697,7 @@ class CookieClickerBridge:
             f"quantidade={result.quantidade_executada}, motivo={result.motivo or 'sem código'}"
         )
         if result.sucesso:
-            logger.info(f"Auto Ascensão: {result.mensagem} ({context})")
+            logger.debug(f"Auto Ascensão: {result.mensagem} ({context})")
         else:
             logger.warning(f"Auto Ascensão: {result.mensagem} ({context})")
 
@@ -2371,7 +2716,7 @@ class CookieClickerBridge:
             }
             return true;
         })()""" % str(bool(enabled)).lower()
-        result = self.execute_js(script)
+        result = self._execute_game_action(script)
         if result is not True:
             logger.warning("Stock Market: não foi possível atualizar a visualização dos ativos")
             return False
@@ -2446,51 +2791,97 @@ class CookieClickerBridge:
         return self.execute_js("typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : null")
 
     def get_sugar_lump_status(self) -> Optional[Dict[str, Any]]:
-        """Retorna o estado atual do Sugar Lump."""
-        return self.execute_js("""(() => {
-            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
-            if (!lump) return null;
-            return {
-                type: typeof Game.lumpCurrentType !== 'undefined' ? Game.lumpCurrentType : lump.type,
-                ready: !!lump.ready,
-                progress: lump.progress || lump.value || 0,
-                typeName: lump.typeName || null,
-            };
-        })()""")
+        """Lê o lump em crescimento; Game.lumps é o saldo numérico."""
+        payload = self.execute_js("(() => {" + SUGAR_LUMP_HELPERS + "return lumpStatus();})()")
+        return payload if isinstance(payload, dict) else None
 
-    def harvest_sugar_lump(self) -> bool:
-        """Tenta colher o Sugar Lump atual diretamente via JS."""
+    def harvest_sugar_lump_result(self, *, preserved_types=(), expected_start=None, after_start=None) -> Dict[str, Any]:
+        """Colhe pela API nativa e confirma a rotação, inclusive colheita de saldo zero."""
+        types = tuple(preserved_types)
+        if any(type(t) is not int or t not in range(5) for t in types):
+            return {"ok": False, "reason": "invalid_types", "message": "Tipos inválidos."}
         script = """(() => {
-            const lump = Array.isArray(Game.lumps) ? Game.lumps[0] : null;
-            if (!lump) return false;
+            __HELPERS__
+            const fail=(reason,message)=>({ok:false,reason,message});
+            const before=lumpStatus(),preserved=__TYPES__,expected=__EXPECTED__,last=__LAST__;
+            if (!before || typeof Game.clickLump!=='function') return fail('unavailable','Sugar Lump indisponível');
+            if (expected!==null && before.started!==expected) return fail('changed','O lump mudou; replanejar antes de colher');
+            if (!before.mature) return fail('growing','O lump ainda não está maduro');
+            if (before.overripe) return fail('overripe','Colheita automática iminente; reavaliar');
+            if (preserved.includes(before.type) && !before.ready) return fail('preserved','Tipo protegido até a colheita garantida');
+            if (last!==null && Date.now()<=last) return fail('same_timestamp','Aguardar outro instante de sorteio');
+            Game.clickLump();
+            const after=lumpStatus();
+            if (!after || after.started===before.started) return fail('unconfirmed','A colheita não foi confirmada');
+            return {ok:true,reason:'harvested',message:'Lump colhido e próximo tipo confirmado',
+                oldType:before.type,newType:after.type,newStart:after.started,gained:after.lumps-before.lumps};
+        })()""".replace("__HELPERS__", SUGAR_LUMP_HELPERS).replace("__TYPES__", json.dumps(types)).replace(
+            "__EXPECTED__", json.dumps(expected_start)).replace("__LAST__", json.dumps(after_start))
+        result = self._execute_game_action(script)
+        return result if isinstance(result, dict) else {"ok": False, "reason": "bridge_error", "message": "Falha na leitura da colheita"}
 
-            if (typeof lump.pop === 'function') {
-                lump.pop();
-                return true;
-            }
+    def harvest_sugar_lump(self, *, preserved_types=()) -> bool:
+        return self.harvest_sugar_lump_result(preserved_types=preserved_types).get("ok") is True
 
-            if (typeof lump.click === 'function') {
-                lump.click();
-                return true;
-            }
+    def get_sugar_lump_checkpoint(self) -> Optional[Dict[str, Any]]:
+        """Exporta estado e save na mesma avaliação, antes de qualquer tentativa."""
+        payload = self.execute_js("""(() => {
+            __HELPERS__
+            const status=lumpStatus();
+            if (!status || typeof Game.WriteSave!=='function') return null;
+            const save=Game.WriteSave(1);
+            if (typeof save!=='string' || !save) return null;
+            return {save,status,seed:String(Game.seed)};
+        })()""".replace("__HELPERS__", SUGAR_LUMP_HELPERS))
+        return payload if isinstance(payload, dict) and isinstance(payload.get("save"), str) else None
 
-            const lumpElement = document.querySelector('#lumps');
-            if (lumpElement) {
-                lumpElement.click();
-            }
+    def load_game_save(self, save_data: str) -> bool:
+        """Importa o save pela API nativa, sem prompts genéricos ou eval do conteúdo."""
+        if not isinstance(save_data, str) or not save_data.strip():
+            return False
+        payload = self._execute_game_action("""(() => {
+            if (!globalThis.Game || typeof Game.LoadSave!=='function'
+                || Game.OnAscend || Game.AscendTimer || Game.ReincarnateTimer) return false;
+            return Game.LoadSave(__SAVE__)===true;
+        })()""".replace("__SAVE__", json.dumps(save_data.strip())))
+        return payload is True
 
-            const button = Array.from(document.querySelectorAll('button')).find(
-                el => /harvest|coletar|yes|sim/i.test(el.innerText)
-            );
-            if (button) {
-                button.click();
-                return true;
-            }
+    def restore_sugar_lump_checkpoint(self, checkpoint) -> Dict[str, Any]:
+        """Impede restauração expirada e verifica seed, início e tipo após LoadSave."""
+        if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("status"), dict):
+            return {"ok": False, "message": "Checkpoint inválido"}
+        script = """(() => {
+            __HELPERS__
+            const checkpoint=__CHECKPOINT__,s=checkpoint.status;
+            const fail=message=>({ok:false,message});
+            if (!lumpStatus() || typeof Game.LoadSave!=='function' || typeof b64_to_utf8!=='function')
+                return fail('Runtime indisponível para restauração');
+            if (Date.now()-s.started>=s.overripeMs-5000) return fail('Backup expirou: a importação colheria automaticamente o lump');
+            let parts;
+            try { parts=b64_to_utf8(unescape(checkpoint.save).split('!END!')[0]).split('|'); }
+            catch(e) { return fail('Save do checkpoint inválido'); }
+            const stats=(parts[2]||'').split(';'),lumps=(parts[4]||'').split(';');
+            if (Number(lumps[44])!==s.started || Number(lumps[46])!==s.type || stats[4]!==checkpoint.seed)
+                return fail('Save não corresponde ao checkpoint inicial');
+            if (Game.LoadSave(checkpoint.save)!==true) return fail('O jogo rejeitou a restauração');
+            const after=lumpStatus();
+            if (!after || after.started!==s.started || after.type!==s.type || String(Game.seed)!==checkpoint.seed)
+                return fail('Restauração divergente; automações devem permanecer pausadas');
+            return {ok:true,message:'Backup inicial restaurado e verificado'};
+        })()""".replace("__HELPERS__", SUGAR_LUMP_HELPERS).replace("__CHECKPOINT__", json.dumps(checkpoint))
+        payload = self._execute_game_action(script)
+        return payload if isinstance(payload, dict) else {"ok": False, "message": "Falha de comunicação ao restaurar"}
 
-            return false;
-        })()"""
-        result = self.execute_js(script)
-        return bool(result)
+    def persist_game_save(self) -> bool:
+        """Solicita gravação nativa do resultado aceito no disco/localStorage."""
+        result = self.execute_js("""(() => {
+            if (!globalThis.Game || typeof Game.WriteSave!=='function') return false;
+            Game.WriteSave();
+            if (typeof localStorageGet!=='function' || typeof b64_to_utf8!=='function') return false;
+            const stored=localStorageGet(Game.SaveTo);
+            return !!stored && b64_to_utf8(unescape(stored).split('!END!')[0])===Game.lastSaveData;
+        })()""")
+        return result is True
 
     def get_golden_cookie(self) -> Optional[Dict]:
         """Retorna o shimmer do golden cookie se existir."""
@@ -2504,6 +2895,29 @@ class CookieClickerBridge:
         """Verifica se há fortune cookie ativa."""
         result = self.execute_js("Game.TickerEffect && Game.TickerEffect.type === 'fortune'")
         return bool(result)
+
+    def get_gc_farm_snapshot(self):
+        from app.bridge.gc_farm_scripts import SNAPSHOT
+        result = self.execute_js(SNAPSHOT)
+        return result if isinstance(result, dict) else {"available": False, "message": "Não foi possível consultar a conquista."}
+
+    def prepare_gc_farm(self, reserve_percent, expected_seed=None):
+        from app.bridge.gc_farm_scripts import PREPARE
+        if (isinstance(reserve_percent, bool) or not isinstance(reserve_percent, (int, float))
+                or not math.isfinite(reserve_percent) or not 0 <= reserve_percent <= 99):
+            return {"ok": False, "message": "Reserva inválida."}
+        result = self._execute_game_action(PREPARE.replace('__RESERVE__', json.dumps(reserve_percent))
+                                           .replace('__SEED__', json.dumps(expected_seed)))
+        return result if isinstance(result, dict) else {"ok": False, "message": "Preparo não confirmado."}
+
+    def collect_gc_farm(self, expected_seed=None, manual_last_click=False):
+        from app.bridge.gc_farm_scripts import COLLECT
+        # pop() já atualiza seus elementos; não redesenhar os minigames a cada consulta.
+        if not isinstance(manual_last_click, bool):
+            return 0
+        result = self.execute_js(COLLECT.replace('__SEED__', json.dumps(expected_seed))
+                                .replace('__MANUAL_LAST__', json.dumps(manual_last_click)))
+        return result if isinstance(result, int) and not isinstance(result, bool) and result >= 0 else 0
 
     def pop_golden_cookie(self) -> bool:
         """Coleta o golden cookie sem mover o mouse."""
@@ -2524,7 +2938,7 @@ class CookieClickerBridge:
         if result:
             return True
         
-        logger.info("[FAIL] Golden cookie detectado mas pop() falhou")
+        logger.warning("Golden Cookie detectado, mas a coleta falhou; será tentada novamente.")
         return False
 
     def pop_reindeer(self) -> bool:
@@ -2548,12 +2962,19 @@ class CookieClickerBridge:
         # logger.info("[FAIL] Rena detectada mas pop() falhou")
         return False
 
+    def manage_wrinklers(self, free_slots: int, requests: list) -> Optional[Dict[str, Any]]:
+        """Abre vagas e atende pedidos de caixa sem tocar nos Shiny."""
+        options = {"freeSlots": min(12, max(1, int(free_slots))), "requests": requests}
+        return self.execute_js(WRINKLER_SCRIPT.replace("__OPTIONS__", json.dumps(options, allow_nan=False)))
+
     def get_wrinklers(self) -> Optional[List[Dict[str, Any]]]:
         """Retorna a lista de wrinklers com informação básica."""
         return self.execute_js("""(() => {
             if (!Game.wrinklers) return null;
             return Game.wrinklers.map((w, idx) => ({
                 index: idx,
+                phase: w.phase,
+                sucked: w.sucked,
                 type: w.type,
                 hp: w.hp,
                 maxHp: w.maxHp,
@@ -2567,15 +2988,8 @@ class CookieClickerBridge:
             const i = %d;
             if (!Array.isArray(Game.wrinklers) || i < 0 || i >= Game.wrinklers.length) return false;
             const w = Game.wrinklers[i];
-            if (!w || w.hp <= 0 || w.type === 1) return false;
-            if (typeof w.pop === 'function') {
-                w.pop();
-            } else {
-                w.hp = 0;
-                if (typeof Game.recalculateWrinklers === 'function') {
-                    Game.recalculateWrinklers();
-                }
-            }
+            if (!w || w.phase <= 0 || w.hp <= 0.5 || w.type !== 0) return false;
+            w.hp = 0; // O frame nativo faz a coleta e a atualização visual.
             return true;
         })()""" % index
         result = self.execute_js(script)
