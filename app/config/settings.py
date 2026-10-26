@@ -101,6 +101,8 @@ class AutomationConfig:
     # Garden: seguro por padrão; intervalo usado somente se M.nextStep faltar.
     garden_strategy: str = "plants"
     garden_poll_interval_seconds: int = 60
+    gc_farm_reserve_percent: float = 80.0
+    gc_farm_manual_last_click: bool = False
 
     # Auto Ascensão: sempre desativada por padrão e confirmada a cada execução real.
     auto_ascension_target_cycles: int = 1
@@ -191,6 +193,9 @@ def load_automation_settings() -> None:
     """Carrega as configurações de automação do QSettings."""
     settings = QSettings("CookieClickerBot", "CookieClickerBot")
     settings.beginGroup("Automation")
+    automation_config.gc_farm_reserve_percent = min(99.0, max(0.0, settings.value(
+        "gc_farm_reserve_percent", 80.0, type=float)))
+    automation_config.gc_farm_manual_last_click = settings.value('gc_farm_manual_last_click', False, type=bool)
     automation_config.enable_stock_market_auto_trade = settings.value(
         "enable_stock_market_auto_trade", False, type=bool,
     )
@@ -420,6 +425,8 @@ def save_automation_settings() -> None:
     """Salva as configurações de automação no QSettings."""
     settings = QSettings("CookieClickerBot", "CookieClickerBot")
     settings.beginGroup("Automation")
+    settings.setValue("gc_farm_reserve_percent", automation_config.gc_farm_reserve_percent)
+    settings.setValue('gc_farm_manual_last_click', automation_config.gc_farm_manual_last_click)
     settings.setValue("enable_stock_market_auto_trade", automation_config.enable_stock_market_auto_trade)
     settings.setValue("enable_garden_automation", automation_config.enable_garden_automation)
     settings.setValue("enable_cookie_clicker", automation_config.enable_cookie_clicker)

@@ -30,6 +30,7 @@ from app.models.simple_farm import ConfiguracaoSimpleFarm, RelatorioSimpleFarm
 from app.ui.backup_dialog import BackupDialog
 from app.ui.combo_planner import ComboPlanner
 from app.ui.save_scum_tab import SaveScumTab
+from app.ui.gc_farm_tab import GCFarmTab
 from app.ui.automation_control import AutomationControl
 from app.ui.hotkey_capture import HotkeyCapture
 from app.ui.garden_presentation import current_state, grouped_actions, pending_actions, result_summary, short_message
@@ -166,6 +167,8 @@ class MainWindow(QMainWindow):
         self._combo_automation: Optional[ComboAutomation] = None
         self._simple_farm_automation: Optional[SimpleFarmAutomation] = None
         self._combo_exclusive = False
+        self._gc_farm_active = False
+        self._gc_disabled_widgets = []
         self._save_scum_exclusive = False
         self._save_scum_disabled_widgets = []
         self._save_scum_resume_clicker = False
@@ -305,6 +308,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._auto_ascension_tab(), "Auto Ascensão")
         self.save_scum_tab = SaveScumTab(self)
         self.tabs.addTab(self.save_scum_tab, "Save Scum")
+        self.gc_farm_tab = GCFarmTab(self)
+        self.tabs.addTab(self.gc_farm_tab, "GC Farm")
         self.tabs.addTab(self._activity_tab(), "Atividade")
         self.tabs.addTab(self._settings_tab(), "Configurações")
         layout.addWidget(self.tabs, 1)
@@ -327,7 +332,7 @@ class MainWindow(QMainWindow):
     def _bot_workers_running(self):
         return any(worker and worker.isRunning() for worker in
                    (self._combo_worker, self._auto_ascension_worker,
-                    self.save_scum_tab.worker, self._stock_worker, self._garden_worker))
+                    self.save_scum_tab.worker, self.gc_farm_tab.worker, self._stock_worker, self._garden_worker))
 
     def refresh_bot_control(self):
         """Um único botão representa o próximo passo, sem ligar ações por conexão."""
@@ -335,7 +340,7 @@ class MainWindow(QMainWindow):
         if not self._bot_enabled:
             for widget in (self.clicker_button, self.mouse_clicker_button, self.stock_toggle, self.garden_toggle,
                            self.simple_farm_toggle, self.combo_toggle, self.combo_resume_button,
-                           self.auto_ascension_toggle, self.save_scum_tab.toggle):
+                           self.auto_ascension_toggle, self.save_scum_tab.toggle, self.gc_farm_tab.toggle):
                 widget.setEnabled(False)
             self.stock_toggle.set_paused(True, "bot")
             self.garden_toggle.set_paused(True, "bot")
@@ -392,7 +397,7 @@ class MainWindow(QMainWindow):
                 self._garden_stop.set()
             for widget in (self.clicker_button, self.mouse_clicker_button, self.stock_toggle, self.garden_toggle,
                            self.simple_farm_toggle, self.combo_toggle,
-                           self.auto_ascension_toggle, self.save_scum_tab.toggle):
+                           self.auto_ascension_toggle, self.save_scum_tab.toggle, self.gc_farm_tab.toggle):
                 widget.setEnabled(True)
             self.stock_toggle.set_paused(False)
             self.garden_toggle.set_paused(False)
@@ -407,11 +412,84 @@ class MainWindow(QMainWindow):
             self._garden_stop.set()
             self._garden_run_when_idle = False
             self.stop_simple_farm()
+            self.gc_farm_tab.request(False)
             self.stop_combo()
             self.stop_auto_ascension()
             self.save_scum_tab.request(False)
         self.add_log("Bot ligado. Automações liberadas." if enabled else
                      "Bot pausado. Novas ações bloqueadas; modos especiais encerram com segurança.")
+        self.refresh_bot_control()
+
+    def begin_gc_farm(self):
+        if not self._bot_enabled or not self.bridge or not self.runner or self._connection_recovering:
+            self.gc_farm_tab.state.setText('Ligue o bot e aguarde a conexão com o jogo.')
+            return False
+        if self._gc_farm_active or self._save_scum_exclusive:
+            self.gc_farm_tab.state.setText('Encerre o Save Scum ou a restauração antes de iniciar.')
+            return False
+        # Interrompe os modos que podem mudar o save, o canteiro ou as auras.
+        self.stop_combo()
+        self.stop_simple_farm()
+        self.stop_auto_ascension()
+        for worker in (self._combo_worker, self._auto_ascension_worker):
+            if worker and worker.isRunning():
+                self.gc_farm_tab.state.setText('Aguardando os outros modos encerrarem…')
+                return None
+        if self._combo_exclusive or self._simple_farm_automation is not None:
+            return None
+        self._gc_farm_active = True
+        self._gc_garden_was_stopped = self._garden_stop.is_set()
+        self._garden_stop.set()
+        self.garden_refresh_timer.stop()
+        if self._garden_worker and self._garden_worker.isRunning():
+            if not self._garden_worker.wait((app_config.connection_timeout + 1) * 1000):
+                self.end_gc_farm(False)
+                self.gc_farm_tab.state.setText('O Garden ainda está encerrando uma operação. Tente novamente.')
+                return False
+        if not self.runner.acquire_gc_farm():
+            self.end_gc_farm(False)
+            self.gc_farm_tab.state.setText('Aguarde o encerramento do outro modo de automação.')
+            return False
+        try:
+            save = self.bridge.get_game_save()
+            if not save:
+                raise RuntimeError('Não foi possível exportar o save de segurança.')
+            self.backup_manager.create_backup(save, 'antes-do-gc-farm')
+        except Exception as error:
+            self.end_gc_farm(False)
+            self.gc_farm_tab.state.setText(f'Não foi possível iniciar: {error}')
+            return False
+        widgets = (self.garden_toggle, self.garden_strategy_combo, self.combo_toggle,
+                   self.combo_preview_button, self.simple_farm_preview_button, self.auto_ascension_preview_button,
+                   self.simple_farm_toggle, self.auto_ascension_toggle, self.save_scum_tab.toggle,
+                   self.save_scum_tab.preview, self.backups_button, self.auto_season_checkbox,
+                   self.auto_season_combo, self.grimoire_spell_spam_checkbox, self.golden_checkbox)
+        self._gc_disabled_widgets = [(w, w.isEnabled()) for w in widgets]
+        for widget, _ in self._gc_disabled_widgets:
+            widget.setEnabled(False)
+        self.garden_toggle.set_paused(True, 'GC Farm')
+        self._set_combo_keep_awake(True)
+        self.add_log('GC Farm ligado. Garden, temporada e magias sob controle do farm; Banco e Sugar Lumps continuam conforme suas opções.')
+        return True
+
+    def end_gc_farm(self, completed=False):
+        if not self._gc_farm_active:
+            return
+        self._gc_farm_active = False
+        if self.runner:
+            self.runner.release_gc_farm()
+        for widget, enabled in self._gc_disabled_widgets:
+            widget.setEnabled(enabled)
+        self._gc_disabled_widgets = []
+        if self._bot_enabled and not completed and not self._gc_garden_was_stopped:
+            self._garden_stop = threading.Event()
+        self.garden_toggle.set_paused(completed or not self._bot_enabled or self._gc_garden_was_stopped,
+                                      'conquista concluída' if completed else 'bot' if not self._bot_enabled else 'pausa anterior')
+        if self._bot_enabled and not self._connection_recovering:
+            self.garden_refresh_timer.start(10_000)
+        self._set_combo_keep_awake(False)
+        self.add_log('GC Farm concluído. Garden permanece pausado até você religá-lo.' if completed else
+                     'GC Farm desligado. Configurações do jogo mantidas; automações compatíveis continuam.')
         self.refresh_bot_control()
 
     def attach_game(self, bridge, runner):
@@ -435,6 +513,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.refresh_garden)
 
     def set_connection_recovery(self, active, resume=False):
+        if active:
+            self.gc_farm_tab.request(False)
         self._connection_recovering = active
         self._connection_resume_pending = active and resume
         if active:
@@ -1555,7 +1635,7 @@ class MainWindow(QMainWindow):
             self.add_log("Ligue o bot no topo antes de iniciar automações.")
             return
         """Liga a automação; a prévia tem um botão independente."""
-        if self._combo_exclusive or self._save_scum_exclusive or self._simple_farm_automation is not None:
+        if self._gc_farm_active or self._combo_exclusive or self._save_scum_exclusive or self._simple_farm_automation is not None:
             self._auto_ascension_failed("Pare o farm/Combo antes de iniciar a Auto Ascensão.")
             return
         if not self.bridge:
@@ -2080,7 +2160,7 @@ class MainWindow(QMainWindow):
 
     def refresh_garden(self, _checked: bool = False):
         """Atualiza snapshot e plano sem alterar o Garden."""
-        if self._combo_exclusive or self._save_scum_exclusive:
+        if self._gc_farm_active or self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
@@ -2097,7 +2177,7 @@ class MainWindow(QMainWindow):
 
     def simulate_garden(self, _checked: bool = False):
         """Executa somente a leitura e o planejamento da Fazendeira."""
-        if self._combo_exclusive or self._save_scum_exclusive:
+        if self._gc_farm_active or self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.fazendeira:
             self._show_garden_feedback(False, "Bridge não está disponível.")
@@ -2114,7 +2194,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_garden_timer(self):
-        if self._combo_exclusive or self._save_scum_exclusive:
+        if self._gc_farm_active or self._combo_exclusive or self._save_scum_exclusive:
             return
         if not self.fazendeira or (self._garden_worker and self._garden_worker.isRunning()):
             return
@@ -2167,6 +2247,8 @@ class MainWindow(QMainWindow):
         self.refresh_bot_control()
 
     def _display_garden_result(self, value: object):
+        if self._gc_farm_active:
+            return
         if not isinstance(value, GardenCycleResult):
             self._show_garden_feedback(False, "Resposta inesperada do ciclo do Garden.")
             logger.error("Garden: não foi possível confirmar o resultado da operação.")
@@ -2336,10 +2418,12 @@ class MainWindow(QMainWindow):
     def _set_garden_busy(self, busy: bool):
         self.garden_refresh_button.setEnabled(not busy)
         self.garden_simulate_button.setEnabled(not busy)
-        self.garden_strategy_combo.setEnabled(not busy)
+        self.garden_strategy_combo.setEnabled(not busy and not self._gc_farm_active)
 
 
     def _toggle_garden_automation(self, enabled: bool):
+        if self._gc_farm_active:
+            return
         if enabled and not self._bot_enabled:
             self.add_log("Ligue o bot no topo antes de iniciar automações.")
             return
@@ -2388,7 +2472,7 @@ class MainWindow(QMainWindow):
 
     def _schedule_next_garden_tick(self, snapshot):
         """Agenda uma única leitura logo após ``M.nextStep`` avançar."""
-        if not self.bridge:
+        if self._gc_farm_active or not self.bridge:
             return
         fallback_ms = automation_config.garden_poll_interval_seconds * 1000
         delay_ms = fallback_ms
@@ -2816,6 +2900,9 @@ class MainWindow(QMainWindow):
             self.add_log("Outras automações continuam pausadas até recuperar o save.")
 
     def on_backup_restored(self, save_data):
+        if self._gc_farm_active:
+            self.add_log('Desligue o GC Farm antes de restaurar um backup.')
+            return
         if self._save_scum_exclusive:
             if self.save_scum_tab.worker or not self.save_scum_tab.last_report or self.save_scum_tab.last_report.safe_to_resume:
                 self.add_log("Save Scum ativo: desligue antes de importar outro backup.")
@@ -2830,6 +2917,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Evita destruir uma thread de consulta ainda em execução."""
+        if self._bot_enabled and (self.gc_farm_tab.active or self.gc_farm_tab.start_pending):
+            self.set_bot_enabled(False)
+        if not self.gc_farm_tab.shutdown():
+            event.ignore()
+            return
         if hasattr(self, "game_connection_shutdown") and not self.game_connection_shutdown():
             event.ignore()
             return

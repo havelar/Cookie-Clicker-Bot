@@ -106,6 +106,7 @@ class Application:
         self._recovering = True
         self._recover_resume = bool(self.window._bot_enabled)
         self._recover_special = bool(self.window._combo_worker or self.window._auto_ascension_worker
+                                     or self.window.gc_farm_tab.active or self.window.gc_farm_tab.start_pending
                                      or self.window._save_scum_exclusive)
         self._recover_cookie = bool(self.runner and self.runner.is_running
                                     and not self.runner._simple_farm_active and not self._recover_special

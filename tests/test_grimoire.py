@@ -83,6 +83,7 @@ class GrimoireRunnerTests(unittest.TestCase):
             {"cast": True, "reason": "cast", "spellName": "Stretch Time"},
         ])
         runner = object.__new__(AutomationRunner)
+        runner.gc_farm_active = False
         runner.paused = threading.Event()
         runner.bridge = bridge
         runner._last_grimoire_attempt_at = 0.0

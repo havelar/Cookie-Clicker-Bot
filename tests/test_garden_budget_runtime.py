@@ -21,6 +21,7 @@ class GardenBudgetRuntimeTests(unittest.TestCase):
 
         bridge = Capture()
         bridge.set_combo_cash_floor(options.get("cashFloor", 0))
+        layout_options = {"cash_floor": options["localFloor"]} if "localFloor" in options else {}
         if single:
             bridge.plant_garden_seed("thumbcorn", 1, 0)
         elif cleanup_only:
@@ -31,7 +32,7 @@ class GardenBudgetRuntimeTests(unittest.TestCase):
                 GardenAction("harvest", "replace", x=0, y=0, seed_key="bakerWheat", require_mature=False),
                 GardenAction("plant", "replace", x=0, y=0, seed_key="thumbcorn"),
                 GardenAction("plant", "fill", x=1, y=0, seed_key="thumbcorn"),
-            ))
+            ), **layout_options)
         runtime = Path(__file__).with_name("fixtures").joinpath("garden_budget_runtime.js").read_text(encoding="utf-8")
         source = runtime.replace("OPTIONS", json.dumps(options)) + "\nconst result=" + bridge.script
         source += ";console.log(JSON.stringify({result,events,cookies:Game.cookies,plot:M.plot}));"
@@ -51,6 +52,13 @@ class GardenBudgetRuntimeTests(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in data["result"]))
         self.assertEqual(data["events"], [["harvest",0,0],["plant","thumbcorn",0,0],["plant","thumbcorn",1,0]])
         self.assertEqual(data["cookies"], 0)
+
+    def test_gc_farm_usa_reserva_local_sem_depender_da_reserva_do_combo(self):
+        blocked = self.run_layout(cookies=1000, localFloor=800)
+        self.assertEqual(blocked['events'], [])
+        self.assertTrue(blocked['result'][0]['waiting'])
+        allowed = self.run_layout(cookies=1000, cashFloor=900, localFloor=0)
+        self.assertEqual(len(allowed['events']), 3)
 
     def test_live_price_and_balance_are_used_before_any_removal(self):
         for options in ({"cookies":100}, {"cookies":1000,"multiplier":7}):

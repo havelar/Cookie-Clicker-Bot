@@ -74,6 +74,8 @@ class AutomationRunner:
         self._exclusive_lock = threading.RLock()
         self._exclusive_owner: Optional[str] = None
         self._simple_farm_active = False
+        self.gc_farm_active = False
+        self.gc_farm_seed = None
         self._simple_farm_manual_clicker = False
         self._simple_farm_clicker_requested = False
         self.on_clicker_state_change = state_change_callback
@@ -215,7 +217,7 @@ class AutomationRunner:
         if not owner:
             return False
         with self._exclusive_lock:
-            if self._simple_farm_active or self._exclusive_owner not in (None, owner):
+            if self.gc_farm_active or self._simple_farm_active or self._exclusive_owner not in (None, owner):
                 return False
             self._exclusive_owner = owner
             self.cookie_hold_active = self.mouse_hold_active = False
@@ -227,7 +229,7 @@ class AutomationRunner:
     def acquire_simple_farm(self) -> bool:
         """Reserva apenas GC/Grimoire; detector, Garden e Banco continuam ativos."""
         with self._exclusive_lock:
-            if self._exclusive_owner is not None or self._simple_farm_active:
+            if self.gc_farm_active or self._exclusive_owner is not None or self._simple_farm_active:
                 return False
             self._simple_farm_active = True
             self._simple_farm_manual_clicker = self.is_running
@@ -241,6 +243,27 @@ class AutomationRunner:
             self._simple_farm_clicker_requested = enabled
             desired = enabled or self._simple_farm_manual_clicker
             return self.ensure_clicker_running() if desired else self.ensure_clicker_stopped()
+
+    def acquire_gc_farm(self):
+        """Reserva coleta, magias e temporada; mantém as demais coletas disponíveis."""
+        with self._exclusive_lock:
+            if self.gc_farm_active or self._exclusive_owner is not None or self._simple_farm_active:
+                return False
+            self.gc_farm_active = True
+            self.gc_farm_seed = None
+            return True
+
+    def activate_gc_farm_collection(self, seed):
+        """Libera os cliques somente após o backup e a primeira leitura válida."""
+        with self._exclusive_lock:
+            if self.gc_farm_active and isinstance(seed, str) and seed:
+                self.gc_farm_seed = seed
+
+    def release_gc_farm(self):
+        with self._exclusive_lock:
+            self.gc_farm_active = False
+            self.gc_farm_seed = None
+            self.reset_season_schedule()
 
     def release_simple_farm(self) -> None:
         with self._exclusive_lock:
@@ -308,7 +331,11 @@ class AutomationRunner:
             return
         # A mesma trava aguarda uma coleta/cast em andamento ao iniciar o farm.
         with self._exclusive_lock:
-            if not self._simple_farm_active and self._exclusive_owner is None:
+            if self.gc_farm_active:
+                if self.gc_farm_seed:
+                    self.golden_cookies_clicked += self.bridge.collect_gc_farm(
+                        self.gc_farm_seed, automation_config.gc_farm_manual_last_click)
+            elif not self._simple_farm_active and self._exclusive_owner is None:
                 if automation_config.enable_golden_cookie and self.bridge.pop_golden_cookie():
                     self.golden_cookies_clicked += 1
                     self._collection_summary.record("Golden Cookies")
@@ -327,7 +354,8 @@ class AutomationRunner:
 
         self._run_sugar_lump_cycle()
         self._run_krumblor_cycle()
-        self._run_season_cycle()
+        if not self.gc_farm_active:
+            self._run_season_cycle()
 
     def reset_season_schedule(self):
         """Reavalia a temporada ao ligar ou alterar a preferência."""
@@ -335,6 +363,8 @@ class AutomationRunner:
         self._last_season_state = None
 
     def _run_season_cycle(self, now=None):
+        if self.gc_farm_active:
+            return
         with self._exclusive_lock:
             if (self.paused.is_set() or self.stop_event.is_set()
                     or self._exclusive_owner is not None
@@ -461,6 +491,8 @@ class AutomationRunner:
         return False
 
     def _run_grimoire_cycle(self, now: Optional[float] = None) -> bool:
+        if self.gc_farm_active:
+            return False
         """Tenta uma vez por segundo; a bridge decide atomicamente se a mana está cheia."""
         if self.paused.is_set() or not automation_config.enable_grimoire_spell_spam:
             self._last_grimoire_failure = None

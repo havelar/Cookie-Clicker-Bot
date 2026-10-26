@@ -1916,10 +1916,13 @@ return {ok:true,candidates:all};
         })()""" % (json.dumps(seed_key), x, y))
         return self._parse_garden_action(payload, "plant", x=x, y=y, seed_key=seed_key)
 
-    def execute_garden_layout(self, actions) -> tuple[GardenActionResult, ...]:
+    def execute_garden_layout(self, actions, *, cash_floor=None) -> tuple[GardenActionResult, ...]:
         """Confere o lote inteiro antes de limpar; executa sem intercalar outras farms."""
         if not isinstance(actions, (list, tuple)) or not 1 <= len(actions) <= 72:
             return (GardenActionResult(False, "layout", "Lote de Garden inválido."),)
+        if cash_floor is not None and (isinstance(cash_floor, bool) or not isinstance(cash_floor, (int, float))
+                                      or not math.isfinite(cash_floor) or cash_floor < 0):
+            return (GardenActionResult(False, "layout", "Reserva de Garden inválida."),)
         payload_actions = []
         seen = set()
         for action in actions:
@@ -2005,6 +2008,8 @@ return {ok:true,candidates:all};
             }
             return results;
         })()""".replace("__ACTIONS__", json.dumps(payload_actions)).replace("__CATALOG__", json.dumps(sorted(GARDEN_CATALOG)))
+        if cash_floor is not None:
+            script = script.replace('comboCashFloor', json.dumps(cash_floor))
         payload = self._execute_game_action(script)
         if not isinstance(payload, list) or not payload or any(not isinstance(item, dict) for item in payload):
             return (GardenActionResult(False, "layout", "Resposta inválida do lote de Garden."),)
@@ -2890,6 +2895,29 @@ return {ok:true,candidates:all};
         """Verifica se há fortune cookie ativa."""
         result = self.execute_js("Game.TickerEffect && Game.TickerEffect.type === 'fortune'")
         return bool(result)
+
+    def get_gc_farm_snapshot(self):
+        from app.bridge.gc_farm_scripts import SNAPSHOT
+        result = self.execute_js(SNAPSHOT)
+        return result if isinstance(result, dict) else {"available": False, "message": "Não foi possível consultar a conquista."}
+
+    def prepare_gc_farm(self, reserve_percent, expected_seed=None):
+        from app.bridge.gc_farm_scripts import PREPARE
+        if (isinstance(reserve_percent, bool) or not isinstance(reserve_percent, (int, float))
+                or not math.isfinite(reserve_percent) or not 0 <= reserve_percent <= 99):
+            return {"ok": False, "message": "Reserva inválida."}
+        result = self._execute_game_action(PREPARE.replace('__RESERVE__', json.dumps(reserve_percent))
+                                           .replace('__SEED__', json.dumps(expected_seed)))
+        return result if isinstance(result, dict) else {"ok": False, "message": "Preparo não confirmado."}
+
+    def collect_gc_farm(self, expected_seed=None, manual_last_click=False):
+        from app.bridge.gc_farm_scripts import COLLECT
+        # pop() já atualiza seus elementos; não redesenhar os minigames a cada consulta.
+        if not isinstance(manual_last_click, bool):
+            return 0
+        result = self.execute_js(COLLECT.replace('__SEED__', json.dumps(expected_seed))
+                                .replace('__MANUAL_LAST__', json.dumps(manual_last_click)))
+        return result if isinstance(result, int) and not isinstance(result, bool) and result >= 0 else 0
 
     def pop_golden_cookie(self) -> bool:
         """Coleta o golden cookie sem mover o mouse."""
